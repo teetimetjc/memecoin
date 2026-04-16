@@ -1,0 +1,55 @@
+name: Amazon Deal Scanner
+
+on:
+  workflow_dispatch:         # triggered via API (cron-job.org) or manually from GitHub UI
+
+jobs:
+  scan-amazon-deals:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install selenium requests
+
+      - name: Install Chrome & matching ChromeDriver
+        run: |
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update -q
+          sudo apt-get install -y google-chrome-stable
+
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+          echo "Chrome version: $CHROME_VERSION"
+
+          DRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" \
+            | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          url = data['channels']['Stable']['downloads']['chromedriver']
+          linux = next(x['url'] for x in url if x['platform'] == 'linux64')
+          print(linux)
+          ")
+          wget -q "$DRIVER_URL" -O /tmp/chromedriver.zip
+          unzip -q /tmp/chromedriver.zip -d /tmp/chromedriver_dir
+          sudo mv /tmp/chromedriver_dir/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+          sudo chmod +x /usr/local/bin/chromedriver
+          chromedriver --version
+
+      - name: Run Amazon deal scanner
+        run: python amazon_deal_scanner.py
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: screenshot_*.png
+          retention-days: 3
