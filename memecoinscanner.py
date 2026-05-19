@@ -25,7 +25,7 @@ import tempfile
 import argparse
 import requests
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+import pytz
 from colorama import Fore, Style, init
 
 init(autoreset=True)
@@ -128,7 +128,7 @@ def append_to_sheet(pair: dict, score: int, green: list):
         sells    = pair.get("txns", {}).get("h24", {}).get("sells", 0) or 0
         buy_pct  = round(buys / (buys + sells) * 100) if (buys + sells) > 0 else ""
         dex_url  = pair.get("url", f"https://dexscreener.com/solana/{address}")
-        ts       = datetime.now(ZoneInfo('America/Chicago')).strftime("%Y-%m-%d %H:%M CT")
+        ts       = datetime.now(pytz.timezone('America/Chicago')).strftime("%Y-%m-%d %H:%M CT")
 
         row = [
             ts, name, symbol, address, score,
