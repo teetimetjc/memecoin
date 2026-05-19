@@ -46,7 +46,7 @@ SHEET_NAME = "Sheet1"
 PUSHOVER_APP_TOKEN = os.environ.get("PUSHOVER_APP_TOKEN", "")
 PUSHOVER_USER_KEY  = os.environ.get("PUSHOVER_USER_KEY", "")
 
-# Score threshold for Pushover alerts (sheet gets everything >= min_score)
+# Score threshold for both Pushover alerts and sheet logging
 PUSHOVER_ALERT_SCORE = 7
 
 # Scoring thresholds — tune these to your risk tolerance
@@ -404,7 +404,7 @@ def analyze_token(address: str):
     holder_count, top10_pct = get_holder_info(address)
     score, green, red = score_token(pair, holder_count, top10_pct)
     display_result(pair, score, green, red)
-    if score >= THRESHOLDS["min_score"]:
+    if score >= PUSHOVER_ALERT_SCORE:
         append_to_sheet(pair, score, green)
     if score >= PUSHOVER_ALERT_SCORE:
         send_pushover(pair, score, green)
@@ -441,7 +441,8 @@ def scan_new_tokens():
 
     for score, pair, green, red in qualifying[:10]:
         display_result(pair, score, green, red)
-        append_to_sheet(pair, score, green)
+        if score >= PUSHOVER_ALERT_SCORE:
+            append_to_sheet(pair, score, green)
         if score >= PUSHOVER_ALERT_SCORE:
             send_pushover(pair, score, green)
 
