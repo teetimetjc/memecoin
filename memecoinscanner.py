@@ -155,10 +155,9 @@ def send_pushover(pair: dict, score: int, green: list):
     address = pair.get("baseToken", {}).get("address", "")
     price   = pair.get("priceUsd", "N/A")
     dex_url = pair.get("url", f"https://dexscreener.com/solana/{address}")
-    phantom_url = f"https://phantom.app/ul/swap?inputMint=So11111111111111111111111111111111111111112&outputMint={address}"
 
     title   = f"Meme Coin Alert: {name} ({symbol}) — {score}/10"
-    message = f"Price: ${price}\n" + "\n".join(f"• {g}" for g in green) + f"\n\n{phantom_url}"
+    message = f"Price: ${price}\nContract: {address}\n" + "\n".join(f"• {g}" for g in green)
 
     try:
         requests.post(
@@ -168,8 +167,8 @@ def send_pushover(pair: dict, score: int, green: list):
                 "user":    PUSHOVER_USER_KEY,
                 "title":   title,
                 "message": message,
-                "url":       phantom_url,
-                "url_title": "Swap on Phantom",
+                "url":       dex_url,
+                "url_title": "View Chart",
             },
             timeout=10,
         )
