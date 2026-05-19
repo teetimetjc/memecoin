@@ -69,7 +69,7 @@ WATCH_INTERVAL_SECONDS = 60
 SHEET_HEADERS = [
     "Timestamp", "Name", "Symbol", "Address", "Score",
     "Price (USD)", "Liquidity (USD)", "Volume 24h (USD)",
-    "Age (h)", "Buy %", "Green Flags", "Chart URL",
+    "Age (h)", "Buy %", "Green Flags", "Chart URL", "Change since first seen %",
 ]
 
 def _get_gspread_client():
@@ -130,12 +130,28 @@ def append_to_sheet(pair: dict, score: int, green: list):
         dex_url  = pair.get("url", f"https://dexscreener.com/solana/{address}")
         ts       = datetime.now(pytz.timezone('America/Chicago')).strftime("%Y-%m-%d %H:%M CT")
 
+        # Find first logged price for this address to calculate change
+        price_change = ""
+        try:
+            all_rows = ws.get_all_values()
+            addr_col = SHEET_HEADERS.index("Address")
+            price_col = SHEET_HEADERS.index("Price (USD)")
+            first_price = next(
+                (float(r[price_col]) for r in all_rows[1:] if len(r) > addr_col and r[addr_col] == address and r[price_col]),
+                None
+            )
+            if first_price and price:
+                pct = round((float(price) - first_price) / first_price * 100, 1)
+                price_change = f"{pct:+.1f}%"
+        except Exception:
+            pass
+
         row = [
             ts, name, symbol, address, score,
             price, round(liq), round(vol),
             age_h, buy_pct,
             " | ".join(green),
-            dex_url,
+            dex_url, price_change,
         ]
         ws.append_row(row, value_input_option="USER_ENTERED")
         print(f"{Fore.GREEN}  → Logged to Sheets: {name} ({symbol})")
