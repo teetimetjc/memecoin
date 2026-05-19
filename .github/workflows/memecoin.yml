@@ -1,7 +1,7 @@
 name: Meme Coin Scanner
 
 on:
-  workflow_dispatch:  # triggered manually or via external cron
+  workflow_dispatch:
 
 jobs:
   scan:
