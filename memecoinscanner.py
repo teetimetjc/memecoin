@@ -304,12 +304,8 @@ def monitor_portfolio(ws, ws_sell, all_rows):
         dex = pair.get("url", f"https://dexscreener.com/solana/{coin['address']}")
 
         if signals:
-            if not was_recently_notified(all_rows, coin["address"], SELL_COOLDOWN_HOURS):
-                send_sell_alert(coin["name"], coin["symbol"], coin["address"],
-                                cur, coin["first_price"], signals, dex)
-                log_sell_signal(ws_sell, pair, coin["first_price"], signals)
-            else:
-                print(f"  {Fore.YELLOW}{coin['name']}: sell signals but cooldown active")
+            log_sell_signal(ws_sell, pair, coin["first_price"], signals)
+            print(f"  {Fore.RED}{coin['name']}: sell signals logged to sheet (Pushover off)")
         else:
             fp  = coin["first_price"]
             pch = f"  ({round((float(cur)-fp)/fp*100,1):+.1f}% from first seen)" if fp and cur not in ("N/A","") else ""
