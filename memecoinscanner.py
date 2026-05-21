@@ -21,19 +21,16 @@ PUSHOVER_APP_TOKEN = os.environ.get("PUSHOVER_APP_TOKEN", "")
 PUSHOVER_USER_KEY  = os.environ.get("PUSHOVER_USER_KEY", "")
 CT                 = pytz.timezone("America/Chicago")
 
-PUSHOVER_ALERT_SCORE  = 7    # min score to log + send buy alert
-BUY_COOLDOWN_HOURS    = 4    # skip buy Pushover if same coin alerted within window
-SELL_COOLDOWN_HOURS   = 4    # skip sell Pushover if same coin sell-alerted within window
-SELL_MONITOR_HOURS    = 24   # how far back to pull coins for sell monitoring
+PUSHOVER_ALERT_SCORE = 7
+BUY_COOLDOWN_HOURS   = 4
+SELL_MONITOR_HOURS   = 24
 
-# Sell alert triggers — any one fires the notification
 SELL_TRIGGERS = {
     "max_score":           4,
     "min_price_change_1h": -20,
     "max_buy_pct":         40,
 }
 
-# Scoring thresholds (8 criteria — Solscan removed, holder/whale dropped)
 THRESHOLDS = {
     "min_liquidity_usd":   10_000,
     "max_liquidity_usd":   5_000_000,
@@ -47,22 +44,62 @@ THRESHOLDS = {
 
 WATCH_INTERVAL_SECONDS = 60
 
+# Follow-up windows: (price_col, pct_col, min_minutes_elapsed)
+# Generous lower bound so cron timing variations don't cause missed windows
+FOLLOWUP_WINDOWS = [
+    ("Price +30m", "% +30m",  25),
+    ("Price +1h",  "% +1h",   55),
+    ("Price +2h",  "% +2h",  115),
+    ("Price +4h",  "% +4h",  235),
+]
+FOLLOWUP_MAX_HOURS = 5  # stop trying to fill after this long
+
 # ─── SHEET SCHEMA ────────────────────────────────────────────────────────────
 
 SHEET_HEADERS = [
-    "Timestamp", "Name", "Symbol", "Address", "Score",
-    "Price (USD)", "Market Cap (USD)", "Liquidity (USD)", "Volume 24h (USD)",
-    "Age (h)", "Buy %", "1h %", "24h %",
-    "Change since first seen %", "Peak % gain",
-    "Green Flags", "Chart URL",
+    "Alert Timestamp",         # A
+    "Name",                    # B
+    "Symbol",                  # C
+    "Address",                 # D
+    "Alert Score",             # E
+    "Alert Price (USD)",       # F
+    "Alert Age (h)",           # G
+    "Has Liquidity",           # H
+    "Alert Market Cap (USD)",  # I
+    "Alert Liquidity (USD)",   # J
+    "Alert Volume 24h (USD)",  # K
+    "Alert Buy %",             # L
+    "Alert 1h %",              # M
+    "Alert 24h %",             # N
+    "Green Flags",             # O
+    "Chart URL",               # P
+    "Price +30m",              # Q
+    "% +30m",                  # R
+    "Price +1h",               # S
+    "% +1h",                   # T
+    "Price +2h",               # U
+    "% +2h",                   # V
+    "Price +4h",               # W
+    "% +4h",                   # X
+    "Peak % gain",             # Y
 ]
 
 SELL_LOG_HEADERS = [
     "Timestamp", "Name", "Symbol", "Address",
-    "Price at sell signal", "Change since first seen %", "Triggers",
+    "Price at sell signal", "Change from alert %", "Triggers",
 ]
 
-def _col(h): return SHEET_HEADERS.index(h)
+def _col(h):
+    return SHEET_HEADERS.index(h)
+
+def _col_letter(idx):
+    """Convert 0-indexed column number to A1 column letter (supports AA, AB...)."""
+    result = ""
+    n = idx + 1
+    while n:
+        n, r = divmod(n - 1, 26)
+        result = chr(65 + r) + result
+    return result
 
 # ─── GOOGLE SHEETS ───────────────────────────────────────────────────────────
 
@@ -86,80 +123,71 @@ def _get_gspread_client():
 
 
 def _ensure_header(ws, expected):
-    """Update header row in place if it doesn't match — never inserts a new row."""
-    current = ws.row_values(1)
-    if current != expected:
+    """Update header row in place — never inserts a new row."""
+    if ws.row_values(1) != expected:
         ws.update("A1", [expected])
         print(f"{Fore.YELLOW}  Header row updated.")
 
 
 def open_sheet():
-    """Open main worksheet once per run. Returns (client, ws, ws_sell, all_rows)."""
+    """Open worksheets once per run. Returns (client, ws, ws_sell, all_rows)."""
     client = _get_gspread_client()
-    if not client:
-        return None, None, None, []
+    if not client: return None, None, None, []
     try:
-        sh     = client.open_by_key(SPREADSHEET_ID)
-        ws     = sh.worksheet(SHEET_NAME)
+        sh  = client.open_by_key(SPREADSHEET_ID)
+        ws  = sh.worksheet(SHEET_NAME)
         _ensure_header(ws, SHEET_HEADERS)
-
-        # Sell log tab — create if missing
         try:
             ws_sell = sh.worksheet("Sell Log")
         except Exception:
             ws_sell = sh.add_worksheet(title="Sell Log", rows=1000, cols=10)
         _ensure_header(ws_sell, SELL_LOG_HEADERS)
-
         return client, ws, ws_sell, ws.get_all_values()
     except Exception as e:
         print(f"{Fore.YELLOW}Sheet open failed: {e}")
         return None, None, None, []
 
 
-def get_first_seen_price(all_rows, address):
+def was_recently_alerted(all_rows, address):
+    """True if this address has an alert row logged within BUY_COOLDOWN_HOURS."""
+    cutoff = datetime.now(CT) - timedelta(hours=BUY_COOLDOWN_HOURS)
+    ts_col   = _col("Alert Timestamp")
+    addr_col = _col("Address")
     for row in all_rows[1:]:
-        if len(row) > _col("Address") and row[_col("Address")] == address:
-            try: return float(row[_col("Price (USD)")])
-            except: pass
-    return None
-
-
-def get_peak_gain(all_rows, address):
-    """Return the highest 'Change since first seen %' ever logged for this address."""
-    best = None
-    for row in all_rows[1:]:
-        if len(row) > _col("Address") and row[_col("Address")] == address:
-            try:
-                val = float(row[_col("Change since first seen %")].replace("%","").replace("+",""))
-                if best is None or val > best:
-                    best = val
-            except: pass
-    return best
-
-
-def was_recently_notified(all_rows, address, hours, ts_col_name="Timestamp"):
-    """True if this address has a row logged within the last `hours` hours."""
-    cutoff = datetime.now(CT) - timedelta(hours=hours)
-    for row in all_rows[1:]:
-        col = SHEET_HEADERS.index(ts_col_name) if ts_col_name in SHEET_HEADERS else 0
-        if len(row) <= _col("Address") or row[_col("Address")] != address: continue
+        if len(row) <= addr_col or row[addr_col] != address: continue
         try:
-            ts = CT.localize(datetime.strptime(row[col], "%Y-%m-%d %H:%M CT"))
+            ts = CT.localize(datetime.strptime(row[ts_col], "%Y-%m-%d %H:%M CT"))
             if ts >= cutoff: return True
         except: pass
     return False
 
 
-def append_to_sheet(ws, all_rows, pair, score, green):
-    """Append a buy-signal row. Updates peak gain if new high."""
+def get_alert_price(all_rows, address):
+    """Return the alert price for the most recent alert row for this address."""
+    ts_col    = _col("Alert Timestamp")
+    addr_col  = _col("Address")
+    price_col = _col("Alert Price (USD)")
+    best_ts, best_price = None, None
+    for row in all_rows[1:]:
+        if len(row) <= addr_col or row[addr_col] != address: continue
+        try:
+            ts = CT.localize(datetime.strptime(row[ts_col], "%Y-%m-%d %H:%M CT"))
+            if best_ts is None or ts > best_ts:
+                best_ts    = ts
+                best_price = float(row[price_col]) if len(row) > price_col and row[price_col] else None
+        except: pass
+    return best_price
+
+
+def log_alert_row(ws, all_rows, pair, score, green):
+    """Log a fresh alert row with all baseline data."""
     try:
         name    = pair.get("baseToken", {}).get("name", "Unknown")
         symbol  = pair.get("baseToken", {}).get("symbol", "???")
         address = pair.get("baseToken", {}).get("address", "")
         price   = pair.get("priceUsd", "")
         mcap    = round(float(pair.get("marketCap", 0) or 0))
-        liq     = round(float(pair.get("liquidity", {}).get("usd", 0) or 0))
-        vol     = round(float(pair.get("volume", {}).get("h24", 0) or 0))
+        liq     = float(pair.get("liquidity", {}).get("usd", 0) or 0)
         created = pair.get("pairCreatedAt", 0)
         age_h   = round((time.time() * 1000 - created) / 3_600_000, 1) if created else ""
         buys    = pair.get("txns", {}).get("h24", {}).get("buys", 0) or 0
@@ -168,37 +196,107 @@ def append_to_sheet(ws, all_rows, pair, score, green):
         p1h     = pair.get("priceChange", {}).get("h1", "")
         p24h    = pair.get("priceChange", {}).get("h24", "")
         dex_url = pair.get("url", f"https://dexscreener.com/solana/{address}")
+        has_liq = "Yes" if liq > 0 else "No"
         ts      = datetime.now(CT).strftime("%Y-%m-%d %H:%M CT")
 
-        fp  = get_first_seen_price(all_rows, address)
-        pch = ""
-        if fp and price:
-            try: pch = f"{round((float(price)-fp)/fp*100,1):+.1f}%"
-            except: pass
-
-        prev_peak = get_peak_gain(all_rows, address)
-        try:    cur_pct = float(pch.replace("%","").replace("+","")) if pch else None
-        except: cur_pct = None
-        if cur_pct is not None:
-            peak = max(filter(None, [prev_peak, cur_pct]))
-        else:
-            peak = prev_peak
-        peak_str = f"{peak:+.1f}%" if peak is not None else ""
-
-        row = [ts, name, symbol, address, score,
-               price, mcap, liq, vol,
-               age_h, buy_pct, p1h, p24h,
-               pch, peak_str,
-               " | ".join(green), dex_url]
+        row = [
+            ts, name, symbol, address, score,
+            price, age_h, has_liq, mcap, round(liq),
+            round(float(pair.get("volume", {}).get("h24", 0) or 0)),
+            buy_pct, p1h, p24h,
+            " | ".join(green), dex_url,
+            "", "", "", "", "", "", "", "", "",  # follow-up cols + peak (empty at alert time)
+        ]
         ws.append_row(row, value_input_option="USER_ENTERED")
         all_rows.append(row)
-        print(f"{Fore.GREEN}  -> Logged: {name} ({symbol})  change={pch}  peak={peak_str}")
+        print(f"{Fore.GREEN}  -> Alert logged: {name} ({symbol})")
     except Exception as e:
         print(f"{Fore.YELLOW}  Sheet write failed: {e}")
 
 
-def log_sell_signal(ws_sell, pair, first_price, signals):
-    """Write a row to the Sell Log tab."""
+def fill_followups(ws, all_rows):
+    """
+    For every alert row, check if any follow-up price columns are due and empty.
+    Batch-fetches prices and updates cells in one API call.
+    """
+    if not all_rows: return
+
+    now      = datetime.now(CT)
+    ts_col   = _col("Alert Timestamp")
+    addr_col = _col("Address")
+    ap_col   = _col("Alert Price (USD)")
+    pk_col   = _col("Peak % gain")
+
+    # Build a map: address -> list of (sheet_row_idx, col_name, pct_col_name)
+    needs = {}
+    for i, row in enumerate(all_rows[1:], start=2):
+        if len(row) <= addr_col: continue
+        try:
+            alert_ts = CT.localize(datetime.strptime(row[ts_col], "%Y-%m-%d %H:%M CT"))
+        except: continue
+
+        elapsed_min = (now - alert_ts).total_seconds() / 60
+        if elapsed_min > FOLLOWUP_MAX_HOURS * 60: continue
+
+        address = row[addr_col]
+        for price_col, pct_col, threshold_min in FOLLOWUP_WINDOWS:
+            pc_idx  = _col(price_col)
+            val     = row[pc_idx] if len(row) > pc_idx else ""
+            if elapsed_min >= threshold_min and not val:
+                needs.setdefault(address, []).append((i, row, price_col, pct_col))
+
+    if not needs:
+        return
+
+    print(f"\n{Fore.CYAN}Filling follow-up prices for {len(needs)} coin(s)...")
+    price_map = _batch_fetch_prices(set(needs.keys()))
+
+    updates = []
+    for address, checks in needs.items():
+        pair          = price_map.get(address)
+        current_price = pair.get("priceUsd", "") if pair else ""
+
+        for row_idx, row, price_col, pct_col in checks:
+            try: alert_price = float(row[ap_col]) if len(row) > ap_col and row[ap_col] else None
+            except: alert_price = None
+
+            pch = ""
+            if alert_price and current_price:
+                try:
+                    pct = round((float(current_price) - alert_price) / alert_price * 100, 1)
+                    pch = f"{pct:+.1f}%"
+                except: pass
+
+            price_letter = _col_letter(_col(price_col))
+            pct_letter   = _col_letter(_col(pct_col))
+            display_price = current_price if current_price else "N/A"
+
+            updates.append({"range": f"{price_letter}{row_idx}", "values": [[display_price]]})
+            updates.append({"range": f"{pct_letter}{row_idx}",   "values": [[pch]]})
+
+            name = row[_col("Name")] if len(row) > _col("Name") else address[:8]
+            print(f"  {Fore.CYAN}{name} {price_col}: ${display_price} {pch}")
+
+            # Update peak gain if this is a new high
+            if pch:
+                try:
+                    pct_val = float(pch.replace("%","").replace("+",""))
+                    cur_peak_str = row[pk_col] if len(row) > pk_col else ""
+                    cur_peak = float(cur_peak_str.replace("%","").replace("+","")) if cur_peak_str else None
+                    if cur_peak is None or pct_val > cur_peak:
+                        pk_letter = _col_letter(pk_col)
+                        updates.append({"range": f"{pk_letter}{row_idx}", "values": [[f"{pct_val:+.1f}%"]]})
+                except: pass
+
+    if updates:
+        try:
+            ws.batch_update(updates)
+            print(f"  {Fore.GREEN}Updated {len(updates)} cells.")
+        except Exception as e:
+            print(f"{Fore.YELLOW}  Follow-up batch update failed: {e}")
+
+
+def log_sell_signal(ws_sell, pair, alert_price, signals):
     if not ws_sell: return
     try:
         name    = pair.get("baseToken", {}).get("name", "Unknown")
@@ -207,11 +305,11 @@ def log_sell_signal(ws_sell, pair, first_price, signals):
         price   = pair.get("priceUsd", "N/A")
         ts      = datetime.now(CT).strftime("%Y-%m-%d %H:%M CT")
         pch     = ""
-        if first_price and price:
-            try: pch = f"{round((float(price)-first_price)/first_price*100,1):+.1f}%"
+        if alert_price and price:
+            try: pch = f"{round((float(price)-alert_price)/alert_price*100,1):+.1f}%"
             except: pass
-        row = [ts, name, symbol, address, price, pch, " | ".join(signals)]
-        ws_sell.append_row(row, value_input_option="USER_ENTERED")
+        ws_sell.append_row([ts, name, symbol, address, price, pch, " | ".join(signals)],
+                           value_input_option="USER_ENTERED")
     except Exception as e:
         print(f"{Fore.YELLOW}  Sell log write failed: {e}")
 
@@ -229,55 +327,43 @@ def _pushover(title, message, url, url_title, priority=0):
         print(f"{Fore.YELLOW}  Pushover failed: {e}")
 
 
-def send_buy_alert(pair, score, green, pch=""):
+def send_buy_alert(pair, score, green):
     name    = pair.get("baseToken", {}).get("name", "Unknown")
     symbol  = pair.get("baseToken", {}).get("symbol", "???")
     address = pair.get("baseToken", {}).get("address", "")
     price   = pair.get("priceUsd", "N/A")
     dex_url = pair.get("url", f"https://dexscreener.com/solana/{address}")
-    change  = f"  Change since first seen: {pch}\n" if pch else ""
     title   = f"BUY: {name} ({symbol}) {score}/8"
-    msg     = (f"Price: ${price}\n{change}"
-               f"Contract: {address}\n"
+    msg     = (f"Price: ${price}\nContract: {address}\n"
                "(copy -> paste into Phantom)\n\n"
                + "\n".join(f"* {g}" for g in green))
     _pushover(title, msg, dex_url, "View Chart")
     print(f"{Fore.GREEN}  -> Buy alert sent for {name}")
 
-
-def send_sell_alert(name, symbol, address, current_price, first_price, signals, dex_url):
-    pch = ""
-    if first_price and current_price:
-        try: pch = f"  ({round((float(current_price)-first_price)/first_price*100,1):+.1f}% from first seen)\n"
-        except: pass
-    title = f"SELL: {name} ({symbol})"
-    msg   = (f"Price: ${current_price}\n{pch}"
-             f"Contract: {address}\n\n"
-             + "\n".join(f"! {s}" for s in signals))
-    _pushover(title, msg, dex_url, "View Chart", priority=1)
-    print(f"{Fore.RED}  -> Sell alert sent for {name}")
-
 # ─── PORTFOLIO MONITOR ───────────────────────────────────────────────────────
 
 def monitor_portfolio(ws, ws_sell, all_rows):
-    """Re-check coins from the last 24h for sell signals."""
+    """Check coins from the last 24h for sell signals (logs to sheet, no Pushover)."""
     if not all_rows: return
     print(f"\n{Fore.CYAN}Checking portfolio for sell signals...")
-    cutoff = datetime.now(CT) - timedelta(hours=SELL_MONITOR_HOURS)
+    cutoff   = datetime.now(CT) - timedelta(hours=SELL_MONITOR_HOURS)
+    ts_col   = _col("Alert Timestamp")
+    addr_col = _col("Address")
     seen, to_check = set(), []
+
     for row in all_rows[1:]:
-        if len(row) <= _col("Address"): continue
-        addr = row[_col("Address")]
+        if len(row) <= addr_col: continue
+        addr = row[addr_col]
         if addr in seen: continue
         seen.add(addr)
         try:
-            ts = CT.localize(datetime.strptime(row[_col("Timestamp")], "%Y-%m-%d %H:%M CT"))
+            ts = CT.localize(datetime.strptime(row[ts_col], "%Y-%m-%d %H:%M CT"))
             if ts >= cutoff:
                 to_check.append({
                     "address":     addr,
                     "name":        row[_col("Name")],
                     "symbol":      row[_col("Symbol")],
-                    "first_price": get_first_seen_price(all_rows, addr),
+                    "alert_price": get_alert_price(all_rows, addr),
                 })
         except: pass
 
@@ -288,71 +374,73 @@ def monitor_portfolio(ws, ws_sell, all_rows):
     for coin in to_check:
         pair = get_pair_by_address(coin["address"])
         if not pair: continue
-
         score, green, red = score_token(pair)
         p1h     = float(pair.get("priceChange", {}).get("h1", 0) or 0)
         buys    = pair.get("txns", {}).get("h24", {}).get("buys", 0) or 0
         sells   = pair.get("txns", {}).get("h24", {}).get("sells", 0) or 0
         buy_pct = round(buys / (buys + sells) * 100) if (buys + sells) > 0 else 50
-
         signals = []
         if score   <= SELL_TRIGGERS["max_score"]:           signals.append(f"Score collapsed to {score}/8")
         if p1h     <= SELL_TRIGGERS["min_price_change_1h"]: signals.append(f"Dumping {p1h:+.1f}% in 1h")
         if buy_pct <= SELL_TRIGGERS["max_buy_pct"]:         signals.append(f"Sell pressure: only {buy_pct}% buys")
 
         cur = pair.get("priceUsd", "N/A")
-        dex = pair.get("url", f"https://dexscreener.com/solana/{coin['address']}")
-
         if signals:
-            log_sell_signal(ws_sell, pair, coin["first_price"], signals)
-            print(f"  {Fore.RED}{coin['name']}: sell signals logged to sheet (Pushover off)")
+            log_sell_signal(ws_sell, pair, coin["alert_price"], signals)
+            print(f"  {Fore.RED}{coin['name']}: sell signals logged (Pushover off)")
         else:
-            fp  = coin["first_price"]
-            pch = f"  ({round((float(cur)-fp)/fp*100,1):+.1f}% from first seen)" if fp and cur not in ("N/A","") else ""
+            ap = coin["alert_price"]
+            pch = ""
+            if ap and cur not in ("N/A", ""):
+                try: pch = f"  ({round((float(cur)-ap)/ap*100,1):+.1f}% from alert)"
+                except: pass
             print(f"  {Fore.GREEN}{coin['name']}: ${cur} score {score}/8 holding{pch}")
 
 # ─── DEXSCREENER ─────────────────────────────────────────────────────────────
 
 DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex"
 
+
 def get_new_solana_pairs():
-    """Fetch from both token profiles and top boosts for broader coverage (~50+ coins)."""
+    """Fetch from token profiles + top boosts for ~50 coins per run."""
     addrs = set()
+    for url in ["https://api.dexscreener.com/token-profiles/latest/v1",
+                "https://api.dexscreener.com/token-boosts/top/v1"]:
+        try:
+            r = requests.get(url, timeout=10); r.raise_for_status()
+            for p in r.json():
+                if p.get("chainId") == "solana": addrs.add(p["tokenAddress"])
+        except Exception as e:
+            print(f"{Fore.RED}Fetch error ({url}): {e}")
+    if not addrs: return []
+    return _batch_fetch_pairs(list(addrs))
 
-    # Source 1: latest token profiles
-    try:
-        r = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=10)
-        r.raise_for_status()
-        for p in r.json():
-            if p.get("chainId") == "solana": addrs.add(p["tokenAddress"])
-    except Exception as e:
-        print(f"{Fore.RED}Profiles fetch error: {e}")
 
-    # Source 2: top boosted tokens
-    try:
-        r = requests.get("https://api.dexscreener.com/token-boosts/top/v1", timeout=10)
-        r.raise_for_status()
-        for p in r.json():
-            if p.get("chainId") == "solana": addrs.add(p["tokenAddress"])
-    except Exception as e:
-        print(f"{Fore.RED}Boosts fetch error: {e}")
-
-    if not addrs:
-        return []
-
-    # Batch fetch pair data (max 30 per request)
-    addr_list = list(addrs)
-    all_pairs = []
+def _batch_fetch_pairs(addr_list):
+    """Fetch pair data for a list of addresses (30 per request)."""
+    pairs = []
     for i in range(0, len(addr_list), 30):
         batch = addr_list[i:i+30]
         try:
             r = requests.get(f"{DEXSCREENER_BASE}/tokens/{','.join(batch)}", timeout=15)
             r.raise_for_status()
-            all_pairs.extend(r.json().get("pairs", []) or [])
+            pairs.extend(r.json().get("pairs", []) or [])
         except Exception as e:
-            print(f"{Fore.RED}Pairs fetch error (batch {i}): {e}")
+            print(f"{Fore.RED}Batch pairs fetch error: {e}")
+    return pairs
 
-    return all_pairs
+
+def _batch_fetch_prices(addresses):
+    """Fetch best Solana pair for each address. Returns dict of address -> pair."""
+    result = {}
+    pairs  = _batch_fetch_pairs(list(addresses))
+    for pair in pairs:
+        if pair.get("chainId") != "solana": continue
+        addr = pair.get("baseToken", {}).get("address", "")
+        liq  = float(pair.get("liquidity", {}).get("usd", 0) or 0)
+        if addr not in result or liq > float(result[addr].get("liquidity", {}).get("usd", 0) or 0):
+            result[addr] = pair
+    return result
 
 
 def get_pair_by_address(token_address):
@@ -364,13 +452,11 @@ def get_pair_by_address(token_address):
     except Exception as e:
         print(f"{Fore.RED}DexScreener error: {e}"); return None
 
-# ─── SCORING (8 criteria — Solscan removed) ──────────────────────────────────
+# ─── SCORING (8 criteria) ────────────────────────────────────────────────────
 
 def is_junk_token(pair):
-    """Filter out tokens with garbage names/symbols."""
     name   = pair.get("baseToken", {}).get("name", "")
     symbol = pair.get("baseToken", {}).get("symbol", "")
-    # Purely numeric names, empty names, or suspiciously short symbols
     if not name or not symbol: return True
     if re.fullmatch(r"[\d\s]+", name): return True
     if re.fullmatch(r"[\d\s]+", symbol): return True
@@ -464,18 +550,11 @@ def analyze_token(address):
     display_result(pair, score, green, red)
     if score >= PUSHOVER_ALERT_SCORE:
         _, ws, ws_sell, all_rows = open_sheet()
-        pch = ""
-        if ws:
-            fp = get_first_seen_price(all_rows, address)
-            price = pair.get("priceUsd", "")
-            if fp and price:
-                try: pch = f"{round((float(price)-fp)/fp*100,1):+.1f}%"
-                except: pass
-            append_to_sheet(ws, all_rows, pair, score, green)
-        if not was_recently_notified(all_rows, address, BUY_COOLDOWN_HOURS):
-            send_buy_alert(pair, score, green, pch)
-        else:
-            print(f"  {Fore.YELLOW}Buy cooldown active -- skipping Pushover")
+        if ws and not was_recently_alerted(all_rows, address):
+            log_alert_row(ws, all_rows, pair, score, green)
+            send_buy_alert(pair, score, green)
+        elif ws:
+            print(f"  {Fore.YELLOW}Buy cooldown active -- skipping")
 
 
 def watch_token(address):
@@ -485,27 +564,27 @@ def watch_token(address):
 
 
 def scan_new_tokens():
-    # Open sheet once for the whole run
     _, ws, ws_sell, all_rows = open_sheet()
 
-    # 1. Portfolio monitor
+    # 1. Fill follow-up prices for existing alert rows
+    if ws:
+        fill_followups(ws, all_rows)
+
+    # 2. Check portfolio for sell signals
     if ws:
         monitor_portfolio(ws, ws_sell, all_rows)
 
-    # 2. Scan for new coins
+    # 3. Scan for new coins
     print(f"\n{Fore.CYAN}Scanning for new Solana meme coins...")
     pairs = get_new_solana_pairs()
     if not pairs: print(f"{Fore.RED}No pairs returned."); return
 
-    # Deduplicate by address, filter junk, score
-    seen_addrs = set()
-    results = []
+    seen_addrs, results = set(), []
     for pair in pairs:
         if pair.get("chainId") != "solana": continue
         addr = pair.get("baseToken", {}).get("address", "")
-        if addr in seen_addrs: continue
+        if addr in seen_addrs or is_junk_token(pair): continue
         seen_addrs.add(addr)
-        if is_junk_token(pair): continue
         score, green, red = score_token(pair)
         results.append((score, pair, green, red))
 
@@ -518,16 +597,9 @@ def scan_new_tokens():
         display_result(pair, score, green, red)
         if score >= PUSHOVER_ALERT_SCORE:
             addr = pair.get("baseToken", {}).get("address", "")
-            pch  = ""
-            if ws:
-                fp    = get_first_seen_price(all_rows, addr)
-                price = pair.get("priceUsd", "")
-                if fp and price:
-                    try: pch = f"{round((float(price)-fp)/fp*100,1):+.1f}%"
-                    except: pass
-                append_to_sheet(ws, all_rows, pair, score, green)
-            if not was_recently_notified(all_rows, addr, BUY_COOLDOWN_HOURS):
-                send_buy_alert(pair, score, green, pch)
+            if not was_recently_alerted(all_rows, addr):
+                if ws: log_alert_row(ws, all_rows, pair, score, green)
+                send_buy_alert(pair, score, green)
             else:
                 print(f"  {Fore.YELLOW}Buy cooldown active -- skipping Pushover")
 
