@@ -125,7 +125,7 @@ def _get_gspread_client():
 def _ensure_header(ws, expected):
     """Update header row in place — never inserts a new row."""
     if ws.row_values(1) != expected:
-        ws.update("A1", [expected])
+        ws.update([expected], "A1")
         print(f"{Fore.YELLOW}  Header row updated.")
 
 
