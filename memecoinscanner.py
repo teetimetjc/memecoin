@@ -61,6 +61,7 @@ WATCH_INTERVAL_SECONDS = 60
 # Follow-up windows: (price_col, pct_col, min_minutes_elapsed)
 # Generous lower bound so cron timing variance doesn't cause missed windows
 FOLLOWUP_WINDOWS = [
+    ("Price +15m", "% +15m",  12),
     ("Price +30m", "% +30m",  25),
     ("Price +1h",  "% +1h",   55),
     ("Price +2h",  "% +2h",  115),
@@ -90,17 +91,19 @@ SHEET_HEADERS = [
     "Rugcheck Risk",           # Q
     "Top 10 Holders %",        # R
     "LP Locked",               # S
-    "Price +30m",              # T
-    "% +30m",                  # U
-    "Price +1h",               # V
-    "% +1h",                   # W
-    "Price +2h",               # X
-    "% +2h",                   # Y
-    "Price +4h",               # Z
-    "% +4h",                   # AA
-    "Peak % gain",             # AB
-    "Rugged?",                 # AC
-    "Auto Stop-Loss?",         # AD
+    "Price +15m",              # T
+    "% +15m",                  # U
+    "Price +30m",              # V
+    "% +30m",                  # W
+    "Price +1h",               # X
+    "% +1h",                   # Y
+    "Price +2h",               # Z
+    "% +2h",                   # AA
+    "Price +4h",               # AB
+    "% +4h",                   # AC
+    "Peak % gain",             # AD
+    "Rugged?",                 # AE
+    "Auto Stop-Loss?",         # AF
 ]
 
 SELL_LOG_HEADERS = [
@@ -222,17 +225,17 @@ def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
 
         rug_score, top10_pct, lp_locked = rugcheck_data if rugcheck_data else ("", "", "")
 
-        # 30 columns: A-AD
+        # 32 columns: A-AF
         row = [
             ts, name, symbol, address, score,
             price, age_h, has_liq, mcap, round(liq),
             round(float(pair.get("volume", {}).get("h24", 0) or 0)),
             buy_pct, p1h, p24h,
             " | ".join(green), dex_url,
-            rug_score, top10_pct, lp_locked,   # Q R S
-            "", "", "", "", "", "", "", "",      # T-AA  follow-up cols (empty at alert time)
-            "",                                  # AB peak % gain
-            "", "",                              # AC AD rugged / stop-loss
+            rug_score, top10_pct, lp_locked,       # Q R S
+            "", "", "", "", "", "", "", "", "", "",  # T-AC  follow-up cols (empty at alert time)
+            "",                                      # AD peak % gain
+            "", "",                                  # AE AF rugged / stop-loss
         ]
         ws.append_row(row, value_input_option="USER_ENTERED")
         all_rows.append(row)
@@ -317,16 +320,19 @@ def fill_followups(ws, all_rows):
                         updates.append({"range": f"{pk_letter}{row_idx}", "values": [[f"{pct_val:+.1f}%"]]})
                 except: pass
 
-            # Rug / stop-loss detection — only when +30m is first filled
-            if price_col == "Price +30m" and pct_val is not None:
-                rug_letter = _col_letter(rug_col)
-                sl_letter  = _col_letter(sl_col)
-                if pct_val <= RUG_THRESHOLD_PCT:
+            # Rug / stop-loss detection — trigger on +15m or +30m (whichever fills first)
+            # Only write flag if not already set (don't overwrite +15m flag at +30m)
+            if price_col in ("Price +15m", "Price +30m") and pct_val is not None:
+                rug_letter  = _col_letter(rug_col)
+                sl_letter   = _col_letter(sl_col)
+                cur_rug_val = row[rug_col] if len(row) > rug_col else ""
+                cur_sl_val  = row[sl_col]  if len(row) > sl_col  else ""
+                if pct_val <= RUG_THRESHOLD_PCT and not cur_rug_val:
                     updates.append({"range": f"{rug_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
-                    print(f"  {Fore.RED}*** RUG DETECTED: {name} dropped {pch} in 30 min")
-                if pct_val <= STOPLOSS_THRESHOLD:
+                    print(f"  {Fore.RED}*** RUG DETECTED: {name} dropped {pch} in {price_col}")
+                if pct_val <= STOPLOSS_THRESHOLD and not cur_sl_val:
                     updates.append({"range": f"{sl_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
-                    print(f"  {Fore.YELLOW}  Stop-loss triggered: {name} {pch}")
+                    print(f"  {Fore.YELLOW}  Stop-loss triggered: {name} {pch} at {price_col}")
 
     if updates:
         try:
