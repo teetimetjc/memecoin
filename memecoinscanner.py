@@ -46,10 +46,10 @@ THRESHOLDS = {
 # Hard filters — ALL must pass before an alert is sent / row is logged
 # These are separate from scoring and act as a gate on top of it
 ALERT_FILTERS = {
-    "min_buy_pct":       75,        # buy pressure must exceed 75%
-    "min_volume_usd":    1_000_000, # 24h volume must exceed $1M
-    "require_liquidity": True,      # liquidity must be > 0
-    # Age rule: must be < 2h  OR  between 10-50h  (checked in passes_alert_filter)
+    "min_buy_pct":       60,      # buy pressure must exceed 60%
+    "min_volume_usd":    500_000, # 24h volume must exceed $500k
+    "require_liquidity": True,    # liquidity must be > 0
+    # Age rule disabled for now — too restrictive while collecting data
 }
 
 # Rug / stop-loss thresholds (applied when +30m price is filled)
@@ -589,13 +589,9 @@ def passes_alert_filter(pair):
     if buy_pct <= ALERT_FILTERS["min_buy_pct"]:
         failed.append(f"Buy pressure {buy_pct:.0f}% <= {ALERT_FILTERS['min_buy_pct']}%")
     if vol < ALERT_FILTERS["min_volume_usd"]:
-        failed.append(f"Volume ${vol:,.0f} < $1M")
+        failed.append(f"Volume ${vol:,.0f} < ${ALERT_FILTERS['min_volume_usd']:,.0f}")
     if ALERT_FILTERS["require_liquidity"] and liq <= 0:
         failed.append("No liquidity")
-    if age_h is not None:
-        ok_age = age_h < 2 or (10 <= age_h <= 50)
-        if not ok_age:
-            failed.append(f"Age {age_h:.1f}h not in (<2h or 10-50h)")
 
     return (len(failed) == 0), failed
 
