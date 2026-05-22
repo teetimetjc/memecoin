@@ -31,6 +31,7 @@ SELL_TRIGGERS = {
     "max_buy_pct":         40,
 }
 
+# Scoring thresholds (8 criteria)
 THRESHOLDS = {
     "min_liquidity_usd":   10_000,
     "max_liquidity_usd":   5_000_000,
@@ -42,10 +43,23 @@ THRESHOLDS = {
     "min_score":           5,
 }
 
+# Hard filters — ALL must pass before an alert is sent / row is logged
+# These are separate from scoring and act as a gate on top of it
+ALERT_FILTERS = {
+    "min_buy_pct":       75,        # buy pressure must exceed 75%
+    "min_volume_usd":    1_000_000, # 24h volume must exceed $1M
+    "require_liquidity": True,      # liquidity must be > 0
+    # Age rule: must be < 2h  OR  between 10-50h  (checked in passes_alert_filter)
+}
+
+# Rug / stop-loss thresholds (applied when +30m price is filled)
+RUG_THRESHOLD_PCT  = -50  # flag "Rugged?" if +30m drop >= 50%
+STOPLOSS_THRESHOLD = -25  # flag "Auto Stop-Loss?" if +30m drop >= 25%
+
 WATCH_INTERVAL_SECONDS = 60
 
 # Follow-up windows: (price_col, pct_col, min_minutes_elapsed)
-# Generous lower bound so cron timing variations don't cause missed windows
+# Generous lower bound so cron timing variance doesn't cause missed windows
 FOLLOWUP_WINDOWS = [
     ("Price +30m", "% +30m",  25),
     ("Price +1h",  "% +1h",   55),
@@ -73,15 +87,20 @@ SHEET_HEADERS = [
     "Alert 24h %",             # N
     "Green Flags",             # O
     "Chart URL",               # P
-    "Price +30m",              # Q
-    "% +30m",                  # R
-    "Price +1h",               # S
-    "% +1h",                   # T
-    "Price +2h",               # U
-    "% +2h",                   # V
-    "Price +4h",               # W
-    "% +4h",                   # X
-    "Peak % gain",             # Y
+    "Rugcheck Risk",           # Q
+    "Top 10 Holders %",        # R
+    "LP Locked",               # S
+    "Price +30m",              # T
+    "% +30m",                  # U
+    "Price +1h",               # V
+    "% +1h",                   # W
+    "Price +2h",               # X
+    "% +2h",                   # Y
+    "Price +4h",               # Z
+    "% +4h",                   # AA
+    "Peak % gain",             # AB
+    "Rugged?",                 # AC
+    "Auto Stop-Loss?",         # AD
 ]
 
 SELL_LOG_HEADERS = [
@@ -89,11 +108,13 @@ SELL_LOG_HEADERS = [
     "Price at sell signal", "Change from alert %", "Triggers",
 ]
 
+
 def _col(h):
     return SHEET_HEADERS.index(h)
 
+
 def _col_letter(idx):
-    """Convert 0-indexed column number to A1 column letter (supports AA, AB...)."""
+    """Convert 0-indexed column number to A1 column letter (handles AA, AB...)."""
     result = ""
     n = idx + 1
     while n:
@@ -150,7 +171,7 @@ def open_sheet():
 
 def was_recently_alerted(all_rows, address):
     """True if this address has an alert row logged within BUY_COOLDOWN_HOURS."""
-    cutoff = datetime.now(CT) - timedelta(hours=BUY_COOLDOWN_HOURS)
+    cutoff   = datetime.now(CT) - timedelta(hours=BUY_COOLDOWN_HOURS)
     ts_col   = _col("Alert Timestamp")
     addr_col = _col("Address")
     for row in all_rows[1:]:
@@ -179,8 +200,8 @@ def get_alert_price(all_rows, address):
     return best_price
 
 
-def log_alert_row(ws, all_rows, pair, score, green):
-    """Log a fresh alert row with all baseline data."""
+def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
+    """Log a fresh alert row with all baseline data including rugcheck fields."""
     try:
         name    = pair.get("baseToken", {}).get("name", "Unknown")
         symbol  = pair.get("baseToken", {}).get("symbol", "???")
@@ -199,13 +220,19 @@ def log_alert_row(ws, all_rows, pair, score, green):
         has_liq = "Yes" if liq > 0 else "No"
         ts      = datetime.now(CT).strftime("%Y-%m-%d %H:%M CT")
 
+        rug_score, top10_pct, lp_locked = rugcheck_data if rugcheck_data else ("", "", "")
+
+        # 30 columns: A-AD
         row = [
             ts, name, symbol, address, score,
             price, age_h, has_liq, mcap, round(liq),
             round(float(pair.get("volume", {}).get("h24", 0) or 0)),
             buy_pct, p1h, p24h,
             " | ".join(green), dex_url,
-            "", "", "", "", "", "", "", "", "",  # follow-up cols + peak (empty at alert time)
+            rug_score, top10_pct, lp_locked,   # Q R S
+            "", "", "", "", "", "", "", "",      # T-AA  follow-up cols (empty at alert time)
+            "",                                  # AB peak % gain
+            "", "",                              # AC AD rugged / stop-loss
         ]
         ws.append_row(row, value_input_option="USER_ENTERED")
         all_rows.append(row)
@@ -217,7 +244,8 @@ def log_alert_row(ws, all_rows, pair, score, green):
 def fill_followups(ws, all_rows):
     """
     For every alert row, check if any follow-up price columns are due and empty.
-    Batch-fetches prices and updates cells in one API call.
+    Also flags rugged / stop-loss conditions when the +30m column is first filled.
+    Batch-fetches prices and updates all cells in one API call.
     """
     if not all_rows: return
 
@@ -226,8 +254,9 @@ def fill_followups(ws, all_rows):
     addr_col = _col("Address")
     ap_col   = _col("Alert Price (USD)")
     pk_col   = _col("Peak % gain")
+    rug_col  = _col("Rugged?")
+    sl_col   = _col("Auto Stop-Loss?")
 
-    # Build a map: address -> list of (sheet_row_idx, col_name, pct_col_name)
     needs = {}
     for i, row in enumerate(all_rows[1:], start=2):
         if len(row) <= addr_col: continue
@@ -240,8 +269,8 @@ def fill_followups(ws, all_rows):
 
         address = row[addr_col]
         for price_col, pct_col, threshold_min in FOLLOWUP_WINDOWS:
-            pc_idx  = _col(price_col)
-            val     = row[pc_idx] if len(row) > pc_idx else ""
+            pc_idx = _col(price_col)
+            val    = row[pc_idx] if len(row) > pc_idx else ""
             if elapsed_min >= threshold_min and not val:
                 needs.setdefault(address, []).append((i, row, price_col, pct_col))
 
@@ -260,11 +289,12 @@ def fill_followups(ws, all_rows):
             try: alert_price = float(row[ap_col]) if len(row) > ap_col and row[ap_col] else None
             except: alert_price = None
 
-            pch = ""
+            pch     = ""
+            pct_val = None
             if alert_price and current_price:
                 try:
-                    pct = round((float(current_price) - alert_price) / alert_price * 100, 1)
-                    pch = f"{pct:+.1f}%"
+                    pct_val = round((float(current_price) - alert_price) / alert_price * 100, 1)
+                    pch     = f"{pct_val:+.1f}%"
                 except: pass
 
             price_letter = _col_letter(_col(price_col))
@@ -278,15 +308,25 @@ def fill_followups(ws, all_rows):
             print(f"  {Fore.CYAN}{name} {price_col}: ${display_price} {pch}")
 
             # Update peak gain if this is a new high
-            if pch:
+            if pct_val is not None:
                 try:
-                    pct_val = float(pch.replace("%","").replace("+",""))
                     cur_peak_str = row[pk_col] if len(row) > pk_col else ""
                     cur_peak = float(cur_peak_str.replace("%","").replace("+","")) if cur_peak_str else None
                     if cur_peak is None or pct_val > cur_peak:
                         pk_letter = _col_letter(pk_col)
                         updates.append({"range": f"{pk_letter}{row_idx}", "values": [[f"{pct_val:+.1f}%"]]})
                 except: pass
+
+            # Rug / stop-loss detection — only when +30m is first filled
+            if price_col == "Price +30m" and pct_val is not None:
+                rug_letter = _col_letter(rug_col)
+                sl_letter  = _col_letter(sl_col)
+                if pct_val <= RUG_THRESHOLD_PCT:
+                    updates.append({"range": f"{rug_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
+                    print(f"  {Fore.RED}*** RUG DETECTED: {name} dropped {pch} in 30 min")
+                if pct_val <= STOPLOSS_THRESHOLD:
+                    updates.append({"range": f"{sl_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
+                    print(f"  {Fore.YELLOW}  Stop-loss triggered: {name} {pch}")
 
     if updates:
         try:
@@ -313,6 +353,65 @@ def log_sell_signal(ws_sell, pair, alert_price, signals):
     except Exception as e:
         print(f"{Fore.YELLOW}  Sell log write failed: {e}")
 
+# ─── RUGCHECK ────────────────────────────────────────────────────────────────
+
+def get_rugcheck_data(address):
+    """
+    Fetch rugcheck.xyz risk data for a Solana token.
+    Returns (risk_score_str, top10_holders_pct_str, lp_locked_str).
+    All strings — empty string on failure.
+    """
+    try:
+        url = f"https://api.rugcheck.xyz/v1/tokens/{address}/report/summary"
+        r   = requests.get(url, timeout=8)
+        if r.status_code == 404:
+            return "Not indexed", "", ""
+        r.raise_for_status()
+        data = r.json()
+
+        # Risk score (higher = riskier; rugcheck uses 0-65535 scale)
+        risk_raw = data.get("score", "")
+        if isinstance(risk_raw, (int, float)):
+            if risk_raw < 5_000:   risk_label = f"{risk_raw} (Low)"
+            elif risk_raw < 20_000: risk_label = f"{risk_raw} (Med)"
+            else:                   risk_label = f"{risk_raw} (HIGH)"
+        else:
+            risk_label = str(risk_raw) if risk_raw != "" else ""
+
+        # Top 10 holders % — pct field is 0–1 fraction
+        top_holders = data.get("topHolders", [])
+        if top_holders:
+            raw_sum = sum(h.get("pct", 0) for h in top_holders[:10])
+            # Detect whether pct is already in 0-100 range or 0-1
+            if raw_sum > 1.5:
+                top10_str = f"{raw_sum:.1f}%"
+            else:
+                top10_str = f"{raw_sum * 100:.1f}%"
+        else:
+            top10_str = ""
+
+        # LP locked — check markets array
+        lp_locked_str = ""
+        markets = data.get("markets", [])
+        if markets:
+            lp = markets[0].get("lp", {})
+            if isinstance(lp, dict):
+                locked     = lp.get("lpLocked", False)
+                locked_pct = lp.get("lpLockedPct", 0) or 0
+                lp_locked_str = f"Yes ({locked_pct:.0f}%)" if locked else "No"
+        # Fallback: scan risks array for LP-related flags
+        if not lp_locked_str:
+            risks = data.get("risks", [])
+            lp_risk = next((r for r in risks if "liquidity" in r.get("name","").lower()), None)
+            if lp_risk:
+                lp_locked_str = "No" if lp_risk.get("level","") in ("warn","danger") else "Yes"
+
+        return risk_label, top10_str, lp_locked_str
+
+    except Exception as e:
+        print(f"  {Fore.YELLOW}Rugcheck failed ({address[:8]}...): {e}")
+        return "", "", ""
+
 # ─── PUSHOVER ────────────────────────────────────────────────────────────────
 
 def _pushover(title, message, url, url_title, priority=0):
@@ -327,16 +426,25 @@ def _pushover(title, message, url, url_title, priority=0):
         print(f"{Fore.YELLOW}  Pushover failed: {e}")
 
 
-def send_buy_alert(pair, score, green):
+def send_buy_alert(pair, score, green, rugcheck_data=None):
     name    = pair.get("baseToken", {}).get("name", "Unknown")
     symbol  = pair.get("baseToken", {}).get("symbol", "???")
     address = pair.get("baseToken", {}).get("address", "")
     price   = pair.get("priceUsd", "N/A")
     dex_url = pair.get("url", f"https://dexscreener.com/solana/{address}")
     title   = f"BUY: {name} ({symbol}) {score}/8"
-    msg     = (f"Price: ${price}\nContract: {address}\n"
-               "(copy -> paste into Phantom)\n\n"
-               + "\n".join(f"* {g}" for g in green))
+
+    rug_lines = ""
+    if rugcheck_data:
+        rug_score, top10, lp = rugcheck_data
+        rug_lines = (f"\nRugcheck: {rug_score}" if rug_score else "") + \
+                    (f"\nTop 10: {top10}" if top10 else "") + \
+                    (f"\nLP Locked: {lp}" if lp else "")
+
+    msg = (f"Price: ${price}\nContract: {address}\n"
+           "(copy -> paste into Phantom)\n"
+           + rug_lines + "\n\n"
+           + "\n".join(f"* {g}" for g in green))
     _pushover(title, msg, dex_url, "View Chart")
     print(f"{Fore.GREEN}  -> Buy alert sent for {name}")
 
@@ -389,7 +497,7 @@ def monitor_portfolio(ws, ws_sell, all_rows):
             log_sell_signal(ws_sell, pair, coin["alert_price"], signals)
             print(f"  {Fore.RED}{coin['name']}: sell signals logged (Pushover off)")
         else:
-            ap = coin["alert_price"]
+            ap  = coin["alert_price"]
             pch = ""
             if ap and cur not in ("N/A", ""):
                 try: pch = f"  ({round((float(cur)-ap)/ap*100,1):+.1f}% from alert)"
@@ -461,6 +569,35 @@ def is_junk_token(pair):
     if re.fullmatch(r"[\d\s]+", name): return True
     if re.fullmatch(r"[\d\s]+", symbol): return True
     return False
+
+
+def passes_alert_filter(pair):
+    """
+    Hard gate applied before logging / sending Pushover.
+    Returns (passed: bool, reasons: list[str]).
+    All conditions must pass.
+    """
+    buys  = pair.get("txns", {}).get("h24", {}).get("buys", 0) or 0
+    sells = pair.get("txns", {}).get("h24", {}).get("sells", 0) or 0
+    buy_pct = buys / (buys + sells) * 100 if (buys + sells) > 0 else 0
+    vol     = float(pair.get("volume", {}).get("h24", 0) or 0)
+    liq     = float(pair.get("liquidity", {}).get("usd", 0) or 0)
+    created = pair.get("pairCreatedAt", 0) or 0
+    age_h   = (time.time() * 1000 - created) / 3_600_000 if created else None
+
+    failed = []
+    if buy_pct <= ALERT_FILTERS["min_buy_pct"]:
+        failed.append(f"Buy pressure {buy_pct:.0f}% <= {ALERT_FILTERS['min_buy_pct']}%")
+    if vol < ALERT_FILTERS["min_volume_usd"]:
+        failed.append(f"Volume ${vol:,.0f} < $1M")
+    if ALERT_FILTERS["require_liquidity"] and liq <= 0:
+        failed.append("No liquidity")
+    if age_h is not None:
+        ok_age = age_h < 2 or (10 <= age_h <= 50)
+        if not ok_age:
+            failed.append(f"Age {age_h:.1f}h not in (<2h or 10-50h)")
+
+    return (len(failed) == 0), failed
 
 
 def score_token(pair):
@@ -549,10 +686,15 @@ def analyze_token(address):
     score, green, red = score_token(pair)
     display_result(pair, score, green, red)
     if score >= PUSHOVER_ALERT_SCORE:
+        passed, reasons = passes_alert_filter(pair)
+        if not passed:
+            print(f"  {Fore.YELLOW}Hard filter blocked: {'; '.join(reasons)}")
+            return
         _, ws, ws_sell, all_rows = open_sheet()
         if ws and not was_recently_alerted(all_rows, address):
-            log_alert_row(ws, all_rows, pair, score, green)
-            send_buy_alert(pair, score, green)
+            rug = get_rugcheck_data(address)
+            log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=rug)
+            send_buy_alert(pair, score, green, rugcheck_data=rug)
         elif ws:
             print(f"  {Fore.YELLOW}Buy cooldown active -- skipping")
 
@@ -593,15 +735,28 @@ def scan_new_tokens():
     print(f"\nFound {len(qualifying)} tokens scoring {THRESHOLDS['min_score']}+/8 "
           f"out of {len(results)} scanned.\n")
 
+    alerted = 0
     for score, pair, green, red in qualifying[:10]:
         display_result(pair, score, green, red)
         if score >= PUSHOVER_ALERT_SCORE:
             addr = pair.get("baseToken", {}).get("address", "")
-            if not was_recently_alerted(all_rows, addr):
-                if ws: log_alert_row(ws, all_rows, pair, score, green)
-                send_buy_alert(pair, score, green)
-            else:
+            passed, reasons = passes_alert_filter(pair)
+            if not passed:
+                print(f"  {Fore.YELLOW}Hard filter blocked: {'; '.join(reasons)}")
+                continue
+            if was_recently_alerted(all_rows, addr):
                 print(f"  {Fore.YELLOW}Buy cooldown active -- skipping Pushover")
+                continue
+            rug = get_rugcheck_data(addr)
+            if ws:
+                log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=rug)
+            send_buy_alert(pair, score, green, rugcheck_data=rug)
+            alerted += 1
+
+    if alerted == 0:
+        print(f"\n{Fore.YELLOW}No coins passed hard filters this run.")
+    else:
+        print(f"\n{Fore.GREEN}{alerted} alert(s) sent this run.")
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
