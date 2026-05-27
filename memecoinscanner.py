@@ -69,6 +69,28 @@ FOLLOWUP_WINDOWS = [
 ]
 FOLLOWUP_MAX_HOURS = 5  # stop trying to fill after this long
 
+DIP_SHEET_NAME  = "Dip Watch"
+DIP_ALERT_SCORE = 5   # minimum score to alert (out of 7 for recovery, 6 for pullback)
+
+DIP_RECOVERY_THRESHOLDS = {
+    "min_drop_1h":        -60,    # don't chase crashes below -60%
+    "max_drop_1h":        -25,    # must have dropped at least 25%
+    "min_liquidity_usd":  10_000,
+    "min_volume_h1_usd":  10_000,
+    "min_volume_24h_usd": 30_000,
+    "min_buy_pct":         50,
+    "min_age_hours":        6,
+}
+
+PUMP_PULLBACK_THRESHOLDS = {
+    "min_pump_24h":       100,    # must have pumped 100%+ in 24h
+    "min_drop_1h":        -40,    # don't chase crashes below -40%
+    "max_drop_1h":        -10,    # must have pulled back at least 10%
+    "min_liquidity_usd":  20_000,
+    "min_volume_24h_usd": 200_000,
+    "min_buy_pct":         45,
+}
+
 # ─── SHEET SCHEMA ────────────────────────────────────────────────────────────
 
 SHEET_HEADERS = [
@@ -111,9 +133,45 @@ SELL_LOG_HEADERS = [
     "Price at sell signal", "Change from alert %", "Triggers",
 ]
 
+DIP_SHEET_HEADERS = [
+    "Alert Timestamp",         # A
+    "Strategy",                # B
+    "Name",                    # C
+    "Symbol",                  # D
+    "Address",                 # E
+    "Alert Score",             # F
+    "Alert Price (USD)",       # G
+    "Dip % (1h)",              # H
+    "24h Change %",            # I
+    "Alert Age (h)",           # J
+    "Alert Liquidity (USD)",   # K
+    "Alert Volume 24h (USD)",  # L
+    "Alert Buy %",             # M
+    "Rugcheck Risk",           # N
+    "LP Locked",               # O
+    "Chart URL",               # P
+    "Price +15m",              # Q
+    "% +15m",                  # R
+    "Price +30m",              # S
+    "% +30m",                  # T
+    "Price +1h",               # U
+    "% +1h",                   # V
+    "Price +2h",               # W
+    "% +2h",                   # X
+    "Price +4h",               # Y
+    "% +4h",                   # Z
+    "Peak % gain",             # AA
+    "Rugged?",                 # AB
+    "Auto Stop-Loss?",         # AC
+]
+
 
 def _col(h):
     return SHEET_HEADERS.index(h)
+
+
+def _col_dip(h):
+    return DIP_SHEET_HEADERS.index(h)
 
 
 def _col_letter(idx):
@@ -170,6 +228,36 @@ def open_sheet():
     except Exception as e:
         print(f"{Fore.YELLOW}Sheet open failed: {e}")
         return None, None, None, []
+
+
+def open_dip_sheet(client):
+    """Open or create the Dip Watch worksheet. Returns (ws_dip, all_dip_rows)."""
+    if not client: return None, []
+    try:
+        sh = client.open_by_key(SPREADSHEET_ID)
+        try:
+            ws_dip = sh.worksheet(DIP_SHEET_NAME)
+        except Exception:
+            ws_dip = sh.add_worksheet(title=DIP_SHEET_NAME, rows=1000, cols=30)
+        _ensure_header(ws_dip, DIP_SHEET_HEADERS)
+        return ws_dip, ws_dip.get_all_values()
+    except Exception as e:
+        print(f"{Fore.YELLOW}Dip sheet open failed: {e}")
+        return None, []
+
+
+def was_recently_dip_alerted(all_dip_rows, address):
+    """True if this address has a dip alert row within BUY_COOLDOWN_HOURS."""
+    cutoff   = datetime.now(CT) - timedelta(hours=BUY_COOLDOWN_HOURS)
+    ts_col   = _col_dip("Alert Timestamp")
+    addr_col = _col_dip("Address")
+    for row in all_dip_rows[1:]:
+        if len(row) <= addr_col or row[addr_col] != address: continue
+        try:
+            ts = CT.localize(datetime.strptime(row[ts_col], "%Y-%m-%d %H:%M CT"))
+            if ts >= cutoff: return True
+        except: pass
+    return False
 
 
 def was_recently_alerted(all_rows, address):
@@ -662,6 +750,342 @@ def score_token(pair):
 
     return score, green, red
 
+# ─── DIP SCANNER ─────────────────────────────────────────────────────────────
+
+def score_dip_recovery(pair):
+    """Score a token for a dip-recovery buy. Returns (score, green, red, dip_pct)."""
+    score, green, red = 0, [], []
+    p1h   = float(pair.get("priceChange", {}).get("h1",  0) or 0)
+    p24h  = float(pair.get("priceChange", {}).get("h24", 0) or 0)
+    liq   = float(pair.get("liquidity", {}).get("usd", 0) or 0)
+    vol24 = float(pair.get("volume", {}).get("h24", 0) or 0)
+    volh1 = float(pair.get("volume", {}).get("h1",  0) or 0)
+    buys  = pair.get("txns", {}).get("h24", {}).get("buys",  0) or 0
+    sells = pair.get("txns", {}).get("h24", {}).get("sells", 0) or 0
+    buy_pct = buys / (buys + sells) * 100 if (buys + sells) > 0 else 0
+    created = pair.get("pairCreatedAt", 0) or 0
+    age_h   = (time.time() * 1000 - created) / 3_600_000 if created else None
+    t = DIP_RECOVERY_THRESHOLDS
+
+    # 1. Drop is in the "deep but alive" range
+    if t["min_drop_1h"] <= p1h <= t["max_drop_1h"]:
+        score += 1; green.append(f"Sharp dip: {p1h:+.1f}% in 1h")
+    elif p1h > t["max_drop_1h"]:
+        red.append(f"Drop too shallow: {p1h:+.1f}%")
+    else:
+        red.append(f"Drop too severe: {p1h:+.1f}%")
+
+    # 2. Liquidity still intact
+    if liq >= t["min_liquidity_usd"]:
+        score += 1; green.append(f"Liquidity intact: ${liq:,.0f}")
+    else:
+        red.append(f"Liquidity too low: ${liq:,.0f}")
+
+    # 3. 1h volume shows recovery activity
+    if volh1 >= t["min_volume_h1_usd"]:
+        score += 1; green.append(f"1h volume: ${volh1:,.0f}")
+    else:
+        red.append(f"Low 1h volume: ${volh1:,.0f}")
+
+    # 4. 24h volume — established token
+    if vol24 >= t["min_volume_24h_usd"]:
+        score += 1; green.append(f"24h volume: ${vol24:,.0f}")
+    else:
+        red.append(f"Low 24h volume: ${vol24:,.0f}")
+
+    # 5. Buy pressure returning
+    if buy_pct >= t["min_buy_pct"]:
+        score += 1; green.append(f"Buy pressure: {buy_pct:.0f}%")
+    else:
+        red.append(f"Sell pressure: {buy_pct:.0f}% buys")
+
+    # 6. Token has history
+    if age_h is not None:
+        if age_h >= t["min_age_hours"]:
+            score += 1; green.append(f"Age: {age_h:.1f}h")
+        else:
+            red.append(f"Too new: {age_h:.1f}h")
+
+    # 7. 24h still positive (dip on an uptrend, not a dying coin)
+    if p24h > 0:
+        score += 1; green.append(f"24h still positive: {p24h:+.1f}%")
+    else:
+        red.append(f"24h also negative: {p24h:+.1f}%")
+
+    return score, green, red, p1h
+
+
+def score_pump_pullback(pair):
+    """Score a token for a pump-pullback re-entry. Returns (score, green, red, dip_pct)."""
+    score, green, red = 0, [], []
+    p1h   = float(pair.get("priceChange", {}).get("h1",  0) or 0)
+    p6h   = float(pair.get("priceChange", {}).get("h6",  0) or 0)
+    p24h  = float(pair.get("priceChange", {}).get("h24", 0) or 0)
+    liq   = float(pair.get("liquidity", {}).get("usd", 0) or 0)
+    vol24 = float(pair.get("volume", {}).get("h24", 0) or 0)
+    buys  = pair.get("txns", {}).get("h24", {}).get("buys",  0) or 0
+    sells = pair.get("txns", {}).get("h24", {}).get("sells", 0) or 0
+    buy_pct = buys / (buys + sells) * 100 if (buys + sells) > 0 else 0
+    t = PUMP_PULLBACK_THRESHOLDS
+
+    # 1. Significant 24h pump
+    if p24h >= t["min_pump_24h"]:
+        score += 1; green.append(f"Pumped {p24h:+.1f}% in 24h")
+    else:
+        red.append(f"24h pump too weak: {p24h:+.1f}%")
+
+    # 2. Pulling back in healthy range
+    if t["min_drop_1h"] <= p1h <= t["max_drop_1h"]:
+        score += 1; green.append(f"Healthy pullback: {p1h:+.1f}% in 1h")
+    elif p1h > t["max_drop_1h"]:
+        red.append(f"Pullback too shallow: {p1h:+.1f}%")
+    else:
+        red.append(f"Crashing too hard: {p1h:+.1f}%")
+
+    # 3. Strong liquidity
+    if liq >= t["min_liquidity_usd"]:
+        score += 1; green.append(f"Strong liquidity: ${liq:,.0f}")
+    else:
+        red.append(f"Weak liquidity: ${liq:,.0f}")
+
+    # 4. Volume confirms real interest
+    if vol24 >= t["min_volume_24h_usd"]:
+        score += 1; green.append(f"Volume: ${vol24:,.0f}")
+    else:
+        red.append(f"Weak volume: ${vol24:,.0f}")
+
+    # 5. Buy pressure not fully flipped to sells
+    if buy_pct >= t["min_buy_pct"]:
+        score += 1; green.append(f"Buy pressure: {buy_pct:.0f}%")
+    else:
+        red.append(f"Heavy selling: {buy_pct:.0f}% buys")
+
+    # 6. 6h trend still intact
+    if p6h > 0:
+        score += 1; green.append(f"6h trend intact: {p6h:+.1f}%")
+    else:
+        red.append(f"6h also negative: {p6h:+.1f}%")
+
+    return score, green, red, p1h
+
+
+def log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rugcheck_data=None):
+    """Log a dip alert row to the Dip Watch sheet."""
+    try:
+        name    = pair.get("baseToken", {}).get("name", "Unknown")
+        symbol  = pair.get("baseToken", {}).get("symbol", "???")
+        address = pair.get("baseToken", {}).get("address", "")
+        price   = pair.get("priceUsd", "")
+        liq     = float(pair.get("liquidity", {}).get("usd", 0) or 0)
+        vol24   = float(pair.get("volume", {}).get("h24", 0) or 0)
+        p24h    = pair.get("priceChange", {}).get("h24", "")
+        created = pair.get("pairCreatedAt", 0)
+        age_h   = round((time.time() * 1000 - created) / 3_600_000, 1) if created else ""
+        buys    = pair.get("txns", {}).get("h24", {}).get("buys", 0) or 0
+        sells   = pair.get("txns", {}).get("h24", {}).get("sells", 0) or 0
+        buy_pct = round(buys / (buys + sells) * 100) if (buys + sells) > 0 else ""
+        dex_url = pair.get("url", f"https://dexscreener.com/solana/{address}")
+        ts      = datetime.now(CT).strftime("%Y-%m-%d %H:%M CT")
+        rug_score, _, lp_locked = rugcheck_data if rugcheck_data else ("", "", "")
+
+        row = [
+            ts, strategy, name, symbol, address, score,
+            price, f"{dip_pct:+.1f}%", p24h, age_h,
+            round(liq), round(vol24), buy_pct,
+            rug_score, lp_locked, dex_url,
+            "", "", "", "", "", "", "", "", "", "",  # follow-up price cols
+            "", "", "",                               # peak, rugged, stop-loss
+        ]
+        ws_dip.append_row(row, value_input_option="USER_ENTERED")
+        all_dip_rows.append(row)
+        print(f"{Fore.GREEN}  -> Dip alert logged: {name} ({symbol}) [{strategy}]")
+    except Exception as e:
+        print(f"{Fore.YELLOW}  Dip sheet write failed: {e}")
+
+
+def send_dip_alert(pair, strategy, score, green, dip_pct, rugcheck_data=None):
+    name    = pair.get("baseToken", {}).get("name", "Unknown")
+    symbol  = pair.get("baseToken", {}).get("symbol", "???")
+    address = pair.get("baseToken", {}).get("address", "")
+    price   = pair.get("priceUsd", "N/A")
+    p24h    = pair.get("priceChange", {}).get("h24", "?")
+    dex_url = pair.get("url", f"https://dexscreener.com/solana/{address}")
+    max_score = 7 if strategy == "Dip Recovery" else 6
+    title     = f"{strategy.upper()}: {name} ({symbol}) {score}/{max_score}"
+
+    rug_lines = ""
+    if rugcheck_data:
+        rug_score, _, lp = rugcheck_data
+        rug_lines = (f"\nRugcheck: {rug_score}" if rug_score else "") + \
+                    (f"\nLP Locked: {lp}" if lp else "")
+
+    msg = (f"Price: ${price}  |  {dip_pct:+.1f}% (1h)  |  {p24h}% (24h)\n"
+           f"Contract: {address}\n"
+           "(copy -> paste into Phantom)\n"
+           + rug_lines + "\n\n"
+           + "\n".join(f"* {g}" for g in green))
+    _pushover(title, msg, dex_url, "View Chart")
+    print(f"{Fore.CYAN}  -> {strategy} alert sent for {name}")
+
+
+def fill_dip_followups(ws_dip, all_dip_rows):
+    """Fill follow-up price columns for dip alert rows."""
+    if not all_dip_rows: return
+
+    now      = datetime.now(CT)
+    ts_col   = _col_dip("Alert Timestamp")
+    addr_col = _col_dip("Address")
+    ap_col   = _col_dip("Alert Price (USD)")
+    pk_col   = _col_dip("Peak % gain")
+    rug_col  = _col_dip("Rugged?")
+    sl_col   = _col_dip("Auto Stop-Loss?")
+
+    needs = {}
+    for i, row in enumerate(all_dip_rows[1:], start=2):
+        if len(row) <= addr_col: continue
+        try:
+            alert_ts = CT.localize(datetime.strptime(row[ts_col], "%Y-%m-%d %H:%M CT"))
+        except: continue
+
+        elapsed_min = (now - alert_ts).total_seconds() / 60
+        if elapsed_min > FOLLOWUP_MAX_HOURS * 60: continue
+
+        address = row[addr_col]
+        for price_col, pct_col, threshold_min in FOLLOWUP_WINDOWS:
+            pc_idx = _col_dip(price_col)
+            val    = row[pc_idx] if len(row) > pc_idx else ""
+            if elapsed_min >= threshold_min and not val:
+                needs.setdefault(address, []).append((i, row, price_col, pct_col))
+
+    if not needs:
+        return
+
+    print(f"\n{Fore.CYAN}Filling dip follow-up prices for {len(needs)} coin(s)...")
+    price_map = _batch_fetch_prices(set(needs.keys()))
+
+    updates = []
+    for address, checks in needs.items():
+        pair          = price_map.get(address)
+        current_price = pair.get("priceUsd", "") if pair else ""
+
+        for row_idx, row, price_col, pct_col in checks:
+            try: alert_price = float(row[ap_col]) if len(row) > ap_col and row[ap_col] else None
+            except: alert_price = None
+
+            pch     = ""
+            pct_val = None
+            if alert_price and current_price:
+                try:
+                    pct_val = round((float(current_price) - alert_price) / alert_price * 100, 1)
+                    pch     = f"{pct_val:+.1f}%"
+                except: pass
+
+            price_letter  = _col_letter(_col_dip(price_col))
+            pct_letter    = _col_letter(_col_dip(pct_col))
+            display_price = current_price if current_price else "N/A"
+
+            updates.append({"range": f"{price_letter}{row_idx}", "values": [[display_price]]})
+            updates.append({"range": f"{pct_letter}{row_idx}",   "values": [[pch]]})
+
+            name = row[_col_dip("Name")] if len(row) > _col_dip("Name") else address[:8]
+            print(f"  {Fore.CYAN}{name} {price_col}: ${display_price} {pch}")
+
+            if pct_val is not None:
+                try:
+                    cur_peak_str = row[pk_col] if len(row) > pk_col else ""
+                    cur_peak = float(cur_peak_str.replace("%","").replace("+","")) if cur_peak_str else None
+                    if cur_peak is None or pct_val > cur_peak:
+                        pk_letter = _col_letter(pk_col)
+                        updates.append({"range": f"{pk_letter}{row_idx}", "values": [[f"{pct_val:+.1f}%"]]})
+                except: pass
+
+            if price_col in ("Price +15m", "Price +30m") and pct_val is not None:
+                rug_letter  = _col_letter(rug_col)
+                sl_letter   = _col_letter(sl_col)
+                cur_rug_val = row[rug_col] if len(row) > rug_col else ""
+                cur_sl_val  = row[sl_col]  if len(row) > sl_col  else ""
+                if pct_val <= RUG_THRESHOLD_PCT and not cur_rug_val:
+                    updates.append({"range": f"{rug_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
+                    print(f"  {Fore.RED}*** RUG (dip play): {name} dropped {pch} at {price_col}")
+                if pct_val <= STOPLOSS_THRESHOLD and not cur_sl_val:
+                    updates.append({"range": f"{sl_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
+                    print(f"  {Fore.YELLOW}  Stop-loss triggered: {name} {pch} at {price_col}")
+
+    if updates:
+        try:
+            ws_dip.batch_update(updates)
+            print(f"  {Fore.GREEN}Updated {len(updates)} dip follow-up cells.")
+        except Exception as e:
+            print(f"{Fore.YELLOW}  Dip follow-up batch update failed: {e}")
+
+
+def scan_dip_opportunities(ws_dip, all_dip_rows, pairs=None):
+    """Scan for dip recovery and pump pullback opportunities."""
+    print(f"\n{Fore.CYAN}Scanning for dip opportunities...")
+    if pairs is None:
+        pairs = get_new_solana_pairs()
+    if not pairs:
+        print(f"{Fore.RED}No pairs returned for dip scan."); return
+
+    seen_addrs = set()
+    candidates = []
+
+    for pair in pairs:
+        if pair.get("chainId") != "solana": continue
+        addr = pair.get("baseToken", {}).get("address", "")
+        if addr in seen_addrs or is_junk_token(pair): continue
+        seen_addrs.add(addr)
+
+        p1h  = float(pair.get("priceChange", {}).get("h1",  0) or 0)
+        p24h = float(pair.get("priceChange", {}).get("h24", 0) or 0)
+        dr_t = DIP_RECOVERY_THRESHOLDS
+        pp_t = PUMP_PULLBACK_THRESHOLDS
+
+        if dr_t["min_drop_1h"] <= p1h <= dr_t["max_drop_1h"]:
+            s, g, r, dip_pct = score_dip_recovery(pair)
+            if s >= DIP_ALERT_SCORE:
+                candidates.append(("Dip Recovery", s, pair, g, r, dip_pct))
+
+        if p24h >= pp_t["min_pump_24h"] and pp_t["min_drop_1h"] <= p1h <= pp_t["max_drop_1h"]:
+            s, g, r, dip_pct = score_pump_pullback(pair)
+            if s >= DIP_ALERT_SCORE:
+                candidates.append(("Pump Pullback", s, pair, g, r, dip_pct))
+
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    print(f"Found {len(candidates)} dip candidate(s).\n")
+
+    alerted = 0
+    for strategy, score, pair, green, red, dip_pct in candidates[:10]:
+        addr    = pair.get("baseToken", {}).get("address", "")
+        name    = pair.get("baseToken", {}).get("name", "Unknown")
+        symbol  = pair.get("baseToken", {}).get("symbol", "???")
+        liq     = float(pair.get("liquidity", {}).get("usd", 0) or 0)
+        max_score = 7 if strategy == "Dip Recovery" else 6
+        color     = Fore.CYAN if strategy == "Dip Recovery" else Fore.MAGENTA
+
+        print(f"\n{'─'*60}")
+        print(f"{color}{Style.BRIGHT}[{strategy}] {name} ({symbol})  Score: {score}/{max_score}")
+        print(f"{Style.RESET_ALL}Dip: {dip_pct:+.1f}% (1h)")
+        if green: [print(f"  {Fore.GREEN}* {g}") for g in green]
+        if red:   [print(f"  {Fore.RED}* {r}") for r in red]
+        print(f"{'─'*60}")
+
+        if liq <= 0:
+            print(f"  {Fore.RED}No liquidity — skipping"); continue
+        if was_recently_dip_alerted(all_dip_rows, addr):
+            print(f"  {Fore.YELLOW}Dip cooldown active -- skipping"); continue
+
+        rug = get_rugcheck_data(addr)
+        if ws_dip:
+            log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rugcheck_data=rug)
+        send_dip_alert(pair, strategy, score, green, dip_pct, rugcheck_data=rug)
+        alerted += 1
+
+    if alerted == 0:
+        print(f"\n{Fore.YELLOW}No dip alerts sent this run.")
+    else:
+        print(f"\n{Fore.CYAN}{alerted} dip alert(s) sent this run.")
+
 # ─── DISPLAY ─────────────────────────────────────────────────────────────────
 
 def display_result(pair, score, green, red):
@@ -708,17 +1132,22 @@ def watch_token(address):
 
 
 def scan_new_tokens():
-    _, ws, ws_sell, all_rows = open_sheet()
+    client, ws, ws_sell, all_rows = open_sheet()
+    ws_dip, all_dip_rows = open_dip_sheet(client)
 
     # 1. Fill follow-up prices for existing alert rows
     if ws:
         fill_followups(ws, all_rows)
 
-    # 2. Check portfolio for sell signals
+    # 2. Fill follow-up prices for dip alert rows
+    if ws_dip:
+        fill_dip_followups(ws_dip, all_dip_rows)
+
+    # 3. Check portfolio for sell signals
     if ws:
         monitor_portfolio(ws, ws_sell, all_rows)
 
-    # 3. Scan for new coins
+    # 4. Fetch pairs once — shared by both scanners
     print(f"\n{Fore.CYAN}Scanning for new Solana meme coins...")
     pairs = get_new_solana_pairs()
     if not pairs: print(f"{Fore.RED}No pairs returned."); return
@@ -759,6 +1188,9 @@ def scan_new_tokens():
         print(f"\n{Fore.YELLOW}No coins passed hard filters this run.")
     else:
         print(f"\n{Fore.GREEN}{alerted} alert(s) sent this run.")
+
+    # 5. Dip scanner — reuses already-fetched pairs
+    scan_dip_opportunities(ws_dip, all_dip_rows, pairs=pairs)
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
