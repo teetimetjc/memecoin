@@ -423,7 +423,7 @@ def fill_followups(ws, all_rows):
                     updates.append({"range": f"{rug_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
                     print(f"  {Fore.RED}*** RUG DETECTED: {name} dropped {pch} in {price_col}")
                     dex_url = row[_col("Chart URL")] if len(row) > _col("Chart URL") else ""
-                    _pushover(f"RUG: {name}", f"Dropped {pch} at {price_col}", dex_url, "View Chart", priority=1)
+                    _pushover(f"RUG: {name}", f"Dropped {pch} at {price_col}", dex_url, "View Chart")
                 if pct_val <= STOPLOSS_THRESHOLD and not cur_sl_val:
                     updates.append({"range": f"{sl_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
                     print(f"  {Fore.YELLOW}  Stop-loss triggered: {name} {pch} at {price_col}")
@@ -1018,7 +1018,7 @@ def fill_dip_followups(ws_dip, all_dip_rows):
                     updates.append({"range": f"{rug_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
                     print(f"  {Fore.RED}*** RUG (dip play): {name} dropped {pch} at {price_col}")
                     dex_url = row[_col_dip("Chart URL")] if len(row) > _col_dip("Chart URL") else ""
-                    _pushover(f"RUG: {name}", f"Dropped {pch} at {price_col}", dex_url, "View Chart", priority=1)
+                    _pushover(f"RUG: {name}", f"Dropped {pch} at {price_col}", dex_url, "View Chart")
                 if pct_val <= STOPLOSS_THRESHOLD and not cur_sl_val:
                     updates.append({"range": f"{sl_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
                     print(f"  {Fore.YELLOW}  Stop-loss triggered: {name} {pch} at {price_col}")
