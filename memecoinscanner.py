@@ -40,21 +40,21 @@ THRESHOLDS = {
     "max_age_hours":       72,
     "min_txns_24h":        50,
     "min_price_change_1h": -10,
-    "min_score":           5,
+    "min_score":           6,
 }
 
 # Hard filters — ALL must pass before an alert is sent / row is logged
 # These are separate from scoring and act as a gate on top of it
 ALERT_FILTERS = {
-    "min_buy_pct":       60,      # buy pressure must exceed 60%
-    "min_volume_usd":    500_000, # 24h volume must exceed $500k
-    "require_liquidity": True,    # liquidity must be > 0
+    "min_buy_pct":       75,        # buy pressure must exceed 75%
+    "min_volume_usd":    1_000_000, # 24h volume must exceed $1M
+    "require_liquidity": True,      # liquidity must be > 0
     # Age rule disabled for now — too restrictive while collecting data
 }
 
 # Rug / stop-loss thresholds (applied when +30m price is filled)
 RUG_THRESHOLD_PCT  = -50  # flag "Rugged?" if +30m drop >= 50%
-STOPLOSS_THRESHOLD = -25  # flag "Auto Stop-Loss?" if +30m drop >= 25%
+STOPLOSS_THRESHOLD = -15  # flag "Auto Stop-Loss?" if +30m drop >= 15%
 
 WATCH_INTERVAL_SECONDS = 60
 
@@ -69,8 +69,9 @@ FOLLOWUP_WINDOWS = [
 ]
 FOLLOWUP_MAX_HOURS = 5  # stop trying to fill after this long
 
-DIP_SHEET_NAME  = "Dip Watch"
-DIP_ALERT_SCORE = 5   # minimum score to alert (out of 7 for recovery, 6 for pullback)
+DIP_SHEET_NAME          = "Dip Watch"
+DIP_RECOVERY_MIN_SCORE  = 6   # out of 7
+PUMP_PULLBACK_MIN_SCORE = 5   # out of 6
 
 DIP_RECOVERY_THRESHOLDS = {
     "min_drop_1h":        -60,    # don't chase crashes below -60%
@@ -78,8 +79,11 @@ DIP_RECOVERY_THRESHOLDS = {
     "min_liquidity_usd":  10_000,
     "min_volume_h1_usd":  10_000,
     "min_volume_24h_usd": 30_000,
-    "min_buy_pct":         50,
+    "min_buy_pct":         65,
     "min_age_hours":        6,
+    "max_age_hours":       50,
+    "avoid_age_min":        2,    # 2-10h window consistently underperforms
+    "avoid_age_max":       10,
 }
 
 PUMP_PULLBACK_THRESHOLDS = {
@@ -88,7 +92,7 @@ PUMP_PULLBACK_THRESHOLDS = {
     "max_drop_1h":        -10,    # must have pulled back at least 10%
     "min_liquidity_usd":  20_000,
     "min_volume_24h_usd": 200_000,
-    "min_buy_pct":         45,
+    "min_buy_pct":         60,
 }
 
 # ─── SHEET SCHEMA ────────────────────────────────────────────────────────────
@@ -418,6 +422,8 @@ def fill_followups(ws, all_rows):
                 if pct_val <= RUG_THRESHOLD_PCT and not cur_rug_val:
                     updates.append({"range": f"{rug_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
                     print(f"  {Fore.RED}*** RUG DETECTED: {name} dropped {pch} in {price_col}")
+                    dex_url = row[_col("Chart URL")] if len(row) > _col("Chart URL") else ""
+                    _pushover(f"RUG: {name}", f"Dropped {pch} at {price_col}", dex_url, "View Chart", priority=1)
                 if pct_val <= STOPLOSS_THRESHOLD and not cur_sl_val:
                     updates.append({"range": f"{sl_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
                     print(f"  {Fore.YELLOW}  Stop-loss triggered: {name} {pch} at {price_col}")
@@ -799,12 +805,16 @@ def score_dip_recovery(pair):
     else:
         red.append(f"Sell pressure: {buy_pct:.0f}% buys")
 
-    # 6. Token has history
+    # 6. Token has history, not in danger zone, not too old
     if age_h is not None:
-        if age_h >= t["min_age_hours"]:
+        if t["avoid_age_min"] <= age_h <= t["avoid_age_max"]:
+            return 0, [], [f"Age danger zone: {age_h:.1f}h (skip {t['avoid_age_min']}-{t['avoid_age_max']}h)"], p1h
+        if t["min_age_hours"] <= age_h <= t["max_age_hours"]:
             score += 1; green.append(f"Age: {age_h:.1f}h")
-        else:
+        elif age_h < t["min_age_hours"]:
             red.append(f"Too new: {age_h:.1f}h")
+        else:
+            red.append(f"Too old: {age_h:.0f}h")
 
     # 7. 24h still positive (dip on an uptrend, not a dying coin)
     if p24h > 0:
@@ -1007,6 +1017,8 @@ def fill_dip_followups(ws_dip, all_dip_rows):
                 if pct_val <= RUG_THRESHOLD_PCT and not cur_rug_val:
                     updates.append({"range": f"{rug_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
                     print(f"  {Fore.RED}*** RUG (dip play): {name} dropped {pch} at {price_col}")
+                    dex_url = row[_col_dip("Chart URL")] if len(row) > _col_dip("Chart URL") else ""
+                    _pushover(f"RUG: {name}", f"Dropped {pch} at {price_col}", dex_url, "View Chart", priority=1)
                 if pct_val <= STOPLOSS_THRESHOLD and not cur_sl_val:
                     updates.append({"range": f"{sl_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
                     print(f"  {Fore.YELLOW}  Stop-loss triggered: {name} {pch} at {price_col}")
@@ -1043,12 +1055,12 @@ def scan_dip_opportunities(ws_dip, all_dip_rows, pairs=None):
 
         if dr_t["min_drop_1h"] <= p1h <= dr_t["max_drop_1h"]:
             s, g, r, dip_pct = score_dip_recovery(pair)
-            if s >= DIP_ALERT_SCORE:
+            if s >= DIP_RECOVERY_MIN_SCORE:
                 candidates.append(("Dip Recovery", s, pair, g, r, dip_pct))
 
         if p24h >= pp_t["min_pump_24h"] and pp_t["min_drop_1h"] <= p1h <= pp_t["max_drop_1h"]:
             s, g, r, dip_pct = score_pump_pullback(pair)
-            if s >= DIP_ALERT_SCORE:
+            if s >= PUMP_PULLBACK_MIN_SCORE:
                 candidates.append(("Pump Pullback", s, pair, g, r, dip_pct))
 
     candidates.sort(key=lambda x: x[1], reverse=True)
@@ -1076,6 +1088,8 @@ def scan_dip_opportunities(ws_dip, all_dip_rows, pairs=None):
             print(f"  {Fore.YELLOW}Dip cooldown active -- skipping"); continue
 
         rug = get_rugcheck_data(addr)
+        if rug and "HIGH" in str(rug[0]):
+            print(f"  {Fore.RED}Skipping HIGH rugcheck risk: {name}"); continue
         if ws_dip:
             log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rugcheck_data=rug)
         send_dip_alert(pair, strategy, score, green, dip_pct, rugcheck_data=rug)
