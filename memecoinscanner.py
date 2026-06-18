@@ -43,10 +43,16 @@ THRESHOLDS = {
     "min_score":           6,
 }
 
-# Hard filters — ALL must pass before an alert is sent / row is logged
+# Hard filters — ALL must pass before an alert is sent / row is logged.
+# NOTE: this volume minimum is a separate, *final* gate on top of the
+# THRESHOLDS["min_volume_24h_usd"] scoring criterion above. It was previously
+# set to 1_000_000, which combined with max_age_hours=24 meant a token had to
+# do $1M+ in 24h volume *and* be under a day old to ever get logged - almost
+# nothing clears that bar, which is why the sheet stayed empty. Lowered to a
+# more realistic level for catching fresh meme coins. Tune to taste.
 ALERT_FILTERS = {
     "min_buy_pct":       75,
-    "min_volume_usd":    1_000_000,
+    "min_volume_usd":    20_000,
     "require_liquidity": True,
 }
 
@@ -595,25 +601,56 @@ def monitor_portfolio(ws, ws_sell, all_rows):
             print(f"  {Fore.GREEN}{coin['name']}: ${cur} score {score}/8 holding{pch}")
 
 # ─── DEXSCREENER ─────────────────────────────────────────────────────────────
+#
+# IMPORTANT: the original implementation called
+#   GET https://api.dexscreener.com/latest/dex/pairs/solana
+# to fetch a firehose of "all new Solana pairs". That endpoint does not exist
+# in DexScreener's current public API (confirmed: it now 404s) - it never
+# returned any pairs, which is the primary reason nothing was ever logged to
+# the sheet, independent of the alert-filter threshold issue.
+#
+# DexScreener's current API has no direct "list every new pair on a chain"
+# endpoint. The closest free substitute is the token-profiles feed (tokens
+# whose creators filled out a DexScreener profile - name/description/links),
+# which we then resolve to full pair data via the current /tokens/v1 endpoint.
+# Caveat: this will miss bare-bones launches that never filled out a profile,
+# so it's narrower coverage than a true "all new pairs" firehose - there isn't
+# a documented free endpoint that does that as of this writing.
 
-DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex"
+DEXSCREENER_BASE = "https://api.dexscreener.com"
+
+
+def _extract_pairs(payload):
+    """DexScreener's /tokens/v1 endpoints return a bare list of pair objects;
+    older endpoints wrapped them in {"pairs": [...]}. Handle both shapes."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        return payload.get("pairs", []) or []
+    return []
 
 
 def get_new_solana_pairs():
-    """Fetch the most recently created Solana pairs from DexScreener."""
+    """Discover candidate new Solana tokens via the token-profiles feed, then
+    fetch full pair data (price/volume/liquidity/txns) for each candidate."""
     try:
-        r = requests.get(
-            "https://api.dexscreener.com/latest/dex/pairs/solana",
-            timeout=15
-        )
+        r = requests.get(f"{DEXSCREENER_BASE}/token-profiles/latest/v1", timeout=15)
         r.raise_for_status()
-        pairs = r.json().get("pairs", []) or []
-        # Sort by creation time descending so newest are first
-        pairs.sort(key=lambda p: p.get("pairCreatedAt", 0) or 0, reverse=True)
-        return pairs
+        profiles = r.json() or []
     except Exception as e:
-        print(f"{Fore.RED}Fetch error (new pairs): {e}")
+        print(f"{Fore.RED}Fetch error (token profiles): {e}")
         return []
+
+    addrs = [p.get("tokenAddress") for p in profiles
+             if p.get("chainId") == "solana" and p.get("tokenAddress")]
+    addrs = list(dict.fromkeys(addrs))  # de-dupe, preserve order
+    if not addrs:
+        return []
+
+    pairs = _batch_fetch_pairs(addrs)
+    # Sort by creation time descending so newest are first
+    pairs.sort(key=lambda p: p.get("pairCreatedAt", 0) or 0, reverse=True)
+    return pairs
 
 
 def _batch_fetch_pairs(addr_list):
@@ -622,9 +659,9 @@ def _batch_fetch_pairs(addr_list):
     for i in range(0, len(addr_list), 30):
         batch = addr_list[i:i+30]
         try:
-            r = requests.get(f"{DEXSCREENER_BASE}/tokens/{','.join(batch)}", timeout=15)
+            r = requests.get(f"{DEXSCREENER_BASE}/tokens/v1/solana/{','.join(batch)}", timeout=15)
             r.raise_for_status()
-            pairs.extend(r.json().get("pairs", []) or [])
+            pairs.extend(_extract_pairs(r.json()))
         except Exception as e:
             print(f"{Fore.RED}Batch pairs fetch error: {e}")
     return pairs
@@ -645,9 +682,9 @@ def _batch_fetch_prices(addresses):
 
 def get_pair_by_address(token_address):
     try:
-        r = requests.get(f"{DEXSCREENER_BASE}/tokens/{token_address}", timeout=10)
+        r = requests.get(f"{DEXSCREENER_BASE}/tokens/v1/solana/{token_address}", timeout=10)
         r.raise_for_status()
-        pairs = [p for p in r.json().get("pairs", []) if p.get("chainId") == "solana"]
+        pairs = [p for p in _extract_pairs(r.json()) if p.get("chainId") == "solana"]
         return max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0)) if pairs else None
     except Exception as e:
         print(f"{Fore.RED}DexScreener error: {e}"); return None
@@ -1163,7 +1200,10 @@ def scan_new_tokens():
     # 4. Fetch pairs once - shared by both scanners
     print(f"\n{Fore.CYAN}Scanning for new Solana meme coins...")
     pairs = get_new_solana_pairs()
-    if not pairs: print(f"{Fore.RED}No pairs returned."); return
+    if not pairs:
+        print(f"{Fore.RED}No pairs returned.")
+        print(f"{Fore.CYAN}Run summary: 0 candidates fetched, 0 scored, 0 logged.")
+        return
 
     seen_addrs, results = set(), []
     for pair in pairs:
@@ -1187,7 +1227,7 @@ def scan_new_tokens():
     print(f"\nFound {len(qualifying)} tokens scoring {THRESHOLDS['min_score']}+/8 "
           f"out of {len(results)} scanned.\n")
 
-    alerted = 0
+    alerted, blocked_by_filter, on_cooldown = 0, 0, 0
     for score, pair, green, red in qualifying[:10]:
         display_result(pair, score, green, red)
         if score >= PUSHOVER_ALERT_SCORE:
@@ -1195,9 +1235,11 @@ def scan_new_tokens():
             passed, reasons = passes_alert_filter(pair)
             if not passed:
                 print(f"  {Fore.YELLOW}Hard filter blocked: {'; '.join(reasons)}")
+                blocked_by_filter += 1
                 continue
             if was_recently_alerted(all_rows, addr):
                 print(f"  {Fore.YELLOW}Buy cooldown active -- skipping Pushover")
+                on_cooldown += 1
                 continue
             rug = get_rugcheck_data(addr)
             if ws:
@@ -1209,6 +1251,11 @@ def scan_new_tokens():
         print(f"\n{Fore.YELLOW}No coins passed hard filters this run.")
     else:
         print(f"\n{Fore.GREEN}{alerted} alert(s) sent this run.")
+
+    # One-line summary so a silent run is never ambiguous in the logs
+    print(f"{Fore.CYAN}Run summary: {len(pairs)} candidates fetched, {len(results)} scored, "
+          f"{len(qualifying)} qualifying, {alerted} logged, "
+          f"{blocked_by_filter} blocked by alert filter, {on_cooldown} on cooldown.")
 
     # 5. Dip scanner - reuses already-fetched pairs
     scan_dip_opportunities(ws_dip, all_dip_rows, pairs=pairs)
