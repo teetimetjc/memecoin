@@ -50,8 +50,15 @@ THRESHOLDS = {
 # do $1M+ in 24h volume *and* be under a day old to ever get logged - almost
 # nothing clears that bar, which is why the sheet stayed empty. Lowered to a
 # more realistic level for catching fresh meme coins. Tune to taste.
+#
+# min_buy_pct was previously 75. In live data, every 7-8/8 candidate sat at
+# 59-74% buy pressure (real momentum coins see steady profit-taking even
+# while pumping) - so 75% silenced every single qualifying coin. The scoring
+# system's own internal bar for "good" buy pressure is 55% (see score_token).
+# 60% keeps the hard gate a bit stricter than that scoring bar - still real
+# confirmation - without re-creating the same all-or-nothing problem.
 ALERT_FILTERS = {
-    "min_buy_pct":       75,
+    "min_buy_pct":       60,
     "min_volume_usd":    20_000,
     "require_liquidity": True,
 }
