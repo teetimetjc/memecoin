@@ -25,6 +25,11 @@ PUSHOVER_ALERT_SCORE = 7
 BUY_COOLDOWN_HOURS   = 4
 SELL_MONITOR_HOURS   = 24
 
+# Set True while testing to suppress all push notifications without touching
+# your Pushover secrets. Scanning, scoring, and Google Sheets logging are
+# completely unaffected - only the _pushover() call becomes a no-op.
+DISABLE_NOTIFICATIONS_FOR_TESTING = True
+
 SELL_TRIGGERS = {
     "max_score":           4,
     "min_price_change_1h": -20,
@@ -225,6 +230,26 @@ def _ensure_header(ws, expected):
         print(f"{Fore.YELLOW}  Header row updated.")
 
 
+def _append_row_with_retry(ws, row, attempts=3, delay_seconds=3):
+    """
+    Append a row to a worksheet, retrying on transient failures (e.g. Google
+    Sheets API rate limits, which are plausible given how often this script
+    runs). Returns True on success, False if all attempts failed.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            ws.append_row(row, value_input_option="USER_ENTERED")
+            return True
+        except Exception as e:
+            if attempt < attempts:
+                print(f"{Fore.YELLOW}  Sheet write attempt {attempt}/{attempts} failed "
+                      f"({e}); retrying in {delay_seconds}s...")
+                time.sleep(delay_seconds)
+            else:
+                print(f"{Fore.RED}  Sheet write failed after {attempts} attempts: {e}")
+    return False
+
+
 def open_sheet():
     """Open worksheets once per run. Returns (client, ws, ws_sell, all_rows)."""
     client = _get_gspread_client()
@@ -306,7 +331,8 @@ def get_alert_price(all_rows, address):
 
 
 def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
-    """Log a fresh alert row with all baseline data including rugcheck fields."""
+    """Log a fresh alert row with all baseline data including rugcheck fields.
+    Returns True if the row was actually written, False otherwise."""
     try:
         name    = pair.get("baseToken", {}).get("name", "Unknown")
         symbol  = pair.get("baseToken", {}).get("symbol", "???")
@@ -338,11 +364,14 @@ def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
             "",
             "", "",
         ]
-        ws.append_row(row, value_input_option="USER_ENTERED")
-        all_rows.append(row)
-        print(f"{Fore.GREEN}  -> Alert logged: {name} ({symbol})")
+        ok = _append_row_with_retry(ws, row)
+        if ok:
+            all_rows.append(row)
+            print(f"{Fore.GREEN}  -> Alert logged: {name} ({symbol})")
+        return ok
     except Exception as e:
         print(f"{Fore.YELLOW}  Sheet write failed: {e}")
+        return False
 
 
 def fill_followups(ws, all_rows):
@@ -518,6 +547,9 @@ def get_rugcheck_data(address):
 # ─── PUSHOVER ────────────────────────────────────────────────────────────────
 
 def _pushover(title, message, url, url_title, priority=0):
+    if DISABLE_NOTIFICATIONS_FOR_TESTING:
+        print(f"{Fore.YELLOW}  [notifications disabled for testing] would have sent: {title}")
+        return
     if not PUSHOVER_APP_TOKEN or not PUSHOVER_USER_KEY: return
     try:
         requests.post("https://api.pushover.net/1/messages.json", data={
@@ -529,13 +561,14 @@ def _pushover(title, message, url, url_title, priority=0):
         print(f"{Fore.YELLOW}  Pushover failed: {e}")
 
 
-def send_buy_alert(pair, score, green, rugcheck_data=None):
+def send_buy_alert(pair, score, green, rugcheck_data=None, logged=True):
     name    = pair.get("baseToken", {}).get("name", "Unknown")
     symbol  = pair.get("baseToken", {}).get("symbol", "???")
     address = pair.get("baseToken", {}).get("address", "")
     price   = pair.get("priceUsd", "N/A")
     dex_url = pair.get("url", f"https://dexscreener.com/solana/{address}")
-    title   = f"BUY: {name} ({symbol}) {score}/8"
+    prefix  = "" if logged else "[NOT LOGGED] "
+    title   = f"{prefix}BUY: {name} ({symbol}) {score}/8"
 
     rug_lines = ""
     if rugcheck_data:
@@ -917,7 +950,8 @@ def score_pump_pullback(pair):
 
 
 def log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rugcheck_data=None):
-    """Log a dip alert row to the Dip Watch sheet."""
+    """Log a dip alert row to the Dip Watch sheet.
+    Returns True if the row was actually written, False otherwise."""
     try:
         name    = pair.get("baseToken", {}).get("name", "Unknown")
         symbol  = pair.get("baseToken", {}).get("symbol", "???")
@@ -943,14 +977,17 @@ def log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rug
             "", "", "", "", "", "", "", "", "", "",
             "", "", "",
         ]
-        ws_dip.append_row(row, value_input_option="USER_ENTERED")
-        all_dip_rows.append(row)
-        print(f"{Fore.GREEN}  -> Dip alert logged: {name} ({symbol}) [{strategy}]")
+        ok = _append_row_with_retry(ws_dip, row)
+        if ok:
+            all_dip_rows.append(row)
+            print(f"{Fore.GREEN}  -> Dip alert logged: {name} ({symbol}) [{strategy}]")
+        return ok
     except Exception as e:
         print(f"{Fore.YELLOW}  Dip sheet write failed: {e}")
+        return False
 
 
-def send_dip_alert(pair, strategy, score, green, dip_pct, rugcheck_data=None):
+def send_dip_alert(pair, strategy, score, green, dip_pct, rugcheck_data=None, logged=True):
     name    = pair.get("baseToken", {}).get("name", "Unknown")
     symbol  = pair.get("baseToken", {}).get("symbol", "???")
     address = pair.get("baseToken", {}).get("address", "")
@@ -958,7 +995,8 @@ def send_dip_alert(pair, strategy, score, green, dip_pct, rugcheck_data=None):
     p24h    = pair.get("priceChange", {}).get("h24", "?")
     dex_url = pair.get("url", f"https://dexscreener.com/solana/{address}")
     max_score = 7 if strategy == "Dip Recovery" else 6
-    title     = f"{strategy.upper()}: {name} ({symbol}) {score}/{max_score}"
+    prefix    = "" if logged else "[NOT LOGGED] "
+    title     = f"{prefix}{strategy.upper()}: {name} ({symbol}) {score}/{max_score}"
 
     rug_lines = ""
     if rugcheck_data:
@@ -1133,9 +1171,10 @@ def scan_dip_opportunities(ws_dip, all_dip_rows, pairs=None):
         rug = get_rugcheck_data(addr)
         if rug and "HIGH" in str(rug[0]):
             print(f"  {Fore.RED}Skipping HIGH rugcheck risk: {name}"); continue
-        if ws_dip:
-            log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rugcheck_data=rug)
-        send_dip_alert(pair, strategy, score, green, dip_pct, rugcheck_data=rug)
+        logged = log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rugcheck_data=rug) if ws_dip else False
+        if not logged:
+            print(f"  {Fore.RED}WARNING: dip alert will be sent but was NOT logged to the sheet")
+        send_dip_alert(pair, strategy, score, green, dip_pct, rugcheck_data=rug, logged=logged)
         alerted += 1
 
     if alerted == 0:
@@ -1176,8 +1215,10 @@ def analyze_token(address):
         _, ws, ws_sell, all_rows = open_sheet()
         if ws and not was_recently_alerted(all_rows, address):
             rug = get_rugcheck_data(address)
-            log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=rug)
-            send_buy_alert(pair, score, green, rugcheck_data=rug)
+            logged = log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=rug)
+            if not logged:
+                print(f"  {Fore.RED}WARNING: alert will be sent but was NOT logged to the sheet")
+            send_buy_alert(pair, score, green, rugcheck_data=rug, logged=logged)
         elif ws:
             print(f"  {Fore.YELLOW}Buy cooldown active -- skipping")
 
@@ -1234,7 +1275,7 @@ def scan_new_tokens():
     print(f"\nFound {len(qualifying)} tokens scoring {THRESHOLDS['min_score']}+/8 "
           f"out of {len(results)} scanned.\n")
 
-    alerted, blocked_by_filter, on_cooldown = 0, 0, 0
+    alerted, blocked_by_filter, on_cooldown, not_logged = 0, 0, 0, 0
     for score, pair, green, red in qualifying[:10]:
         display_result(pair, score, green, red)
         if score >= PUSHOVER_ALERT_SCORE:
@@ -1249,9 +1290,11 @@ def scan_new_tokens():
                 on_cooldown += 1
                 continue
             rug = get_rugcheck_data(addr)
-            if ws:
-                log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=rug)
-            send_buy_alert(pair, score, green, rugcheck_data=rug)
+            logged = log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=rug) if ws else False
+            if not logged:
+                print(f"  {Fore.RED}WARNING: alert will be sent but was NOT logged to the sheet")
+                not_logged += 1
+            send_buy_alert(pair, score, green, rugcheck_data=rug, logged=logged)
             alerted += 1
 
     if alerted == 0:
@@ -1261,7 +1304,8 @@ def scan_new_tokens():
 
     # One-line summary so a silent run is never ambiguous in the logs
     print(f"{Fore.CYAN}Run summary: {len(pairs)} candidates fetched, {len(results)} scored, "
-          f"{len(qualifying)} qualifying, {alerted} logged, "
+          f"{len(qualifying)} qualifying, {alerted} alert(s) sent, "
+          f"{alerted - not_logged} logged to sheet, {not_logged} sent but NOT logged, "
           f"{blocked_by_filter} blocked by alert filter, {on_cooldown} on cooldown.")
 
     # 5. Dip scanner - reuses already-fetched pairs
