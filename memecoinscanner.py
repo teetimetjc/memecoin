@@ -377,7 +377,7 @@ def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
 def fill_followups(ws, all_rows):
     """
     For every alert row, check if any follow-up price columns are due and empty.
-    Also flags rugged / stop-loss conditions when the +15m or +30m column is first filled.
+    Also flags rugged / stop-loss conditions whenever any follow-up column is first filled.
     Batch-fetches prices and updates all cells in one API call.
     """
     if not all_rows: return
@@ -451,7 +451,7 @@ def fill_followups(ws, all_rows):
                 except: pass
 
             # Rug / stop-loss detection
-            if price_col in ("Price +15m", "Price +30m") and pct_val is not None:
+            if pct_val is not None:
                 rug_letter  = _col_letter(rug_col)
                 sl_letter   = _col_letter(sl_col)
                 cur_rug_val = row[rug_col] if len(row) > rug_col else ""
@@ -1084,7 +1084,7 @@ def fill_dip_followups(ws_dip, all_dip_rows):
                         updates.append({"range": f"{pk_letter}{row_idx}", "values": [[f"{pct_val:+.1f}%"]]})
                 except: pass
 
-            if price_col in ("Price +15m", "Price +30m") and pct_val is not None:
+            if pct_val is not None:
                 rug_letter  = _col_letter(rug_col)
                 sl_letter   = _col_letter(sl_col)
                 cur_rug_val = row[rug_col] if len(row) > rug_col else ""
