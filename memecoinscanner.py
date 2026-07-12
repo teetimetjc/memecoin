@@ -13,7 +13,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-# ─── CONFIG ──────────────────────────────────────────────────────────────────
+# ─── CONFIG ───────────────────────────────────────────────────────────────────────────
 
 SPREADSHEET_ID     = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
 SHEET_NAME         = "Sheet1"
@@ -49,19 +49,6 @@ THRESHOLDS = {
 }
 
 # Hard filters — ALL must pass before an alert is sent / row is logged.
-# NOTE: this volume minimum is a separate, *final* gate on top of the
-# THRESHOLDS["min_volume_24h_usd"] scoring criterion above. It was previously
-# set to 1_000_000, which combined with max_age_hours=24 meant a token had to
-# do $1M+ in 24h volume *and* be under a day old to ever get logged - almost
-# nothing clears that bar, which is why the sheet stayed empty. Lowered to a
-# more realistic level for catching fresh meme coins. Tune to taste.
-#
-# min_buy_pct was previously 75. In live data, every 7-8/8 candidate sat at
-# 59-74% buy pressure (real momentum coins see steady profit-taking even
-# while pumping) - so 75% silenced every single qualifying coin. The scoring
-# system's own internal bar for "good" buy pressure is 55% (see score_token).
-# 60% keeps the hard gate a bit stricter than that scoring bar - still real
-# confirmation - without re-creating the same all-or-nothing problem.
 ALERT_FILTERS = {
     "min_buy_pct":       60,
     "min_volume_usd":    20_000,
@@ -75,7 +62,13 @@ STOPLOSS_THRESHOLD = -15
 WATCH_INTERVAL_SECONDS = 60
 
 # Follow-up windows: (price_col, pct_col, min_minutes_elapsed)
+# Early checkpoints (+3m–+12m) are filled by the fast 3-minute cron job;
+# the full set is also processed by the regular 15-minute scan for any gaps.
 FOLLOWUP_WINDOWS = [
+    ("Price +3m",  "% +3m",    3),
+    ("Price +6m",  "% +6m",    6),
+    ("Price +9m",  "% +9m",    9),
+    ("Price +12m", "% +12m",  12),
     ("Price +15m", "% +15m",  12),
     ("Price +30m", "% +30m",  25),
     ("Price +1h",  "% +1h",   55),
@@ -83,6 +76,10 @@ FOLLOWUP_WINDOWS = [
     ("Price +4h",  "% +4h",  235),
 ]
 FOLLOWUP_MAX_HOURS = 5
+
+# Subset used by the fast early-checkpoint cron (every 3 min, last-30-min rows only)
+EARLY_CHECKPOINT_WINDOWS = FOLLOWUP_WINDOWS[:4]   # +3m, +6m, +9m, +12m
+EARLY_CHECKPOINT_MAX_MINUTES = 30
 
 DIP_SHEET_NAME          = "Dip Watch"
 DIP_RECOVERY_MIN_SCORE  = 6
@@ -110,7 +107,7 @@ PUMP_PULLBACK_THRESHOLDS = {
     "min_buy_pct":        60,
 }
 
-# ─── SHEET SCHEMA ────────────────────────────────────────────────────────────
+# ─── SHEET SCHEMA ─────────────────────────────────────────────────────────────────────
 
 SHEET_HEADERS = [
     "Alert Timestamp",         # A
@@ -132,19 +129,27 @@ SHEET_HEADERS = [
     "Rugcheck Risk",           # Q
     "Top 10 Holders %",        # R
     "LP Locked",               # S
-    "Price +15m",              # T
-    "% +15m",                  # U
-    "Price +30m",              # V
-    "% +30m",                  # W
-    "Price +1h",               # X
-    "% +1h",                   # Y
-    "Price +2h",               # Z
-    "% +2h",                   # AA
-    "Price +4h",               # AB
-    "% +4h",                   # AC
-    "Peak % gain",             # AD
-    "Rugged?",                 # AE
-    "Auto Stop-Loss?",         # AF
+    "Price +3m",               # T
+    "% +3m",                   # U
+    "Price +6m",               # V
+    "% +6m",                   # W
+    "Price +9m",               # X
+    "% +9m",                   # Y
+    "Price +12m",              # Z
+    "% +12m",                  # AA
+    "Price +15m",              # AB
+    "% +15m",                  # AC
+    "Price +30m",              # AD
+    "% +30m",                  # AE
+    "Price +1h",               # AF
+    "% +1h",                   # AG
+    "Price +2h",               # AH
+    "% +2h",                   # AI
+    "Price +4h",               # AJ
+    "% +4h",                   # AK
+    "Peak % gain",             # AL
+    "Rugged?",                 # AM
+    "Auto Stop-Loss?",         # AN
 ]
 
 SELL_LOG_HEADERS = [
@@ -169,19 +174,27 @@ DIP_SHEET_HEADERS = [
     "Rugcheck Risk",           # N
     "LP Locked",               # O
     "Chart URL",               # P
-    "Price +15m",              # Q
-    "% +15m",                  # R
-    "Price +30m",              # S
-    "% +30m",                  # T
-    "Price +1h",               # U
-    "% +1h",                   # V
-    "Price +2h",               # W
-    "% +2h",                   # X
-    "Price +4h",               # Y
-    "% +4h",                   # Z
-    "Peak % gain",             # AA
-    "Rugged?",                 # AB
-    "Auto Stop-Loss?",         # AC
+    "Price +3m",               # Q
+    "% +3m",                   # R
+    "Price +6m",               # S
+    "% +6m",                   # T
+    "Price +9m",               # U
+    "% +9m",                   # V
+    "Price +12m",              # W
+    "% +12m",                  # X
+    "Price +15m",              # Y
+    "% +15m",                  # Z
+    "Price +30m",              # AA
+    "% +30m",                  # AB
+    "Price +1h",               # AC
+    "% +1h",                   # AD
+    "Price +2h",               # AE
+    "% +2h",                   # AF
+    "Price +4h",               # AG
+    "% +4h",                   # AH
+    "Peak % gain",             # AI
+    "Rugged?",                 # AJ
+    "Auto Stop-Loss?",         # AK
 ]
 
 
@@ -202,7 +215,7 @@ def _col_letter(idx):
         result = chr(65 + r) + result
     return result
 
-# ─── GOOGLE SHEETS ───────────────────────────────────────────────────────────
+# ─── GOOGLE SHEETS ─────────────────────────────────────────────────────────────────────
 
 def _get_gspread_client():
     try:
@@ -277,7 +290,7 @@ def open_dip_sheet(client):
         try:
             ws_dip = sh.worksheet(DIP_SHEET_NAME)
         except Exception:
-            ws_dip = sh.add_worksheet(title=DIP_SHEET_NAME, rows=1000, cols=30)
+            ws_dip = sh.add_worksheet(title=DIP_SHEET_NAME, rows=1000, cols=40)
         _ensure_header(ws_dip, DIP_SHEET_HEADERS)
         return ws_dip, ws_dip.get_all_values()
     except Exception as e:
@@ -360,9 +373,13 @@ def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
             buy_pct, p1h, p24h,
             " | ".join(green), dex_url,
             rug_score, top10_pct, lp_locked,
+            # Price +3m, % +3m, Price +6m, % +6m, Price +9m, % +9m, Price +12m, % +12m
+            "", "", "", "", "", "", "", "",
+            # Price +15m, % +15m, Price +30m, % +30m, Price +1h, % +1h,
+            # Price +2h, % +2h, Price +4h, % +4h
             "", "", "", "", "", "", "", "", "", "",
-            "",
-            "", "",
+            "",   # Peak % gain
+            "", "",  # Rugged?, Auto Stop-Loss?
         ]
         ok = _append_row_with_retry(ws, row)
         if ok:
@@ -377,7 +394,7 @@ def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
 def fill_followups(ws, all_rows):
     """
     For every alert row, check if any follow-up price columns are due and empty.
-    Also flags rugged / stop-loss conditions when the +15m or +30m column is first filled.
+    Also flags rugged / stop-loss conditions on every window (not just the first two).
     Batch-fetches prices and updates all cells in one API call.
     """
     if not all_rows: return
@@ -450,8 +467,8 @@ def fill_followups(ws, all_rows):
                         updates.append({"range": f"{pk_letter}{row_idx}", "values": [[f"{pct_val:+.1f}%"]]})
                 except: pass
 
-            # Rug / stop-loss detection
-            if price_col in ("Price +15m", "Price +30m") and pct_val is not None:
+            # Rug / stop-loss detection — runs on every window, not just the first two
+            if pct_val is not None:
                 rug_letter  = _col_letter(rug_col)
                 sl_letter   = _col_letter(sl_col)
                 cur_rug_val = row[rug_col] if len(row) > rug_col else ""
@@ -490,7 +507,7 @@ def log_sell_signal(ws_sell, pair, alert_price, signals):
     except Exception as e:
         print(f"{Fore.YELLOW}  Sell log write failed: {e}")
 
-# ─── RUGCHECK ────────────────────────────────────────────────────────────────
+# ─── RUGCHECK ─────────────────────────────────────────────────────────────────────────
 
 def get_rugcheck_data(address):
     """
@@ -544,7 +561,7 @@ def get_rugcheck_data(address):
         print(f"  {Fore.YELLOW}Rugcheck failed ({address[:8]}...): {e}")
         return "", "", ""
 
-# ─── PUSHOVER ────────────────────────────────────────────────────────────────
+# ─── PUSHOVER ────────────────────────────────────────────────────────────────────────
 
 def _pushover(title, message, url, url_title, priority=0):
     if DISABLE_NOTIFICATIONS_FOR_TESTING:
@@ -584,7 +601,7 @@ def send_buy_alert(pair, score, green, rugcheck_data=None, logged=True):
     _pushover(title, msg, dex_url, "View Chart")
     print(f"{Fore.GREEN}  -> Buy alert sent for {name}")
 
-# ─── PORTFOLIO MONITOR ───────────────────────────────────────────────────────
+# ─── PORTFOLIO MONITOR ───────────────────────────────────────────────────────────────
 
 def monitor_portfolio(ws, ws_sell, all_rows):
     """Check coins from the last 24h for sell signals (logs to sheet, no Pushover)."""
@@ -640,7 +657,7 @@ def monitor_portfolio(ws, ws_sell, all_rows):
                 except: pass
             print(f"  {Fore.GREEN}{coin['name']}: ${cur} score {score}/8 holding{pch}")
 
-# ─── DEXSCREENER ─────────────────────────────────────────────────────────────
+# ─── DEXSCREENER ───────────────────────────────────────────────────────────────────────────
 #
 # IMPORTANT: the original implementation called
 #   GET https://api.dexscreener.com/latest/dex/pairs/solana
@@ -704,6 +721,7 @@ def _batch_fetch_pairs(addr_list):
             pairs.extend(_extract_pairs(r.json()))
         except Exception as e:
             print(f"{Fore.RED}Batch pairs fetch error: {e}")
+            time.sleep(2)
     return pairs
 
 
@@ -729,7 +747,7 @@ def get_pair_by_address(token_address):
     except Exception as e:
         print(f"{Fore.RED}DexScreener error: {e}"); return None
 
-# ─── SCORING (8 criteria) ────────────────────────────────────────────────────
+# ─── SCORING (8 criteria) ──────────────────────────────────────────────────────────────────
 
 def is_junk_token(pair):
     name   = pair.get("baseToken", {}).get("name", "")
@@ -826,7 +844,7 @@ def score_token(pair):
 
     return score, green, red
 
-# ─── DIP SCANNER ─────────────────────────────────────────────────────────────
+# ─── DIP SCANNER ────────────────────────────────────────────────────────────────────────
 
 def score_dip_recovery(pair):
     """Score a token for a dip-recovery buy. Returns (score, green, red, dip_pct)."""
@@ -974,8 +992,12 @@ def log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rug
             price, f"{dip_pct:+.1f}%", p24h, age_h,
             round(liq), round(vol24), buy_pct,
             rug_score, lp_locked, dex_url,
+            # Price +3m, % +3m, Price +6m, % +6m, Price +9m, % +9m, Price +12m, % +12m
+            "", "", "", "", "", "", "", "",
+            # Price +15m, % +15m, Price +30m, % +30m, Price +1h, % +1h,
+            # Price +2h, % +2h, Price +4h, % +4h
             "", "", "", "", "", "", "", "", "", "",
-            "", "", "",
+            "", "", "",  # Peak % gain, Rugged?, Auto Stop-Loss?
         ]
         ok = _append_row_with_retry(ws_dip, row)
         if ok:
@@ -1084,7 +1106,8 @@ def fill_dip_followups(ws_dip, all_dip_rows):
                         updates.append({"range": f"{pk_letter}{row_idx}", "values": [[f"{pct_val:+.1f}%"]]})
                 except: pass
 
-            if price_col in ("Price +15m", "Price +30m") and pct_val is not None:
+            # Rug / stop-loss detection — runs on every window, not just the first two
+            if pct_val is not None:
                 rug_letter  = _col_letter(rug_col)
                 sl_letter   = _col_letter(sl_col)
                 cur_rug_val = row[rug_col] if len(row) > rug_col else ""
@@ -1182,7 +1205,130 @@ def scan_dip_opportunities(ws_dip, all_dip_rows, pairs=None):
     else:
         print(f"\n{Fore.CYAN}{alerted} dip alert(s) sent this run.")
 
-# ─── DISPLAY ─────────────────────────────────────────────────────────────────
+# ─── EARLY CHECKPOINTS (fast 3-minute cron) ────────────────────────────────────────────
+
+def _fill_early_for_sheet(ws, all_rows, col_fn, label=""):
+    """
+    Fill early checkpoint columns (+3m/+6m/+9m/+12m) for alert rows logged
+    in the last EARLY_CHECKPOINT_MAX_MINUTES minutes. Called by
+    scan_early_checkpoints() which runs every 3 minutes.
+    """
+    if not all_rows:
+        return
+
+    now      = datetime.now(CT)
+    ts_col   = col_fn("Alert Timestamp")
+    addr_col = col_fn("Address")
+    ap_col   = col_fn("Alert Price (USD)")
+    pk_col   = col_fn("Peak % gain")
+    rug_col  = col_fn("Rugged?")
+    sl_col   = col_fn("Auto Stop-Loss?")
+
+    needs = {}
+    for i, row in enumerate(all_rows[1:], start=2):
+        if len(row) <= addr_col:
+            continue
+        try:
+            alert_ts = CT.localize(datetime.strptime(row[ts_col], "%Y-%m-%d %H:%M CT"))
+        except:
+            continue
+
+        elapsed_min = (now - alert_ts).total_seconds() / 60
+        if elapsed_min > EARLY_CHECKPOINT_MAX_MINUTES:
+            continue
+
+        address = row[addr_col]
+        for price_col, pct_col, threshold_min in EARLY_CHECKPOINT_WINDOWS:
+            pc_idx = col_fn(price_col)
+            val    = row[pc_idx] if len(row) > pc_idx else ""
+            if elapsed_min >= threshold_min and not val:
+                needs.setdefault(address, []).append((i, row, price_col, pct_col))
+
+    if not needs:
+        return
+
+    tag = f"[{label}] " if label else ""
+    print(f"\n{Fore.CYAN}{tag}Filling early checkpoints for {len(needs)} coin(s)...")
+    price_map = _batch_fetch_prices(set(needs.keys()))
+
+    updates = []
+    for address, checks in needs.items():
+        pair          = price_map.get(address)
+        current_price = pair.get("priceUsd", "") if pair else ""
+
+        for row_idx, row, price_col, pct_col in checks:
+            try:
+                alert_price = float(row[ap_col]) if len(row) > ap_col and row[ap_col] else None
+            except:
+                alert_price = None
+
+            pch     = ""
+            pct_val = None
+            if alert_price and current_price:
+                try:
+                    pct_val = round((float(current_price) - alert_price) / alert_price * 100, 1)
+                    pch     = f"{pct_val:+.1f}%"
+                except:
+                    pass
+
+            price_letter  = _col_letter(col_fn(price_col))
+            pct_letter    = _col_letter(col_fn(pct_col))
+            display_price = current_price if current_price else "N/A"
+
+            updates.append({"range": f"{price_letter}{row_idx}", "values": [[display_price]]})
+            updates.append({"range": f"{pct_letter}{row_idx}",   "values": [[pch]]})
+
+            name_col = col_fn("Name")
+            name = row[name_col] if len(row) > name_col else address[:8]
+            print(f"  {Fore.CYAN}{name} {price_col}: ${display_price} {pch}")
+
+            if pct_val is not None:
+                try:
+                    cur_peak_str = row[pk_col] if len(row) > pk_col else ""
+                    cur_peak = float(cur_peak_str.replace("%", "").replace("+", "")) if cur_peak_str else None
+                    if cur_peak is None or pct_val > cur_peak:
+                        pk_letter = _col_letter(pk_col)
+                        updates.append({"range": f"{pk_letter}{row_idx}", "values": [[f"{pct_val:+.1f}%"]]})
+                except:
+                    pass
+
+                rug_letter  = _col_letter(rug_col)
+                sl_letter   = _col_letter(sl_col)
+                cur_rug_val = row[rug_col] if len(row) > rug_col else ""
+                cur_sl_val  = row[sl_col]  if len(row) > sl_col  else ""
+                if pct_val <= RUG_THRESHOLD_PCT and not cur_rug_val:
+                    updates.append({"range": f"{rug_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
+                    print(f"  {Fore.RED}*** RUG DETECTED: {name} dropped {pch} at {price_col}")
+                    chart_col = col_fn("Chart URL")
+                    dex_url = row[chart_col] if len(row) > chart_col else ""
+                    _pushover(f"RUG: {name}", f"Dropped {pch} at {price_col}", dex_url, "View Chart")
+                if pct_val <= STOPLOSS_THRESHOLD and not cur_sl_val:
+                    updates.append({"range": f"{sl_letter}{row_idx}", "values": [[f"Yes ({pch})"]]})
+                    print(f"  {Fore.YELLOW}  Stop-loss triggered: {name} {pch} at {price_col}")
+
+    if updates:
+        try:
+            ws.batch_update(updates)
+            print(f"  {Fore.GREEN}Updated {len(updates)} cells.")
+        except Exception as e:
+            print(f"{Fore.YELLOW}  Early checkpoint batch update failed: {e}")
+
+
+def scan_early_checkpoints():
+    """
+    Lightweight scan called by the fast 3-minute cron job.
+    Only fills +3m/+6m/+9m/+12m columns for alert rows from the last 30 minutes.
+    No discovery, no scoring, no dip scanning.
+    """
+    client, ws, _, all_rows = open_sheet()
+    ws_dip, all_dip_rows = open_dip_sheet(client)
+
+    if ws:
+        _fill_early_for_sheet(ws, all_rows, _col, "Sheet1")
+    if ws_dip:
+        _fill_early_for_sheet(ws_dip, all_dip_rows, _col_dip, "Dip Watch")
+
+# ─── DISPLAY ───────────────────────────────────────────────────────────────────────────
 
 def display_result(pair, score, green, red):
     name    = pair.get("baseToken", {}).get("name", "Unknown")
@@ -1199,7 +1345,7 @@ def display_result(pair, score, green, red):
     if score >= THRESHOLDS["min_score"]: print(f"\n{Fore.CYAN}{Style.BRIGHT}ALERT: {score}/8")
     print(f"{'─'*60}")
 
-# ─── MODES ───────────────────────────────────────────────────────────────────
+# ─── MODES ────────────────────────────────────────────────────────────────────────────
 
 def analyze_token(address):
     print(f"\n{Fore.CYAN}Fetching data for {address}...")
@@ -1311,16 +1457,20 @@ def scan_new_tokens():
     # 5. Dip scanner - reuses already-fetched pairs
     scan_dip_opportunities(ws_dip, all_dip_rows, pairs=pairs)
 
-# ─── MAIN ────────────────────────────────────────────────────────────────────
+# ─── MAIN ────────────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Solana Meme Coin Scanner")
     parser.add_argument("address", nargs="?", help="Token address to analyze")
     parser.add_argument("--watch", metavar="ADDRESS", help="Watch a token continuously")
+    parser.add_argument("--early-checkpoints", action="store_true",
+                        help="Run only the fast early-window follow-up scan (+3m/+6m/+9m/+12m)")
     args = parser.parse_args()
-    if args.watch:     watch_token(args.watch)
-    elif args.address: analyze_token(args.address)
-    else:              scan_new_tokens()
+
+    if args.early_checkpoints: scan_early_checkpoints()
+    elif args.watch:           watch_token(args.watch)
+    elif args.address:         analyze_token(args.address)
+    else:                      scan_new_tokens()
 
 if __name__ == "__main__":
     main()
