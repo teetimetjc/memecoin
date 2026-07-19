@@ -76,6 +76,10 @@ WATCH_INTERVAL_SECONDS = 60
 
 # Follow-up windows: (price_col, pct_col, min_minutes_elapsed)
 FOLLOWUP_WINDOWS = [
+    ("Price +3m",  "% +3m",    2),
+    ("Price +6m",  "% +6m",    5),
+    ("Price +9m",  "% +9m",    8),
+    ("Price +12m", "% +12m",  11),
     ("Price +15m", "% +15m",  12),
     ("Price +30m", "% +30m",  25),
     ("Price +1h",  "% +1h",   55),
@@ -132,19 +136,27 @@ SHEET_HEADERS = [
     "Rugcheck Risk",           # Q
     "Top 10 Holders %",        # R
     "LP Locked",               # S
-    "Price +15m",              # T
-    "% +15m",                  # U
-    "Price +30m",              # V
-    "% +30m",                  # W
-    "Price +1h",               # X
-    "% +1h",                   # Y
-    "Price +2h",               # Z
-    "% +2h",                   # AA
-    "Price +4h",               # AB
-    "% +4h",                   # AC
-    "Peak % gain",             # AD
-    "Rugged?",                 # AE
-    "Auto Stop-Loss?",         # AF
+    "Price +3m",               # T
+    "% +3m",                   # U
+    "Price +6m",               # V
+    "% +6m",                   # W
+    "Price +9m",               # X
+    "% +9m",                   # Y
+    "Price +12m",              # Z
+    "% +12m",                  # AA
+    "Price +15m",              # AB
+    "% +15m",                  # AC
+    "Price +30m",              # AD
+    "% +30m",                  # AE
+    "Price +1h",               # AF
+    "% +1h",                   # AG
+    "Price +2h",               # AH
+    "% +2h",                   # AI
+    "Price +4h",               # AJ
+    "% +4h",                   # AK
+    "Peak % gain",             # AL
+    "Rugged?",                 # AM
+    "Auto Stop-Loss?",         # AN
 ]
 
 SELL_LOG_HEADERS = [
@@ -169,19 +181,27 @@ DIP_SHEET_HEADERS = [
     "Rugcheck Risk",           # N
     "LP Locked",               # O
     "Chart URL",               # P
-    "Price +15m",              # Q
-    "% +15m",                  # R
-    "Price +30m",              # S
-    "% +30m",                  # T
-    "Price +1h",               # U
-    "% +1h",                   # V
-    "Price +2h",               # W
-    "% +2h",                   # X
-    "Price +4h",               # Y
-    "% +4h",                   # Z
-    "Peak % gain",             # AA
-    "Rugged?",                 # AB
-    "Auto Stop-Loss?",         # AC
+    "Price +3m",               # Q
+    "% +3m",                   # R
+    "Price +6m",               # S
+    "% +6m",                   # T
+    "Price +9m",               # U
+    "% +9m",                   # V
+    "Price +12m",              # W
+    "% +12m",                  # X
+    "Price +15m",              # Y
+    "% +15m",                  # Z
+    "Price +30m",              # AA
+    "% +30m",                  # AB
+    "Price +1h",               # AC
+    "% +1h",                   # AD
+    "Price +2h",               # AE
+    "% +2h",                   # AF
+    "Price +4h",               # AG
+    "% +4h",                   # AH
+    "Peak % gain",             # AI
+    "Rugged?",                 # AJ
+    "Auto Stop-Loss?",         # AK
 ]
 
 
@@ -360,7 +380,7 @@ def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
             buy_pct, p1h, p24h,
             " | ".join(green), dex_url,
             rug_score, top10_pct, lp_locked,
-            "", "", "", "", "", "", "", "", "", "",
+            "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
             "",
             "", "",
         ]
@@ -450,8 +470,8 @@ def fill_followups(ws, all_rows):
                         updates.append({"range": f"{pk_letter}{row_idx}", "values": [[f"{pct_val:+.1f}%"]]})
                 except: pass
 
-            # Rug / stop-loss detection
-            if price_col in ("Price +15m", "Price +30m") and pct_val is not None:
+            # Rug / stop-loss detection — runs on every window, flagged only once
+            if pct_val is not None:
                 rug_letter  = _col_letter(rug_col)
                 sl_letter   = _col_letter(sl_col)
                 cur_rug_val = row[rug_col] if len(row) > rug_col else ""
@@ -974,7 +994,7 @@ def log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rug
             price, f"{dip_pct:+.1f}%", p24h, age_h,
             round(liq), round(vol24), buy_pct,
             rug_score, lp_locked, dex_url,
-            "", "", "", "", "", "", "", "", "", "",
+            "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
             "", "", "",
         ]
         ok = _append_row_with_retry(ws_dip, row)
@@ -1084,7 +1104,8 @@ def fill_dip_followups(ws_dip, all_dip_rows):
                         updates.append({"range": f"{pk_letter}{row_idx}", "values": [[f"{pct_val:+.1f}%"]]})
                 except: pass
 
-            if price_col in ("Price +15m", "Price +30m") and pct_val is not None:
+            # Rug / stop-loss detection — runs on every window, flagged only once
+            if pct_val is not None:
                 rug_letter  = _col_letter(rug_col)
                 sl_letter   = _col_letter(sl_col)
                 cur_rug_val = row[rug_col] if len(row) > rug_col else ""
@@ -1311,16 +1332,109 @@ def scan_new_tokens():
     # 5. Dip scanner - reuses already-fetched pairs
     scan_dip_opportunities(ws_dip, all_dip_rows, pairs=pairs)
 
+# ─── FAST FOLLOW-UP SCAN ─────────────────────────────────────────────────────
+
+def fast_followup_scan():
+    """
+    Lightweight job for the 3-minute cron: fills early price checkpoints
+    (+3m/+6m/+9m/+12m and any other due windows) for alerts from the last 30
+    minutes. No discovery, no scoring, no portfolio monitoring.
+    """
+    print(f"\n{Fore.CYAN}[Fast follow-up] Checking recent alerts for early price data...")
+    client, ws, _, all_rows = open_sheet()
+    ws_dip, all_dip_rows = open_dip_sheet(client)
+
+    # Restrict to rows from the last 30 minutes to keep API calls minimal
+    now     = datetime.now(CT)
+    cutoff  = now - timedelta(minutes=30)
+    ts_col  = _col("Alert Timestamp")
+
+    recent_rows = [all_rows[0]] if all_rows else []
+    for row in all_rows[1:]:
+        try:
+            ts = CT.localize(datetime.strptime(row[ts_col], "%Y-%m-%d %H:%M CT"))
+            if ts >= cutoff:
+                recent_rows.append(row)
+        except:
+            pass
+
+    dip_ts_col = _col_dip("Alert Timestamp")
+    recent_dip_rows = [all_dip_rows[0]] if all_dip_rows else []
+    for row in all_dip_rows[1:]:
+        try:
+            ts = CT.localize(datetime.strptime(row[dip_ts_col], "%Y-%m-%d %H:%M CT"))
+            if ts >= cutoff:
+                recent_dip_rows.append(row)
+        except:
+            pass
+
+    if ws:
+        fill_followups(ws, recent_rows)
+    if ws_dip:
+        fill_dip_followups(ws_dip, recent_dip_rows)
+
+    main_count = max(0, len(recent_rows) - 1)
+    dip_count  = max(0, len(recent_dip_rows) - 1)
+    print(f"{Fore.CYAN}[Fast follow-up] Done — checked {main_count} main alert(s), "
+          f"{dip_count} dip alert(s).")
+
+
+# ─── SHEET RESET ─────────────────────────────────────────────────────────────
+
+def reset_sheet():
+    """
+    Clear all data rows from Sheet1, Sell Log, and Dip Watch (headers kept).
+    Run this once after schema changes so all future rows use the new column layout.
+    """
+    client = _get_gspread_client()
+    if not client:
+        print(f"{Fore.RED}No Google credentials — cannot reset sheet."); return
+    sh = client.open_by_key(SPREADSHEET_ID)
+
+    for tab_name, headers in [
+        (SHEET_NAME,     SHEET_HEADERS),
+        ("Sell Log",     SELL_LOG_HEADERS),
+        (DIP_SHEET_NAME, DIP_SHEET_HEADERS),
+    ]:
+        try:
+            try:
+                ws = sh.worksheet(tab_name)
+            except Exception:
+                print(f"  {Fore.YELLOW}{tab_name} tab not found — skipping"); continue
+
+            all_vals = ws.get_all_values()
+            if len(all_vals) <= 1:
+                print(f"  {Fore.YELLOW}{tab_name}: already empty (no data rows)")
+                _ensure_header(ws, headers)
+                continue
+
+            # Delete every row after the header (bottom-up to keep indices valid)
+            last_row = len(all_vals)
+            ws.delete_rows(2, last_row)
+            _ensure_header(ws, headers)
+            print(f"  {Fore.GREEN}{tab_name}: cleared {last_row - 1} data row(s), header updated.")
+        except Exception as e:
+            print(f"  {Fore.RED}Failed to reset {tab_name}: {e}")
+
+    print(f"\n{Fore.GREEN}Sheet reset complete. All tabs start fresh with updated headers.")
+
+
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Solana Meme Coin Scanner")
     parser.add_argument("address", nargs="?", help="Token address to analyze")
     parser.add_argument("--watch", metavar="ADDRESS", help="Watch a token continuously")
+    parser.add_argument("--fast-followup", action="store_true",
+                        help="Fill early price checkpoints for recent alerts (run every 3 min)")
+    parser.add_argument("--reset-sheet", action="store_true",
+                        help="Clear all data rows from Sheet1/Sell Log/Dip Watch and update headers")
     args = parser.parse_args()
-    if args.watch:     watch_token(args.watch)
-    elif args.address: analyze_token(args.address)
-    else:              scan_new_tokens()
+    if args.reset_sheet:       reset_sheet()
+    elif args.fast_followup:   fast_followup_scan()
+    elif args.watch:           watch_token(args.watch)
+    elif args.address:         analyze_token(args.address)
+    else:                      scan_new_tokens()
 
 if __name__ == "__main__":
     main()
