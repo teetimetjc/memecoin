@@ -1,12 +1,12 @@
-name: Meme Coin Scanner
+name: Meme Coin Fast Follow-up (5-min)
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
-  scan:
+  fast-followup:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,11 +19,11 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install requests colorama gspread google-auth pytz
+        run: pip install -r requirements.txt
 
-      - name: Run scanner
+      - name: Run fast follow-up
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
-          PUSHOVER_USER_KEY:  ${{ secrets.PUSHOVER_USER_KEY }}
-        run: python memecoinscanner.py
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: python memecoinscanner.py --fast-followup
