@@ -1473,6 +1473,54 @@ def reset_sheet():
     print(f"\n{Fore.GREEN}Sheet reset complete. All tabs start fresh with updated headers.")
 
 
+def backfill_strategy():
+    """
+    One-time backfill: set Exit Strategy = 'v1-dumptrigger' for every row
+    in Sheet1 and Dip Watch where the Exit Strategy column is currently blank.
+    Leaves Stop % untouched and skips rows that already have an Exit Strategy value.
+    """
+    client = _get_gspread_client()
+    if not client:
+        print(f"{Fore.RED}No Google credentials — cannot backfill."); return
+    sh = client.open_by_key(SPREADSHEET_ID)
+
+    tabs = [
+        (SHEET_NAME,     SHEET_HEADERS),
+        (DIP_SHEET_NAME, DIP_SHEET_HEADERS),
+    ]
+
+    for tab_name, headers in tabs:
+        try:
+            ws = sh.worksheet(tab_name)
+        except Exception:
+            print(f"  {Fore.YELLOW}{tab_name}: tab not found — skipping"); continue
+
+        try:
+            exit_col_idx = headers.index("Exit Strategy")
+        except ValueError:
+            print(f"  {Fore.YELLOW}{tab_name}: 'Exit Strategy' column not in headers — skipping"); continue
+
+        all_vals = ws.get_all_values()
+        if len(all_vals) <= 1:
+            print(f"  {Fore.YELLOW}{tab_name}: no data rows — skipping"); continue
+
+        # Sheet rows are 1-indexed; row 1 is the header
+        import gspread as _gs
+        updates = []
+        for row_idx, row in enumerate(all_vals[1:], start=2):
+            cell_val = row[exit_col_idx] if exit_col_idx < len(row) else ""
+            if cell_val.strip() == "":
+                updates.append(_gs.Cell(row_idx, exit_col_idx + 1, "v1-dumptrigger"))
+
+        if updates:
+            ws.update_cells(updates, value_input_option="RAW")
+            print(f"  {Fore.GREEN}{tab_name}: backfilled {len(updates)} row(s) → 'v1-dumptrigger'")
+        else:
+            print(f"  {Fore.CYAN}{tab_name}: no blank Exit Strategy rows found — nothing to update")
+
+    print(f"\n{Fore.GREEN}Backfill complete.")
+
+
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1483,9 +1531,12 @@ def main():
                         help="Fill early price checkpoints for recent alerts (run every 3 min)")
     parser.add_argument("--reset-sheet", action="store_true",
                         help="Clear all data rows from Sheet1/Sell Log/Dip Watch and update headers")
+    parser.add_argument("--backfill-strategy", action="store_true",
+                        help="One-time: set Exit Strategy=v1-dumptrigger for all blank rows in Sheet1 and Dip Watch")
     args = parser.parse_args()
-    if args.reset_sheet:       reset_sheet()
-    elif args.fast_followup:   fast_followup_scan()
+    if args.reset_sheet:           reset_sheet()
+    elif args.backfill_strategy:   backfill_strategy()
+    elif args.fast_followup:       fast_followup_scan()
     elif args.watch:           watch_token(args.watch)
     elif args.address:         analyze_token(args.address)
     else:                      scan_new_tokens()
