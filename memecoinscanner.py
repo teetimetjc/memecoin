@@ -1500,6 +1500,9 @@ def backfill_strategy():
         except ValueError:
             print(f"  {Fore.YELLOW}{tab_name}: 'Exit Strategy' column not in headers — skipping"); continue
 
+        # Ensure the sheet grid is wide enough before writing to late columns
+        _ensure_header(ws, headers)
+
         all_vals = ws.get_all_values()
         if len(all_vals) <= 1:
             print(f"  {Fore.YELLOW}{tab_name}: no data rows — skipping"); continue
