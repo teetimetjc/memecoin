@@ -40,6 +40,10 @@ SELL_TRIGGERS = {
 # Tune this to test different values (2, 3, 5, 10).
 TRAILING_STOP_PCT = 5
 
+# Version tag stamped on every alert row — auto-updates when TRAILING_STOP_PCT changes.
+# Bump the prefix (v2 → v3 etc.) if the scoring/filter logic itself changes.
+EXIT_STRATEGY = f"v2-trailing{TRAILING_STOP_PCT}pct"
+
 # Scoring thresholds (8 criteria)
 THRESHOLDS = {
     "min_liquidity_usd":   10_000,
@@ -161,6 +165,8 @@ SHEET_HEADERS = [
     "Peak % gain",             # AL
     "Rugged?",                 # AM
     "Auto Stop-Loss?",         # AN
+    "Exit Strategy",           # AO
+    "Stop %",                  # AP
 ]
 
 SELL_LOG_HEADERS = [
@@ -206,6 +212,8 @@ DIP_SHEET_HEADERS = [
     "Peak % gain",             # AI
     "Rugged?",                 # AJ
     "Auto Stop-Loss?",         # AK
+    "Exit Strategy",           # AL
+    "Stop %",                  # AM
 ]
 
 
@@ -387,6 +395,7 @@ def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
             "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
             "",
             "", "",
+            EXIT_STRATEGY, TRAILING_STOP_PCT,
         ]
         ok = _append_row_with_retry(ws, row)
         if ok:
@@ -1040,6 +1049,7 @@ def log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rug
             rug_score, lp_locked, dex_url,
             "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
             "", "", "",
+            EXIT_STRATEGY, TRAILING_STOP_PCT,
         ]
         ok = _append_row_with_retry(ws_dip, row)
         if ok:
