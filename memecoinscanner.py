@@ -31,10 +31,14 @@ SELL_MONITOR_HOURS   = 24
 DISABLE_NOTIFICATIONS_FOR_TESTING = True
 
 SELL_TRIGGERS = {
-    "max_score":           4,
-    "min_price_change_1h": -20,
-    "max_buy_pct":         40,
+    "max_score":   4,
+    "max_buy_pct": 40,
 }
+
+# Trailing stop: sell if price pulls back this many percentage points from peak.
+# e.g. TRAILING_STOP_PCT = 5 means if peak was +20%, sell at +15% or below.
+# Tune this to test different values (2, 3, 5, 10).
+TRAILING_STOP_PCT = 5
 
 # Scoring thresholds (8 criteria)
 THRESHOLDS = {
@@ -161,7 +165,7 @@ SHEET_HEADERS = [
 
 SELL_LOG_HEADERS = [
     "Timestamp", "Name", "Symbol", "Address",
-    "Price at sell signal", "Change from alert %", "Triggers",
+    "Price at sell signal", "% at sell", "Peak % gain", "Drawdown from peak", "Time held", "Triggers",
 ]
 
 DIP_SHEET_HEADERS = [
@@ -493,7 +497,8 @@ def fill_followups(ws, all_rows):
             print(f"{Fore.YELLOW}  Follow-up batch update failed: {e}")
 
 
-def log_sell_signal(ws_sell, pair, alert_price, signals):
+def log_sell_signal(ws_sell, pair, alert_price, signals,
+                    peak_pct=None, current_pct=None, drawdown=None, hours_held=None):
     if not ws_sell: return
     try:
         name    = pair.get("baseToken", {}).get("name", "Unknown")
@@ -501,12 +506,13 @@ def log_sell_signal(ws_sell, pair, alert_price, signals):
         address = pair.get("baseToken", {}).get("address", "")
         price   = pair.get("priceUsd", "N/A")
         ts      = datetime.now(CT).strftime("%Y-%m-%d %H:%M CT")
-        pch     = ""
-        if alert_price and price:
-            try: pch = f"{round((float(price)-alert_price)/alert_price*100,1):+.1f}%"
-            except: pass
-        ws_sell.append_row([ts, name, symbol, address, price, pch, " | ".join(signals)],
-                           value_input_option="USER_ENTERED")
+        pch     = f"{current_pct:+.1f}%" if current_pct is not None else ""
+        peak_s  = f"{peak_pct:+.1f}%"   if peak_pct   is not None else ""
+        draw_s  = f"{drawdown:.1f}pp"    if drawdown   is not None else ""
+        held_s  = f"{hours_held:.1f}h"   if hours_held is not None else ""
+        ws_sell.append_row(
+            [ts, name, symbol, address, price, pch, peak_s, draw_s, held_s, " | ".join(signals)],
+            value_input_option="USER_ENTERED")
     except Exception as e:
         print(f"{Fore.YELLOW}  Sell log write failed: {e}")
 
@@ -607,15 +613,18 @@ def send_buy_alert(pair, score, green, rugcheck_data=None, logged=True):
 # ─── PORTFOLIO MONITOR ───────────────────────────────────────────────────────
 
 def monitor_portfolio(ws, ws_sell, all_rows):
-    """Check coins from the last 24h for sell signals (logs to sheet, no Pushover)."""
+    """Check coins from the last 24h for sell signals using trailing stop from peak."""
     if not all_rows: return
     print(f"\n{Fore.CYAN}Checking portfolio for sell signals...")
-    cutoff   = datetime.now(CT) - timedelta(hours=SELL_MONITOR_HOURS)
+    now      = datetime.now(CT)
+    cutoff   = now - timedelta(hours=SELL_MONITOR_HOURS)
     ts_col   = _col("Alert Timestamp")
     addr_col = _col("Address")
+    ap_col   = _col("Alert Price (USD)")
+    pk_col   = _col("Peak % gain")
     seen, to_check = set(), []
 
-    for row in all_rows[1:]:
+    for i, row in enumerate(all_rows[1:], start=2):
         if len(row) <= addr_col: continue
         addr = row[addr_col]
         if addr in seen: continue
@@ -623,11 +632,19 @@ def monitor_portfolio(ws, ws_sell, all_rows):
         try:
             ts = CT.localize(datetime.strptime(row[ts_col], "%Y-%m-%d %H:%M CT"))
             if ts >= cutoff:
+                peak_str = row[pk_col] if len(row) > pk_col else ""
+                try:    peak_pct = float(peak_str.replace("%","").replace("+","")) if peak_str else 0.0
+                except: peak_pct = 0.0
+                try:    alert_price = float(row[ap_col]) if len(row) > ap_col and row[ap_col] else None
+                except: alert_price = None
                 to_check.append({
+                    "row_idx":     i,
                     "address":     addr,
                     "name":        row[_col("Name")],
                     "symbol":      row[_col("Symbol")],
-                    "alert_price": get_alert_price(all_rows, addr),
+                    "alert_price": alert_price,
+                    "alert_ts":    ts,
+                    "peak_pct":    peak_pct,
                 })
         except: pass
 
@@ -638,27 +655,54 @@ def monitor_portfolio(ws, ws_sell, all_rows):
     for coin in to_check:
         pair = get_pair_by_address(coin["address"])
         if not pair: continue
-        score, green, red = score_token(pair)
-        p1h     = float(pair.get("priceChange", {}).get("h1", 0) or 0)
-        buys    = pair.get("txns", {}).get("h24", {}).get("buys", 0) or 0
+
+        cur_str     = pair.get("priceUsd", "")
+        alert_price = coin["alert_price"]
+        peak_pct    = coin["peak_pct"]
+        hours_held  = (now - coin["alert_ts"]).total_seconds() / 3600
+
+        current_pct = None
+        if alert_price and cur_str:
+            try: current_pct = round((float(cur_str) - alert_price) / alert_price * 100, 1)
+            except: pass
+
+        # Update peak if new high — write back to sheet
+        peak_updates = []
+        if current_pct is not None and current_pct > peak_pct:
+            peak_pct = current_pct
+            peak_updates.append({"range": f"{_col_letter(pk_col)}{coin['row_idx']}",
+                                  "values": [[f"{peak_pct:+.1f}%"]]})
+            try: ws.batch_update(peak_updates)
+            except Exception as e: print(f"  {Fore.YELLOW}Peak update failed: {e}")
+
+        # Trailing stop check
+        signals  = []
+        drawdown = None
+        if current_pct is not None:
+            drawdown = peak_pct - current_pct
+            if drawdown >= TRAILING_STOP_PCT:
+                signals.append(
+                    f"Trailing stop: {drawdown:.1f}pp off peak "
+                    f"(peak {peak_pct:+.1f}% → now {current_pct:+.1f}%)")
+
+        # Score / buy-pressure checks (kept as secondary signals)
+        score, _, _ = score_token(pair)
+        buys    = pair.get("txns", {}).get("h24", {}).get("buys",  0) or 0
         sells   = pair.get("txns", {}).get("h24", {}).get("sells", 0) or 0
         buy_pct = round(buys / (buys + sells) * 100) if (buys + sells) > 0 else 50
-        signals = []
-        if score   <= SELL_TRIGGERS["max_score"]:           signals.append(f"Score collapsed to {score}/8")
-        if p1h     <= SELL_TRIGGERS["min_price_change_1h"]: signals.append(f"Dumping {p1h:+.1f}% in 1h")
-        if buy_pct <= SELL_TRIGGERS["max_buy_pct"]:         signals.append(f"Sell pressure: only {buy_pct}% buys")
+        if score   <= SELL_TRIGGERS["max_score"]:   signals.append(f"Score collapsed to {score}/8")
+        if buy_pct <= SELL_TRIGGERS["max_buy_pct"]: signals.append(f"Sell pressure: {buy_pct}% buys")
 
-        cur = pair.get("priceUsd", "N/A")
         if signals:
-            log_sell_signal(ws_sell, pair, coin["alert_price"], signals)
-            print(f"  {Fore.RED}{coin['name']}: sell signals logged (Pushover off)")
+            log_sell_signal(ws_sell, pair, alert_price, signals,
+                            peak_pct=peak_pct, current_pct=current_pct,
+                            drawdown=drawdown, hours_held=hours_held)
+            print(f"  {Fore.RED}{coin['name']}: sell triggered — "
+                  f"peak {peak_pct:+.1f}% | now {current_pct:+.1f}% | "
+                  f"drawdown {drawdown:.1f}pp | held {hours_held:.1f}h")
         else:
-            ap  = coin["alert_price"]
-            pch = ""
-            if ap and cur not in ("N/A", ""):
-                try: pch = f"  ({round((float(cur)-ap)/ap*100,1):+.1f}% from alert)"
-                except: pass
-            print(f"  {Fore.GREEN}{coin['name']}: ${cur} score {score}/8 holding{pch}")
+            gain_str = f"{current_pct:+.1f}% (peak {peak_pct:+.1f}%)" if current_pct is not None else ""
+            print(f"  {Fore.GREEN}{coin['name']}: ${cur_str} {gain_str} — holding")
 
 # ─── DEXSCREENER ─────────────────────────────────────────────────────────────
 #
