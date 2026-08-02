@@ -17,8 +17,11 @@ from itertools import chain
 
 # v1 legacy columns used for historical simulation
 SHEET_PCT_COLS_V1 = ["% +3m","% +6m","% +9m","% +12m","% +15m","% +30m","% +1h","% +2h","% +4h"]
-# v3 granular columns used for new rows
-SHEET_PCT_COLS_V3 = ["% +1m","% +2m","% +4m","% +6m","% +8m","% +10m","% +12m","% +15m"]
+# v3 1-minute resolution columns for new rows
+SHEET_PCT_COLS_V3 = [
+    "% +1m","% +2m","% +3m","% +4m","% +5m","% +6m","% +7m","% +8m",
+    "% +9m","% +10m","% +11m","% +12m","% +13m","% +14m","% +15m",
+]
 SHEET_PCT_COLS    = SHEET_PCT_COLS_V1  # default for _pct_path fallback
 SHEET_HEADERS    = [
     "Alert Timestamp","Name","Symbol","Address","Alert Score","Alert Price (USD)",
@@ -30,7 +33,8 @@ SHEET_HEADERS    = [
     "Price +2h","% +2h","Price +4h","% +4h",
     "Peak % gain","Rugged?","Auto Stop-Loss?","Exit Strategy","Stop %",
     "Price +1m","% +1m","Price +2m","% +2m","Price +4m","% +4m",
-    "Price +8m","% +8m","Price +10m","% +10m",
+    "Price +5m","% +5m","Price +7m","% +7m","Price +8m","% +8m",
+    "Price +10m","% +10m","Price +11m","% +11m","Price +13m","% +13m","Price +14m","% +14m",
 ]
 DIP_SHEET_HEADERS = [
     "Alert Timestamp","Strategy","Name","Symbol","Address","Alert Score",
@@ -42,7 +46,8 @@ DIP_SHEET_HEADERS = [
     "Price +2h","% +2h","Price +4h","% +4h",
     "Peak % gain","Rugged?","Auto Stop-Loss?","Exit Strategy","Stop %",
     "Price +1m","% +1m","Price +2m","% +2m","Price +4m","% +4m",
-    "Price +8m","% +8m","Price +10m","% +10m",
+    "Price +5m","% +5m","Price +7m","% +7m","Price +8m","% +8m",
+    "Price +10m","% +10m","Price +11m","% +11m","Price +13m","% +13m","Price +14m","% +14m",
 ]
 
 SPREADSHEET_ID = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"

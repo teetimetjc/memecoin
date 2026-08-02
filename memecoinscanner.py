@@ -84,16 +84,23 @@ WATCH_INTERVAL_SECONDS = 60
 
 # Follow-up windows: (price_col, pct_col, min_minutes_elapsed)
 FOLLOWUP_WINDOWS = [
-    ("Price +1m",  "% +1m",   0),   # new granular columns (appended to schema)
+    ("Price +1m",  "% +1m",   0),
     ("Price +2m",  "% +2m",   1),
+    ("Price +3m",  "% +3m",   2),
     ("Price +4m",  "% +4m",   3),
-    ("Price +6m",  "% +6m",   5),   # reuses existing column position
-    ("Price +8m",  "% +8m",   7),   # new granular columns
+    ("Price +5m",  "% +5m",   4),
+    ("Price +6m",  "% +6m",   5),
+    ("Price +7m",  "% +7m",   6),
+    ("Price +8m",  "% +8m",   7),
+    ("Price +9m",  "% +9m",   8),
     ("Price +10m", "% +10m",  9),
-    ("Price +12m", "% +12m", 11),   # reuses existing column position
-    ("Price +15m", "% +15m", 14),   # reuses existing column position
+    ("Price +11m", "% +11m", 10),
+    ("Price +12m", "% +12m", 11),
+    ("Price +13m", "% +13m", 12),
+    ("Price +14m", "% +14m", 13),
+    ("Price +15m", "% +15m", 14),
 ]
-# Only track the first 15 minutes — data shows the edge window is 1-15m.
+# Track only the first 15 minutes at 1-minute resolution.
 # +30m/+1h/+2h/+4h columns remain in SHEET_HEADERS for historical rows
 # but are no longer written by fill_followups().
 FOLLOWUP_MAX_HOURS = 0.25
@@ -171,17 +178,27 @@ SHEET_HEADERS = [
     "Auto Stop-Loss?",         # AN
     "Exit Strategy",           # AO
     "Stop %",                  # AP
-    # ── v3 active tracking window (1–15 min, granular) ─────────────
+    # ── 1-min resolution columns (appended; legacy positions unchanged) ─
     "Price +1m",               # AQ
     "% +1m",                   # AR
     "Price +2m",               # AS
     "% +2m",                   # AT
     "Price +4m",               # AU
     "% +4m",                   # AV
-    "Price +8m",               # AW
-    "% +8m",                   # AX
-    "Price +10m",              # AY
-    "% +10m",                  # AZ
+    "Price +5m",               # AW
+    "% +5m",                   # AX
+    "Price +7m",               # AY
+    "% +7m",                   # AZ
+    "Price +8m",               # BA
+    "% +8m",                   # BB
+    "Price +10m",              # BC
+    "% +10m",                  # BD
+    "Price +11m",              # BE
+    "% +11m",                  # BF
+    "Price +13m",              # BG
+    "% +13m",                  # BH
+    "Price +14m",              # BI
+    "% +14m",                  # BJ
 ]
 
 SELL_LOG_HEADERS = [
@@ -231,17 +248,27 @@ DIP_SHEET_HEADERS = [
     "Auto Stop-Loss?",         # AK
     "Exit Strategy",           # AL
     "Stop %",                  # AM
-    # ── v3 active tracking window (1–15 min, granular) ─────────────
+    # ── 1-min resolution columns (appended; legacy positions unchanged) ─
     "Price +1m",               # AN
     "% +1m",                   # AO
     "Price +2m",               # AP
     "% +2m",                   # AQ
     "Price +4m",               # AR
     "% +4m",                   # AS
-    "Price +8m",               # AT
-    "% +8m",                   # AU
-    "Price +10m",              # AV
-    "% +10m",                  # AW
+    "Price +5m",               # AT
+    "% +5m",                   # AU
+    "Price +7m",               # AV
+    "% +7m",                   # AW
+    "Price +8m",               # AX
+    "% +8m",                   # AY
+    "Price +10m",              # AZ
+    "% +10m",                  # BA
+    "Price +11m",              # BB
+    "% +11m",                  # BC
+    "Price +13m",              # BD
+    "% +13m",                  # BE
+    "Price +14m",              # BF
+    "% +14m",                  # BG
 ]
 
 
@@ -424,7 +451,8 @@ def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
             "",
             "", "",
             EXIT_STRATEGY, TRAILING_STOP_PCT,
-            "", "", "", "", "", "", "", "", "", "",  # +1m +2m +4m +8m +10m (price+pct each)
+            "", "", "", "", "", "", "", "", "", "",  # +1m +2m +4m +5m +7m (price+pct each)
+            "", "", "", "", "", "", "", "", "", "",  # +8m +10m +11m +13m +14m (price+pct each)
         ]
         ok = _append_row_with_retry(ws, row)
         if ok:
@@ -1079,7 +1107,8 @@ def log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rug
             "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
             "", "", "",
             EXIT_STRATEGY, TRAILING_STOP_PCT,
-            "", "", "", "", "", "", "", "", "", "",  # +1m +2m +4m +8m +10m (price+pct each)
+            "", "", "", "", "", "", "", "", "", "",  # +1m +2m +4m +5m +7m (price+pct each)
+            "", "", "", "", "", "", "", "", "", "",  # +8m +10m +11m +13m +14m (price+pct each)
         ]
         ok = _append_row_with_retry(ws_dip, row)
         if ok:
@@ -1420,17 +1449,17 @@ def scan_new_tokens():
 
 def fast_followup_scan():
     """
-    Lightweight job for the 3-minute cron: fills early price checkpoints
-    (+3m/+6m/+9m/+12m and any other due windows) for alerts from the last 30
-    minutes. No discovery, no scoring, no portfolio monitoring.
+    Lightweight job for the 1-minute cron: fills 1-min resolution price
+    checkpoints (+1m through +15m) for alerts from the last 15 minutes.
+    No discovery, no scoring, no portfolio monitoring.
     """
     print(f"\n{Fore.CYAN}[Fast follow-up] Checking recent alerts for early price data...")
     client, ws, _, all_rows = open_sheet()
     ws_dip, all_dip_rows = open_dip_sheet(client)
 
-    # Restrict to rows from the last 30 minutes to keep API calls minimal
+    # Only process rows within the 15-minute tracking window
     now     = datetime.now(CT)
-    cutoff  = now - timedelta(minutes=30)
+    cutoff  = now - timedelta(minutes=15)
     ts_col  = _col("Alert Timestamp")
 
     recent_rows = [all_rows[0]] if all_rows else []
