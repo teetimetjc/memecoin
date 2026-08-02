@@ -15,7 +15,11 @@ from itertools import chain
 
 # ── column indices (mirrors memecoinscanner.py SHEET_HEADERS) ────────────────
 
-SHEET_PCT_COLS   = ["% +3m","% +6m","% +9m","% +12m","% +15m","% +30m","% +1h","% +2h","% +4h"]
+# v1 legacy columns used for historical simulation
+SHEET_PCT_COLS_V1 = ["% +3m","% +6m","% +9m","% +12m","% +15m","% +30m","% +1h","% +2h","% +4h"]
+# v3 granular columns used for new rows
+SHEET_PCT_COLS_V3 = ["% +1m","% +2m","% +4m","% +6m","% +8m","% +10m","% +12m","% +15m"]
+SHEET_PCT_COLS    = SHEET_PCT_COLS_V1  # default for _pct_path fallback
 SHEET_HEADERS    = [
     "Alert Timestamp","Name","Symbol","Address","Alert Score","Alert Price (USD)",
     "Alert Age (h)","Has Liquidity","Alert Market Cap (USD)","Alert Liquidity (USD)",
@@ -25,6 +29,8 @@ SHEET_HEADERS    = [
     "Price +15m","% +15m","Price +30m","% +30m","Price +1h","% +1h",
     "Price +2h","% +2h","Price +4h","% +4h",
     "Peak % gain","Rugged?","Auto Stop-Loss?","Exit Strategy","Stop %",
+    "Price +1m","% +1m","Price +2m","% +2m","Price +4m","% +4m",
+    "Price +8m","% +8m","Price +10m","% +10m",
 ]
 DIP_SHEET_HEADERS = [
     "Alert Timestamp","Strategy","Name","Symbol","Address","Alert Score",
@@ -35,6 +41,8 @@ DIP_SHEET_HEADERS = [
     "Price +15m","% +15m","Price +30m","% +30m","Price +1h","% +1h",
     "Price +2h","% +2h","Price +4h","% +4h",
     "Peak % gain","Rugged?","Auto Stop-Loss?","Exit Strategy","Stop %",
+    "Price +1m","% +1m","Price +2m","% +2m","Price +4m","% +4m",
+    "Price +8m","% +8m","Price +10m","% +10m",
 ]
 
 SPREADSHEET_ID = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
@@ -55,20 +63,27 @@ def _get_client():
 
 
 def _pct_path(row, headers):
-    """Return list of floats for the price-snapshot % columns (skip blanks)."""
-    path = []
-    for col in SHEET_PCT_COLS:
-        if col not in headers:
-            continue
-        idx = headers.index(col)
-        val = row[idx] if idx < len(row) else ""
-        if val == "" or val is None:
-            break           # stop at first gap — later snaps not yet filled
-        try:
-            path.append(float(str(val).replace("%", "").strip()))
-        except ValueError:
-            break
-    return path
+    """Return list of floats for the price-snapshot % columns.
+    Prefers v3 granular columns if the row has data there; falls back to v1 legacy."""
+    def _read_cols(col_list):
+        path = []
+        for col in col_list:
+            if col not in headers:
+                continue
+            idx = headers.index(col)
+            val = row[idx] if idx < len(row) else ""
+            if val == "" or val is None:
+                break
+            try:
+                path.append(float(str(val).replace("%", "").strip()))
+            except ValueError:
+                break
+        return path
+
+    v3 = _read_cols(SHEET_PCT_COLS_V3)
+    if v3:
+        return v3
+    return _read_cols(SHEET_PCT_COLS_V1)
 
 
 def _simulate_trailing(pct_path, stop_pct):

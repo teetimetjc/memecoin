@@ -84,17 +84,19 @@ WATCH_INTERVAL_SECONDS = 60
 
 # Follow-up windows: (price_col, pct_col, min_minutes_elapsed)
 FOLLOWUP_WINDOWS = [
-    ("Price +3m",  "% +3m",    2),
-    ("Price +6m",  "% +6m",    5),
-    ("Price +9m",  "% +9m",    8),
-    ("Price +12m", "% +12m",  11),
-    ("Price +15m", "% +15m",  12),
-    ("Price +30m", "% +30m",  25),
-    ("Price +1h",  "% +1h",   55),
-    ("Price +2h",  "% +2h",  115),
-    ("Price +4h",  "% +4h",  235),
+    ("Price +1m",  "% +1m",   0),   # new granular columns (appended to schema)
+    ("Price +2m",  "% +2m",   1),
+    ("Price +4m",  "% +4m",   3),
+    ("Price +6m",  "% +6m",   5),   # reuses existing column position
+    ("Price +8m",  "% +8m",   7),   # new granular columns
+    ("Price +10m", "% +10m",  9),
+    ("Price +12m", "% +12m", 11),   # reuses existing column position
+    ("Price +15m", "% +15m", 14),   # reuses existing column position
 ]
-FOLLOWUP_MAX_HOURS = 5
+# Only track the first 15 minutes — data shows the edge window is 1-15m.
+# +30m/+1h/+2h/+4h columns remain in SHEET_HEADERS for historical rows
+# but are no longer written by fill_followups().
+FOLLOWUP_MAX_HOURS = 0.25
 
 DIP_SHEET_NAME          = "Dip Watch"
 DIP_RECOVERY_MIN_SCORE  = 6
@@ -144,6 +146,7 @@ SHEET_HEADERS = [
     "Rugcheck Risk",           # Q
     "Top 10 Holders %",        # R
     "LP Locked",               # S
+    # ── v1 legacy columns (positions fixed, historical data here) ───
     "Price +3m",               # T
     "% +3m",                   # U
     "Price +6m",               # V
@@ -154,19 +157,31 @@ SHEET_HEADERS = [
     "% +12m",                  # AA
     "Price +15m",              # AB
     "% +15m",                  # AC
-    "Price +30m",              # AD
+    "Price +30m",              # AD  (v1 only — no longer written)
     "% +30m",                  # AE
-    "Price +1h",               # AF
+    "Price +1h",               # AF  (v1 only — no longer written)
     "% +1h",                   # AG
-    "Price +2h",               # AH
+    "Price +2h",               # AH  (v1 only — no longer written)
     "% +2h",                   # AI
-    "Price +4h",               # AJ
+    "Price +4h",               # AJ  (v1 only — no longer written)
     "% +4h",                   # AK
+    # ── summary ────────────────────────────────────────────────────
     "Peak % gain",             # AL
     "Rugged?",                 # AM
     "Auto Stop-Loss?",         # AN
     "Exit Strategy",           # AO
     "Stop %",                  # AP
+    # ── v3 active tracking window (1–15 min, granular) ─────────────
+    "Price +1m",               # AQ
+    "% +1m",                   # AR
+    "Price +2m",               # AS
+    "% +2m",                   # AT
+    "Price +4m",               # AU
+    "% +4m",                   # AV
+    "Price +8m",               # AW
+    "% +8m",                   # AX
+    "Price +10m",              # AY
+    "% +10m",                  # AZ
 ]
 
 SELL_LOG_HEADERS = [
@@ -191,6 +206,7 @@ DIP_SHEET_HEADERS = [
     "Rugcheck Risk",           # N
     "LP Locked",               # O
     "Chart URL",               # P
+    # ── v1 legacy columns (positions fixed, historical data here) ───
     "Price +3m",               # Q
     "% +3m",                   # R
     "Price +6m",               # S
@@ -201,19 +217,31 @@ DIP_SHEET_HEADERS = [
     "% +12m",                  # X
     "Price +15m",              # Y
     "% +15m",                  # Z
-    "Price +30m",              # AA
+    "Price +30m",              # AA  (v1 only — no longer written)
     "% +30m",                  # AB
-    "Price +1h",               # AC
+    "Price +1h",               # AC  (v1 only — no longer written)
     "% +1h",                   # AD
-    "Price +2h",               # AE
+    "Price +2h",               # AE  (v1 only — no longer written)
     "% +2h",                   # AF
-    "Price +4h",               # AG
+    "Price +4h",               # AG  (v1 only — no longer written)
     "% +4h",                   # AH
+    # ── summary ────────────────────────────────────────────────────
     "Peak % gain",             # AI
     "Rugged?",                 # AJ
     "Auto Stop-Loss?",         # AK
     "Exit Strategy",           # AL
     "Stop %",                  # AM
+    # ── v3 active tracking window (1–15 min, granular) ─────────────
+    "Price +1m",               # AN
+    "% +1m",                   # AO
+    "Price +2m",               # AP
+    "% +2m",                   # AQ
+    "Price +4m",               # AR
+    "% +4m",                   # AS
+    "Price +8m",               # AT
+    "% +8m",                   # AU
+    "Price +10m",              # AV
+    "% +10m",                  # AW
 ]
 
 
@@ -396,6 +424,7 @@ def log_alert_row(ws, all_rows, pair, score, green, rugcheck_data=None):
             "",
             "", "",
             EXIT_STRATEGY, TRAILING_STOP_PCT,
+            "", "", "", "", "", "", "", "", "", "",  # +1m +2m +4m +8m +10m (price+pct each)
         ]
         ok = _append_row_with_retry(ws, row)
         if ok:
@@ -1050,6 +1079,7 @@ def log_dip_row(ws_dip, all_dip_rows, pair, strategy, score, green, dip_pct, rug
             "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
             "", "", "",
             EXIT_STRATEGY, TRAILING_STOP_PCT,
+            "", "", "", "", "", "", "", "", "", "",  # +1m +2m +4m +8m +10m (price+pct each)
         ]
         ok = _append_row_with_retry(ws_dip, row)
         if ok:
