@@ -588,16 +588,20 @@ def get_rugcheck_data(address):
     """
     Fetch rugcheck.xyz risk data for a Solana token.
     Returns (risk_score_str, top10_holders_pct_str, lp_locked_str).
-    All strings - empty string on failure.
+    All strings — empty string on failure.
+
+    Uses the full /report endpoint (not /summary) because /summary no longer
+    returns topHolders or markets as of mid-2026.
     """
     try:
-        url = f"https://api.rugcheck.xyz/v1/tokens/{address}/report/summary"
-        r   = requests.get(url, timeout=8)
+        url = f"https://api.rugcheck.xyz/v1/tokens/{address}/report"
+        r   = requests.get(url, timeout=10)
         if r.status_code == 404:
             return "Not indexed", "", ""
         r.raise_for_status()
         data = r.json()
 
+        # ── risk score ───────────────────────────────────────────────────────
         risk_raw = data.get("score", "")
         if isinstance(risk_raw, (int, float)):
             if risk_raw < 5_000:    risk_label = f"{risk_raw} (Low)"
@@ -606,29 +610,47 @@ def get_rugcheck_data(address):
         else:
             risk_label = str(risk_raw) if risk_raw != "" else ""
 
-        top_holders = data.get("topHolders", [])
-        if top_holders:
-            raw_sum = sum(h.get("pct", 0) for h in top_holders[:10])
-            if raw_sum > 1.5:
-                top10_str = f"{raw_sum:.1f}%"
+        # ── top 10 holders ───────────────────────────────────────────────────
+        top10_str = ""
+        try:
+            top_holders = data.get("topHolders") or []
+            if top_holders:
+                raw_sum = sum(h.get("pct", 0) for h in top_holders[:10])
+                # pct can be 0-100 or 0-1 depending on API version
+                top10_str = f"{raw_sum:.1f}%" if raw_sum > 1.5 else f"{raw_sum * 100:.1f}%"
             else:
-                top10_str = f"{raw_sum * 100:.1f}%"
-        else:
-            top10_str = ""
+                print(f"  {Fore.YELLOW}Rugcheck ({address[:8]}...): topHolders missing or empty")
+        except Exception as e:
+            print(f"  {Fore.YELLOW}Rugcheck ({address[:8]}...): topHolders parse error: {e}")
 
+        # ── LP locked ────────────────────────────────────────────────────────
         lp_locked_str = ""
-        markets = data.get("markets", [])
-        if markets:
-            lp = markets[0].get("lp", {})
-            if isinstance(lp, dict):
-                locked     = lp.get("lpLocked", False)
-                locked_pct = lp.get("lpLockedPct", 0) or 0
-                lp_locked_str = f"Yes ({locked_pct:.0f}%)" if locked else "No"
-        if not lp_locked_str:
-            risks = data.get("risks", [])
-            lp_risk = next((r for r in risks if "liquidity" in r.get("name","").lower()), None)
-            if lp_risk:
-                lp_locked_str = "No" if lp_risk.get("level","") in ("warn","danger") else "Yes"
+        try:
+            markets = data.get("markets") or []
+            if markets:
+                lp = markets[0].get("lp", {})
+                if isinstance(lp, dict):
+                    locked     = lp.get("lpLocked", False)
+                    locked_pct = lp.get("lpLockedPct", 0) or 0
+                    lp_locked_str = f"Yes ({locked_pct:.0f}%)" if locked else "No"
+
+            # Fallback: /summary and newer /report both expose lpLockedPct at top level
+            if not lp_locked_str:
+                top_pct = data.get("lpLockedPct")
+                if top_pct is not None:
+                    lp_locked_str = f"Yes ({float(top_pct):.0f}%)" if float(top_pct) > 0 else "No"
+
+            # Last resort: risks list
+            if not lp_locked_str:
+                risks = data.get("risks") or []
+                lp_risk = next((r for r in risks if "liquidity" in r.get("name", "").lower()), None)
+                if lp_risk:
+                    lp_locked_str = "No" if lp_risk.get("level", "") in ("warn", "danger") else "Yes"
+
+            if not lp_locked_str:
+                print(f"  {Fore.YELLOW}Rugcheck ({address[:8]}...): could not determine LP locked status")
+        except Exception as e:
+            print(f"  {Fore.YELLOW}Rugcheck ({address[:8]}...): LP locked parse error: {e}")
 
         return risk_label, top10_str, lp_locked_str
 
