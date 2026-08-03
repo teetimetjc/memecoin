@@ -1,0 +1,74 @@
+name: Rugcheck API Debug
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Probe Rugcheck API
+        run: |
+          python3 - <<'EOF'
+          import requests, json
+
+          # A few real meme coin addresses to test with
+          addresses = [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC (always indexed)
+              "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",  # BONK
+              "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",  # WIF
+          ]
+
+          for addr in addresses:
+              print(f"\n{'='*60}")
+              print(f"Address: {addr}")
+              url = f"https://api.rugcheck.xyz/v1/tokens/{addr}/report/summary"
+              try:
+                  r = requests.get(url, timeout=10)
+                  print(f"Status: {r.status_code}")
+                  if r.status_code == 200:
+                      data = r.json()
+                      print(f"Top-level keys: {list(data.keys())}")
+                      print(f"score: {data.get('score')}")
+
+                      # topHolders
+                      th = data.get('topHolders')
+                      print(f"topHolders type: {type(th).__name__}, len: {len(th) if isinstance(th, list) else 'N/A'}")
+                      if isinstance(th, list) and th:
+                          print(f"topHolders[0] keys: {list(th[0].keys()) if isinstance(th[0], dict) else th[0]}")
+                          print(f"topHolders[0] pct: {th[0].get('pct') if isinstance(th[0], dict) else 'N/A'}")
+
+                      # markets / lp
+                      mk = data.get('markets')
+                      print(f"markets type: {type(mk).__name__}, len: {len(mk) if isinstance(mk, list) else 'N/A'}")
+                      if isinstance(mk, list) and mk:
+                          print(f"markets[0] keys: {list(mk[0].keys()) if isinstance(mk[0], dict) else mk[0]}")
+                          lp = mk[0].get('lp') if isinstance(mk[0], dict) else None
+                          print(f"markets[0].lp: {json.dumps(lp, indent=2) if lp else lp}")
+
+                      # risks
+                      risks = data.get('risks', [])
+                      print(f"risks count: {len(risks)}")
+                      if risks:
+                          print(f"risks sample: {json.dumps(risks[:3], indent=2)}")
+
+                      # full response for first address only
+                      if addr == addresses[0]:
+                          print(f"\nFull response (first address):\n{json.dumps(data, indent=2)[:3000]}")
+                  else:
+                      print(f"Body: {r.text[:500]}")
+              except Exception as e:
+                  print(f"Error: {e}")
+          EOF
