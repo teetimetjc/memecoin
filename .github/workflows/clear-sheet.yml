@@ -1,0 +1,17 @@
+name: Clear Sheet
+on:
+  workflow_dispatch:
+jobs:
+  clear:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests colorama gspread google-auth pytz
+      - run: python memecoinscanner.py --clear-sheet
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
