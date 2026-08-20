@@ -1,8 +1,6 @@
 name: Meme Coin Fast Follow-up (1-min)
 
 on:
-  schedule:
-    - cron: "* * * * *"  # every minute; GitHub Actions enforces 5-min minimum
   workflow_dispatch:
 
 jobs:
@@ -19,11 +17,9 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install requests colorama gspread google-auth pytz
 
       - name: Run fast follow-up
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
-          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
         run: python memecoinscanner.py --fast-followup
