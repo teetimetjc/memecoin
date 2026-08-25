@@ -1,0 +1,24 @@
+name: Predictor Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'Lookback hours (max ~16 due to Binance 1000-candle limit)'
+        required: false
+        default: '16'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install requests gspread google-auth
+      - name: Run backtest
+        run: python predictor.py --backtest --hours ${{ inputs.hours }}
