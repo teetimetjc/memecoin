@@ -14,25 +14,26 @@ from datetime import datetime, timedelta, timezone
 
 # --- CONFIG ---
 
-SPREADSHEET_ID   = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
-PRED_SHEET       = "Predictions"
-SYMBOLS          = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
-KRAKEN_PAIRS     = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
-                    "XRPUSDT": "XRPUSD", "DOGEUSDT": "XDGUSD"}
-PREDICT_HORIZON  = 15
-CANDLE_INTERVAL  = "1m"
-CANDLE_LOOKBACK  = 60
-OB_DEPTH         = 20
-RSI_PERIOD       = 7
-STOCH_RSI_PERIOD = 14
-EMA_FAST         = 9
-EMA_SLOW         = 21
-MACD_FAST        = 12
-MACD_SLOW        = 26
-MACD_SIGNAL      = 9
-BB_PERIOD        = 20
-BB_STDDEV        = 2.0
-VOL_SPIKE_WINDOW = 20
+SPREADSHEET_ID      = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
+PRED_SHEET          = "Predictions"
+SYMBOLS             = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
+KRAKEN_PAIRS        = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
+                       "XRPUSDT": "XRPUSD", "DOGEUSDT": "XDGUSD"}
+PREDICT_HORIZON     = 15
+CANDLE_INTERVAL     = "1m"
+CANDLE_LOOKBACK     = 60
+OB_DEPTH            = 20
+RSI_PERIOD          = 7
+STOCH_RSI_PERIOD    = 14
+EMA_FAST            = 9
+EMA_SLOW            = 21
+MACD_FAST           = 12
+MACD_SLOW           = 26
+MACD_SIGNAL         = 9
+BB_PERIOD           = 20
+BB_STDDEV           = 2.0
+VOL_SPIKE_WINDOW    = 20
+ALERT_THRESHOLD     = 40.0   # send Pushover when confidence >= this
 
 # Weights must sum to 1.0
 WEIGHTS = {
@@ -66,6 +67,26 @@ PRED_HEADERS = [
     "Actual Change %", # Q
     "Correct?",        # R
 ]
+
+# --- PUSHOVER ---
+
+def send_pushover(title, message):
+    token = os.environ.get("PUSHOVER_TOKEN")
+    user  = os.environ.get("PUSHOVER_USER")
+    if not token or not user:
+        print("  [Pushover] Skipped — PUSHOVER_TOKEN or PUSHOVER_USER not set")
+        return
+    try:
+        r = requests.post(
+            "https://api.pushover.net/1/messages.json",
+            data={"token": token, "user": user, "title": title, "message": message},
+            timeout=10,
+        )
+        r.raise_for_status()
+        print(f"  [Pushover] Alert sent: {title}")
+    except Exception as e:
+        print(f"  [Pushover] Failed: {e}")
+
 
 # --- GOOGLE SHEETS ---
 
@@ -211,7 +232,6 @@ def calc_macd(closes, fast=12, slow=26, signal=9):
     if ema_fast is None or ema_slow is None:
         return None
     macd_line = ema_fast - ema_slow
-    # Build recent MACD values for signal line
     macd_series = []
     for i in range(signal + 5):
         idx = len(closes) - signal - 5 + i
@@ -346,7 +366,6 @@ def compute_signal(symbol):
             bb_position = round((price - middle) / (band_width / 2), 3)
         else:
             bb_position = 0.0
-        # Above upper band = overbought (DOWN signal), below lower = oversold (UP)
         if price > upper:
             bb_sig = -1.0
         elif price > middle + (band_width * 0.25):
@@ -404,19 +423,19 @@ def compute_signal(symbol):
     confidence = round(abs(composite) * 100, 1)
 
     return {
-        "symbol":     symbol,
-        "price":      price,
-        "direction":  direction,
-        "confidence": confidence,
-        "rsi":        round(rsi, 1) if rsi is not None else "",
-        "stoch_rsi":  round(stoch, 1) if stoch is not None else "",
-        "ema_label":  ema_label,
-        "macd_label": macd_label,
+        "symbol":      symbol,
+        "price":       price,
+        "direction":   direction,
+        "confidence":  confidence,
+        "rsi":         round(rsi, 1) if rsi is not None else "",
+        "stoch_rsi":   round(stoch, 1) if stoch is not None else "",
+        "ema_label":   ema_label,
+        "macd_label":  macd_label,
         "bb_position": bb_position,
-        "ob_ratio":   round(ob_ratio, 3),
-        "vol_ratio":  round(vol_ratio, 2),
-        "vwap_dev":   round(vwap_dev_pct, 3) if vwap else "",
-        "composite":  round(composite, 4),
+        "ob_ratio":    round(ob_ratio, 3),
+        "vol_ratio":   round(vol_ratio, 2),
+        "vwap_dev":    round(vwap_dev_pct, 3) if vwap else "",
+        "composite":   round(composite, 4),
     }
 
 
@@ -458,6 +477,17 @@ def run_predictions():
                 f"(RSI={sig['rsi']}, StochRSI={sig['stoch_rsi']}, EMA={sig['ema_label']}, "
                 f"MACD={sig['macd_label']}, BB={sig['bb_position']}, composite={sig['composite']:.3f})"
             )
+
+            if sig["confidence"] >= ALERT_THRESHOLD:
+                send_pushover(
+                    title=f"Crypto Alert: {symbol} {sig['direction']} {sig['confidence']:.0f}%",
+                    message=(
+                        f"{symbol} @ ${sig['price']:,.4f}\n"
+                        f"Direction: {sig['direction']} (next 15 min)\n"
+                        f"Confidence: {sig['confidence']:.1f}%\n"
+                        f"EMA={sig['ema_label']} | MACD={sig['macd_label']} | RSI={sig['rsi']}"
+                    ),
+                )
         except Exception as e:
             print(f"  {symbol}: ERROR -- {e}")
 
@@ -581,7 +611,6 @@ def backtest(lookback_hours=24):
 
             vol_sig = ema_sig if vol_r >= 2.0 else (ema_sig * 0.5 if vol_r >= 1.5 else 0)
 
-            # VWAP from window candles
             sub = klines[max(0, i - CANDLE_LOOKBACK):i + 1]
             total_pv = sum(
                 ((float(c[2]) + float(c[3]) + float(c[4])) / 3) * float(c[5])
