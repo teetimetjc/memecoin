@@ -71,10 +71,10 @@ PRED_HEADERS = [
 # --- PUSHOVER ---
 
 def send_pushover(title, message):
-    token = os.environ.get("PUSHOVER_TOKEN")
-    user  = os.environ.get("PUSHOVER_USER")
+    token = os.environ.get("PUSHOVER_APP_TOKEN")
+    user  = os.environ.get("PUSHOVER_USER_KEY")
     if not token or not user:
-        print("  [Pushover] Skipped — PUSHOVER_TOKEN or PUSHOVER_USER not set")
+        print("  [Pushover] Skipped -- PUSHOVER_APP_TOKEN or PUSHOVER_USER_KEY not set")
         return
     try:
         r = requests.post(
