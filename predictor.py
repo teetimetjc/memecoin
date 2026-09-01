@@ -1,6 +1,6 @@
 """
 15-Minute Crypto Direction Predictor
-Targets: BTC, ETH, SOL — uses Kraken public API (no geo-restriction)
+Targets: BTC, ETH, SOL -- uses Kraken public API (no geo-restriction)
 Logs predictions to Google Sheets; resolves outcomes 15 min later.
 
 Usage:
@@ -9,48 +9,61 @@ Usage:
     python predictor.py --backtest   # backtest composite score on last 24h of data
 """
 
-import os, sys, json, time, argparse, requests
+import os, sys, json, math, argparse, requests
 from datetime import datetime, timedelta, timezone
 
 # --- CONFIG ---
 
-SPREADSHEET_ID    = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
-PRED_SHEET        = "Predictions"
-SYMBOLS           = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-KRAKEN_PAIRS      = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD"}
-PREDICT_HORIZON   = 15
-CANDLE_INTERVAL   = "1m"
-CANDLE_LOOKBACK   = 60
-OB_DEPTH          = 20
-RSI_PERIOD        = 7
-EMA_FAST          = 9
-EMA_SLOW          = 21
-VOL_SPIKE_WINDOW  = 20
+SPREADSHEET_ID   = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
+PRED_SHEET       = "Predictions"
+SYMBOLS          = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+KRAKEN_PAIRS     = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD"}
+PREDICT_HORIZON  = 15
+CANDLE_INTERVAL  = "1m"
+CANDLE_LOOKBACK  = 60
+OB_DEPTH         = 20
+RSI_PERIOD       = 7
+STOCH_RSI_PERIOD = 14
+EMA_FAST         = 9
+EMA_SLOW         = 21
+MACD_FAST        = 12
+MACD_SLOW        = 26
+MACD_SIGNAL      = 9
+BB_PERIOD        = 20
+BB_STDDEV        = 2.0
+VOL_SPIKE_WINDOW = 20
 
+# Weights must sum to 1.0
 WEIGHTS = {
-    "rsi":        0.25,
-    "ema":        0.25,
-    "ob_imbal":   0.25,
-    "vol_spike":  0.15,
-    "vwap_dev":   0.10,
+    "rsi":       0.12,
+    "stoch_rsi": 0.10,
+    "ema":       0.10,
+    "macd":      0.15,
+    "bb":        0.13,
+    "ob_imbal":  0.20,
+    "vol_spike": 0.10,
+    "vwap_dev":  0.10,
 }
 
 PRED_HEADERS = [
-    "Timestamp",
-    "Symbol",
-    "Price at Pred",
-    "Direction",
-    "Confidence",
-    "RSI(7)",
-    "EMA Signal",
-    "OB Imbalance",
-    "Vol Spike Ratio",
-    "VWAP Dev %",
-    "Composite Score",
-    "Eval Time",
-    "Price at Eval",
-    "Actual Change %",
-    "Correct?",
+    "Timestamp",       # A
+    "Symbol",          # B
+    "Price at Pred",   # C
+    "Direction",       # D
+    "Confidence",      # E
+    "RSI(7)",          # F
+    "Stoch RSI",       # G
+    "EMA Signal",      # H
+    "MACD Signal",     # I
+    "BB Position",     # J  (-1 below lower, 0 mid, +1 above upper)
+    "OB Imbalance",    # K
+    "Vol Spike Ratio", # L
+    "VWAP Dev %",      # M
+    "Composite Score", # N
+    "Eval Time",       # O
+    "Price at Eval",   # P
+    "Actual Change %", # Q
+    "Correct?",        # R
 ]
 
 # --- GOOGLE SHEETS ---
@@ -158,6 +171,26 @@ def calc_rsi(closes, period=7):
     return 100 - (100 / (1 + rs))
 
 
+def calc_stoch_rsi(closes, rsi_period=14, stoch_period=14):
+    """Stochastic RSI: where current RSI sits within its recent range (0-100)."""
+    if len(closes) < rsi_period + stoch_period + 1:
+        return None
+    rsi_values = []
+    for i in range(stoch_period):
+        window = closes[-(rsi_period + stoch_period - i):-(stoch_period - i) or None]
+        r = calc_rsi(window, rsi_period)
+        if r is not None:
+            rsi_values.append(r)
+    if not rsi_values:
+        return None
+    current_rsi = rsi_values[-1]
+    min_rsi = min(rsi_values)
+    max_rsi = max(rsi_values)
+    if max_rsi == min_rsi:
+        return 50.0
+    return (current_rsi - min_rsi) / (max_rsi - min_rsi) * 100
+
+
 def calc_ema(values, period):
     if len(values) < period:
         return None
@@ -166,6 +199,45 @@ def calc_ema(values, period):
     for v in values[period:]:
         ema = v * k + ema * (1 - k)
     return ema
+
+
+def calc_macd(closes, fast=12, slow=26, signal=9):
+    """Returns (macd_line, signal_line, histogram) or None."""
+    if len(closes) < slow + signal:
+        return None
+    ema_fast = calc_ema(closes, fast)
+    ema_slow = calc_ema(closes, slow)
+    if ema_fast is None or ema_slow is None:
+        return None
+    macd_line = ema_fast - ema_slow
+    # Build recent MACD values for signal line
+    macd_series = []
+    for i in range(signal + 5):
+        idx = len(closes) - signal - 5 + i
+        if idx < slow:
+            continue
+        ef = calc_ema(closes[:idx + 1], fast)
+        es = calc_ema(closes[:idx + 1], slow)
+        if ef and es:
+            macd_series.append(ef - es)
+    if len(macd_series) < signal:
+        return None
+    signal_line = calc_ema(macd_series, signal)
+    if signal_line is None:
+        return None
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def calc_bollinger(closes, period=20, num_std=2.0):
+    """Returns (upper, middle, lower) bands."""
+    if len(closes) < period:
+        return None
+    window = closes[-period:]
+    middle = sum(window) / period
+    variance = sum((x - middle) ** 2 for x in window) / period
+    std = math.sqrt(variance)
+    return middle + num_std * std, middle, middle - num_std * std
 
 
 def calc_vwap(klines):
@@ -195,13 +267,14 @@ def calc_vol_spike(volumes, window=20):
 # --- COMPOSITE SCORE ---
 
 def compute_signal(symbol):
-    klines = get_klines(symbol, CANDLE_INTERVAL, CANDLE_LOOKBACK + 5)
+    klines = get_klines(symbol, CANDLE_INTERVAL, CANDLE_LOOKBACK + 35)
     ob = get_orderbook(symbol, OB_DEPTH)
 
     closes = [float(k[4]) for k in klines]
     volumes = [float(k[5]) for k in klines]
     price = closes[-1]
 
+    # RSI
     rsi = calc_rsi(closes, RSI_PERIOD)
     if rsi is None:
         rsi_sig = 0.0
@@ -216,6 +289,22 @@ def compute_signal(symbol):
     else:
         rsi_sig = 0.0
 
+    # Stochastic RSI
+    stoch = calc_stoch_rsi(closes, STOCH_RSI_PERIOD, STOCH_RSI_PERIOD)
+    if stoch is None:
+        stoch_sig = 0.0
+    elif stoch > 80:
+        stoch_sig = -1.0
+    elif stoch > 65:
+        stoch_sig = -0.5
+    elif stoch < 20:
+        stoch_sig = 1.0
+    elif stoch < 35:
+        stoch_sig = 0.5
+    else:
+        stoch_sig = 0.0
+
+    # EMA crossover
     ema_fast = calc_ema(closes, EMA_FAST)
     ema_slow = calc_ema(closes, EMA_SLOW)
     if ema_fast is None or ema_slow is None:
@@ -230,9 +319,49 @@ def compute_signal(symbol):
         else:
             ema_sig, ema_label = 0.0, "FLAT"
 
+    # MACD
+    macd_result = calc_macd(closes, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+    if macd_result is None:
+        macd_sig = 0.0
+        macd_label = "FLAT"
+    else:
+        _, _, histogram = macd_result
+        if histogram > 0.001 * price / 1000:
+            macd_sig, macd_label = 1.0, "BULL"
+        elif histogram < -0.001 * price / 1000:
+            macd_sig, macd_label = -1.0, "BEAR"
+        else:
+            macd_sig, macd_label = 0.0, "FLAT"
+
+    # Bollinger Bands
+    bb = calc_bollinger(closes, BB_PERIOD, BB_STDDEV)
+    if bb is None:
+        bb_sig = 0.0
+        bb_position = 0.0
+    else:
+        upper, middle, lower = bb
+        band_width = upper - lower
+        if band_width > 0:
+            bb_position = round((price - middle) / (band_width / 2), 3)
+        else:
+            bb_position = 0.0
+        # Above upper band = overbought (DOWN signal), below lower = oversold (UP)
+        if price > upper:
+            bb_sig = -1.0
+        elif price > middle + (band_width * 0.25):
+            bb_sig = -0.5
+        elif price < lower:
+            bb_sig = 1.0
+        elif price < middle - (band_width * 0.25):
+            bb_sig = 0.5
+        else:
+            bb_sig = 0.0
+
+    # Order book imbalance
     ob_ratio = calc_ob_imbalance(ob, OB_DEPTH)
     ob_sig = (ob_ratio - 0.5) * 2
 
+    # Volume spike
     vol_ratio = calc_vol_spike(volumes, VOL_SPIKE_WINDOW)
     if vol_ratio >= 2.0:
         vol_sig = ema_sig
@@ -241,6 +370,7 @@ def compute_signal(symbol):
     else:
         vol_sig = 0.0
 
+    # VWAP deviation
     vwap = calc_vwap(klines)
     if vwap:
         vwap_dev_pct = (price - vwap) / vwap * 100
@@ -259,27 +389,33 @@ def compute_signal(symbol):
         vwap_sig = 0.0
 
     composite = (
-        WEIGHTS["rsi"] * rsi_sig
-        + WEIGHTS["ema"] * ema_sig
-        + WEIGHTS["ob_imbal"] * ob_sig
+        WEIGHTS["rsi"]       * rsi_sig
+        + WEIGHTS["stoch_rsi"] * stoch_sig
+        + WEIGHTS["ema"]       * ema_sig
+        + WEIGHTS["macd"]      * macd_sig
+        + WEIGHTS["bb"]        * bb_sig
+        + WEIGHTS["ob_imbal"]  * ob_sig
         + WEIGHTS["vol_spike"] * vol_sig
-        + WEIGHTS["vwap_dev"] * vwap_sig
+        + WEIGHTS["vwap_dev"]  * vwap_sig
     )
 
     direction = "UP" if composite > 0 else "DOWN"
     confidence = round(abs(composite) * 100, 1)
 
     return {
-        "symbol": symbol,
-        "price": price,
-        "direction": direction,
+        "symbol":     symbol,
+        "price":      price,
+        "direction":  direction,
         "confidence": confidence,
-        "rsi": round(rsi, 1) if rsi else "",
-        "ema_label": ema_label,
-        "ob_ratio": round(ob_ratio, 3),
-        "vol_ratio": round(vol_ratio, 2),
-        "vwap_dev": round(vwap_dev_pct, 3) if vwap else "",
-        "composite": round(composite, 4),
+        "rsi":        round(rsi, 1) if rsi is not None else "",
+        "stoch_rsi":  round(stoch, 1) if stoch is not None else "",
+        "ema_label":  ema_label,
+        "macd_label": macd_label,
+        "bb_position": bb_position,
+        "ob_ratio":   round(ob_ratio, 3),
+        "vol_ratio":  round(vol_ratio, 2),
+        "vwap_dev":   round(vwap_dev_pct, 3) if vwap else "",
+        "composite":  round(composite, 4),
     }
 
 
@@ -304,7 +440,10 @@ def run_predictions():
                 sig["direction"],
                 sig["confidence"],
                 sig["rsi"],
+                sig["stoch_rsi"],
                 sig["ema_label"],
+                sig["macd_label"],
+                sig["bb_position"],
                 sig["ob_ratio"],
                 sig["vol_ratio"],
                 sig["vwap_dev"],
@@ -315,8 +454,8 @@ def run_predictions():
             ws.append_row(row, value_input_option="USER_ENTERED")
             print(
                 f"  {symbol}: {sig['direction']} {sig['confidence']:.1f}% conf "
-                f"(RSI={sig['rsi']}, EMA={sig['ema_label']}, OB={sig['ob_ratio']:.2f}, "
-                f"Vol={sig['vol_ratio']:.1f}x, composite={sig['composite']:.3f})"
+                f"(RSI={sig['rsi']}, StochRSI={sig['stoch_rsi']}, EMA={sig['ema_label']}, "
+                f"MACD={sig['macd_label']}, BB={sig['bb_position']}, composite={sig['composite']:.3f})"
             )
         except Exception as e:
             print(f"  {symbol}: ERROR -- {e}")
@@ -336,13 +475,13 @@ def resolve_outcomes():
     now = datetime.now(timezone.utc)
     updates = []
 
-    sym_col = PRED_HEADERS.index("Symbol")
+    sym_col   = PRED_HEADERS.index("Symbol")
     price_col = PRED_HEADERS.index("Price at Pred")
-    dir_col = PRED_HEADERS.index("Direction")
-    eval_col = PRED_HEADERS.index("Eval Time")
-    res_col = PRED_HEADERS.index("Price at Eval")
-    chg_col = PRED_HEADERS.index("Actual Change %")
-    cor_col = PRED_HEADERS.index("Correct?")
+    dir_col   = PRED_HEADERS.index("Direction")
+    eval_col  = PRED_HEADERS.index("Eval Time")
+    res_col   = PRED_HEADERS.index("Price at Eval")
+    chg_col   = PRED_HEADERS.index("Actual Change %")
+    cor_col   = PRED_HEADERS.index("Correct?")
 
     resolved = 0
     for i, row in enumerate(rows[1:], start=2):
@@ -350,18 +489,15 @@ def resolve_outcomes():
             continue
         if len(row) > res_col and row[res_col]:
             continue
-
         try:
             eval_time = datetime.strptime(row[eval_col], "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc)
         except ValueError:
             continue
         if eval_time > now:
             continue
-
         symbol = row[sym_col] if len(row) > sym_col else ""
         if not symbol:
             continue
-
         try:
             actual_price = get_price(symbol)
             pred_price = float(row[price_col])
@@ -389,56 +525,85 @@ def resolve_outcomes():
 def backtest(lookback_hours=24):
     print(f"\nBacktest: last {lookback_hours}h, predicting {PREDICT_HORIZON}min direction\n")
     for symbol in SYMBOLS:
-        klines = get_klines(symbol, "1m", min(lookback_hours * 60 + 30, 720))
+        klines = get_klines(symbol, "1m", min(lookback_hours * 60 + 60, 720))
         closes = [float(k[4]) for k in klines]
         vols = [float(k[5]) for k in klines]
 
         correct, total = 0, 0
-        for i in range(CANDLE_LOOKBACK, len(closes) - PREDICT_HORIZON, 5):
-            window_c = closes[max(0, i - CANDLE_LOOKBACK):i + 1]
-            window_v = vols[max(0, i - CANDLE_LOOKBACK):i + 1]
+        start = max(CANDLE_LOOKBACK, MACD_SLOW + MACD_SIGNAL + 5)
+        for i in range(start, len(closes) - PREDICT_HORIZON, 5):
+            wc = closes[max(0, i - CANDLE_LOOKBACK):i + 1]
+            wv = vols[max(0, i - CANDLE_LOOKBACK):i + 1]
 
-            rsi = calc_rsi(window_c, RSI_PERIOD)
-            ema_f = calc_ema(window_c, EMA_FAST)
-            ema_s = calc_ema(window_c, EMA_SLOW)
-            vol_r = calc_vol_spike(window_v, VOL_SPIKE_WINDOW)
+            rsi = calc_rsi(wc, RSI_PERIOD)
+            stoch = calc_stoch_rsi(wc, STOCH_RSI_PERIOD, STOCH_RSI_PERIOD)
+            ema_f = calc_ema(wc, EMA_FAST)
+            ema_s = calc_ema(wc, EMA_SLOW)
+            macd_r = calc_macd(wc, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+            bb = calc_bollinger(wc, BB_PERIOD, BB_STDDEV)
+            vol_r = calc_vol_spike(wv, VOL_SPIKE_WINDOW)
 
             if rsi is None or ema_f is None or ema_s is None:
                 continue
 
             rsi_sig = -1 if rsi > 70 else (-0.5 if rsi > 60 else (1 if rsi < 30 else (0.5 if rsi < 40 else 0)))
+
+            stoch_sig = 0.0
+            if stoch is not None:
+                stoch_sig = -1 if stoch > 80 else (-0.5 if stoch > 65 else (1 if stoch < 20 else (0.5 if stoch < 35 else 0)))
+
             diff_pct = (ema_f - ema_s) / ema_s * 100
             ema_sig = 1 if diff_pct > 0.1 else (-1 if diff_pct < -0.1 else 0)
+
+            macd_sig = 0.0
+            if macd_r:
+                _, _, hist = macd_r
+                price_ref = wc[-1]
+                if hist > 0.001 * price_ref / 1000:
+                    macd_sig = 1.0
+                elif hist < -0.001 * price_ref / 1000:
+                    macd_sig = -1.0
+
+            bb_sig = 0.0
+            if bb:
+                upper, middle, lower = bb
+                p = wc[-1]
+                band_width = upper - lower
+                if p > upper:
+                    bb_sig = -1.0
+                elif p > middle + (band_width * 0.25):
+                    bb_sig = -0.5
+                elif p < lower:
+                    bb_sig = 1.0
+                elif p < middle - (band_width * 0.25):
+                    bb_sig = 0.5
+
             vol_sig = ema_sig if vol_r >= 2.0 else (ema_sig * 0.5 if vol_r >= 1.5 else 0)
 
+            # VWAP from window candles
+            sub = klines[max(0, i - CANDLE_LOOKBACK):i + 1]
             total_pv = sum(
-                ((float(klines[max(0, i - CANDLE_LOOKBACK) + j][2])
-                  + float(klines[max(0, i - CANDLE_LOOKBACK) + j][3])
-                  + float(klines[max(0, i - CANDLE_LOOKBACK) + j][4])) / 3)
-                * float(klines[max(0, i - CANDLE_LOOKBACK) + j][5])
-                for j in range(len(window_c))
+                ((float(c[2]) + float(c[3]) + float(c[4])) / 3) * float(c[5])
+                for c in sub
             )
-            total_vol = sum(window_v)
-            vwap = total_pv / total_vol if total_vol else window_c[-1]
-            vwap_dev = (window_c[-1] - vwap) / vwap * 100
-            vwap_sig = (
-                -0.5 if vwap_dev > 1 else
-                (-0.25 if vwap_dev > 0.5 else
-                 (0.5 if vwap_dev < -1 else
-                  (0.25 if vwap_dev < -0.5 else 0)))
-            )
+            total_vol = sum(float(c[5]) for c in sub)
+            vwap = total_pv / total_vol if total_vol else wc[-1]
+            vwap_dev = (wc[-1] - vwap) / vwap * 100
+            vwap_sig = (-0.5 if vwap_dev > 1 else (-0.25 if vwap_dev > 0.5 else
+                        (0.5 if vwap_dev < -1 else (0.25 if vwap_dev < -0.5 else 0))))
 
             composite = (
-                WEIGHTS["rsi"] * rsi_sig
-                + WEIGHTS["ema"] * ema_sig
+                WEIGHTS["rsi"]       * rsi_sig
+                + WEIGHTS["stoch_rsi"] * stoch_sig
+                + WEIGHTS["ema"]       * ema_sig
+                + WEIGHTS["macd"]      * macd_sig
+                + WEIGHTS["bb"]        * bb_sig
                 + WEIGHTS["vol_spike"] * vol_sig
-                + WEIGHTS["vwap_dev"] * vwap_sig
+                + WEIGHTS["vwap_dev"]  * vwap_sig
             )
 
             direction = "UP" if composite > 0 else "DOWN"
-            future_price = closes[i + PREDICT_HORIZON]
-            actual_dir = "UP" if future_price > closes[i] else "DOWN"
-
+            actual_dir = "UP" if closes[i + PREDICT_HORIZON] > closes[i] else "DOWN"
             if direction == actual_dir:
                 correct += 1
             total += 1
@@ -454,9 +619,9 @@ def backtest(lookback_hours=24):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--resolve", action="store_true")
+    parser.add_argument("--resolve",  action="store_true")
     parser.add_argument("--backtest", action="store_true")
-    parser.add_argument("--hours", type=int, default=24)
+    parser.add_argument("--hours",    type=int, default=24)
     args = parser.parse_args()
 
     if args.backtest:
