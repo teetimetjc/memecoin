@@ -1,1 +1,472 @@
-"""\n15-Minute Crypto Direction Predictor\nTargets: BTC, ETH, SOL — uses Kraken public API (no geo-restriction)\nLogs predictions to Google Sheets; resolves outcomes 15 min later.\n\nUsage:\n    python predictor.py              # generate new predictions\n    python predictor.py --resolve    # fill in outcomes for predictions due\n    python predictor.py --backtest   # backtest composite score on last 24h of data\n"""\n\nimport os, sys, json, time, argparse, requests\nfrom datetime import datetime, timedelta, timezone\n\n# ─── CONFIG ──────────────────────────────────────────────────────────────────\n\nSPREADSHEET_ID    = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"\nPRED_SHEET        = "Predictions"\n# Kraken pair names for each symbol we track\nSYMBOLS           = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]\nKRAKEN_PAIRS      = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD"}\nPREDICT_HORIZON   = 15          # minutes ahead we're predicting\nCANDLE_INTERVAL   = "1m"\nCANDLE_LOOKBACK   = 60          # candles (= 60 min of 1m data)\nOB_DEPTH          = 20          # order book levels to fetch\nRSI_PERIOD        = 7\nEMA_FAST          = 9\nEMA_SLOW          = 21\nVOL_SPIKE_WINDOW  = 20          # candles for average volume baseline\n\n# Composite score weights (must sum to 1.0)\nWEIGHTS = {\n    "rsi":        0.25,\n    "ema":        0.25,\n    "ob_imbal":   0.25,\n    "vol_spike":  0.15,\n    "vwap_dev":   0.10,\n}\n\nPRED_HEADERS = [\n    "Timestamp",          # A — when prediction was made\n    "Symbol",             # B\n    "Price at Pred",      # C\n    "Direction",          # D — UP or DOWN\n    "Confidence",         # E — 0-100\n    "RSI(7)",             # F\n    "EMA Signal",         # G — BULL / BEAR / FLAT\n    "OB Imbalance",       # H — bid/ask ratio\n    "Vol Spike Ratio",    # I\n    "VWAP Dev %",         # J\n    "Composite Score",    # K — -1 to +1\n    "Eval Time",          # L — when to check the outcome\n    "Price at Eval",      # M — filled by --resolve\n    "Actual Change %",    # N\n    "Correct?",           # O — Yes / No\n]\n\n# ─── GOOGLE SHEETS ───────────────────────────────────────────────────────────\n\ndef _get_client():\n    try:\n        import gspread\n        from google.oauth2.service_account import Credentials\n    except ImportError:\n        sys.exit("gspread not installed")\n    scopes = ["https://www.googleapis.com/auth/spreadsheets"]\n    raw = os.environ.get("GOOGLE_CREDENTIALS")\n    if raw:\n        creds = Credentials.from_service_account_info(json.loads(raw), scopes=scopes)\n    else:\n        f = os.environ.get("GOOGLE_CREDENTIALS_FILE", "meme-coin-creds.json")\n        if not os.path.exists(f):\n            sys.exit("No Google credentials found")\n        creds = Credentials.from_service_account_file(f, scopes=scopes)\n    return gspread.authorize(creds)\n\n\ndef open_pred_sheet(client):\n    sh = client.open_by_key(SPREADSHEET_ID)\n    try:\n        ws = sh.worksheet(PRED_SHEET)\n    except Exception:\n        ws = sh.add_worksheet(title=PRED_SHEET, rows=5000, cols=len(PRED_HEADERS))\n    existing = ws.row_values(1)\n    if existing != PRED_HEADERS:\n        if ws.col_count < len(PRED_HEADERS):\n            ws.add_cols(len(PRED_HEADERS) - ws.col_count)\n        ws.update([PRED_HEADERS], "A1")\n    return ws\n\n\n# ─── KRAKEN API ──────────────────────────────────────────────────────────────\n\nKRAKEN_BASE = "https://api.kraken.com/0/public"\n\ndef get_klines(symbol, interval="1m", limit=60):\n    """\n    Fetch OHLCV from Kraken. Returns list normalized to Binance-style:\n    [time_ms, open, high, low, close, volume]\n    Kraken interval is in minutes (1m → 1).\n    """\n    pair = KRAKEN_PAIRS[symbol]\n    interval_min = 1  # we only use 1m candles\n    r = requests.get(\n        f"{KRAKEN_BASE}/OHLC",\n        params={"pair": pair, "interval": interval_min},\n        timeout=15,\n    )\n    r.raise_for_status()\n    data = r.json()\n    if data.get("error"):\n        raise ValueError(f"Kraken error: {data['error']}")\n    # Kraken returns {"result": {"XBTUSD": [[time,open,high,low,close,vwap,vol,count],...], "last": ...}}\n    result_key = [k for k in data["result"] if k != "last"][0]\n    candles = data["result"][result_key]\n    # Normalize to [time_ms, open, high, low, close, volume]\n    normalized = [\n        [int(c[0]) * 1000, c[1], c[2], c[3], c[4], c[6]]\n        for c in candles\n    ]\n    return normalized[-limit:] if limit else normalized\n\n\ndef get_orderbook(symbol, limit=20):\n    """\n    Returns {"bids": [["price","vol",...], ...], "asks": [...]} (same shape as Binance).\n    """\n    pair = KRAKEN_PAIRS[symbol]\n    r = requests.get(\n        f"{KRAKEN_BASE}/Depth",\n        params={"pair": pair, "count": limit},\n        timeout=10,\n    )\n    r.raise_for_status()\n    data = r.json()\n    if data.get("error"):\n        raise ValueError(f"Kraken error: {data['error']}")\n    result_key = [k for k in data["result"]][0]\n    ob = data["result"][result_key]\n    return {"bids": ob["bids"], "asks": ob["asks"]}\n\n\ndef get_price(symbol):\n    pair = KRAKEN_PAIRS[symbol]\n    r = requests.get(\n        f"{KRAKEN_BASE}/Ticker",\n        params={"pair": pair},\n        timeout=10,\n    )\n    r.raise_for_status()\n    data = r.json()\n    if data.get("error"):\n        raise ValueError(f"Kraken error: {data['error']}")\n    result_key = [k for k in data["result"]][0]\n    # "c" = [last_trade_price, lot_volume]\n    return float(data["result"][result_key]["c"][0])\n\n\n# ─── INDICATORS ──────────────────────────────────────────────────────────────\n\ndef calc_rsi(closes, period=7):\n    if len(closes) < period + 1:\n        return None\n    gains, losses = [], []\n    for i in range(1, period + 1):\n        diff = closes[-(period + 1 - i)] - closes[-(period + 2 - i)]\n        (gains if diff > 0 else losses).append(abs(diff))\n    avg_gain = sum(gains) / period if gains else 0\n    avg_loss = sum(losses) / period if losses else 1e-9\n    rs = avg_gain / avg_loss\n    return 100 - (100 / (1 + rs))\n\n\ndef calc_ema(values, period):\n    if len(values) < period:\n        return None\n    k = 2 / (period + 1)\n    ema = sum(values[:period]) / period\n    for v in values[period:]:\n        ema = v * k + ema * (1 - k)\n    return ema\n\n\ndef calc_vwap(klines):\n    """Session VWAP from the provided candles."""\n    total_vol, total_pv = 0, 0\n    for k in klines:\n        high, low, close, vol = float(k[2]), float(k[3]), float(k[4]), float(k[5])\n        typical = (high + low + close) / 3\n        total_pv  += typical * vol\n        total_vol += vol\n    return total_pv / total_vol if total_vol else None\n\n\ndef calc_ob_imbalance(ob, levels=10):\n    """Bid volume / (bid + ask) at top N levels. >0.5 = more bid pressure."""\n    bids = sum(float(b[1]) for b in ob["bids"][:levels])\n    asks = sum(float(a[1]) for a in ob["asks"][:levels])\n    total = bids + asks\n    return bids / total if total else 0.5\n\n\ndef calc_vol_spike(volumes, window=20):\n    """Current volume vs avg of previous window candles."""\n    if len(volumes) < window + 1:\n        return 1.0\n    avg = sum(volumes[-window-1:-1]) / window\n    return volumes[-1] / avg if avg else 1.0\n\n\n# ─── COMPOSITE SCORE ─────────────────────────────────────────────────────────\n\ndef compute_signal(symbol):\n    """\n    Fetch market data, compute all indicators, return signal dict.\n    composite_score: -1.0 (strong DOWN) to +1.0 (strong UP)\n    """\n    klines = get_klines(symbol, CANDLE_INTERVAL, CANDLE_LOOKBACK + 5)\n    ob     = get_orderbook(symbol, OB_DEPTH)\n\n    closes  = [float(k[4]) for k in klines]\n    volumes = [float(k[5]) for k in klines]\n    price   = closes[-1]\n\n    # RSI signal: -1 (overbought→DOWN), 0 (neutral), +1 (oversold→UP)\n    rsi = calc_rsi(closes, RSI_PERIOD)\n    if rsi is None:\n        rsi_sig = 0.0\n    elif rsi > 70:\n        rsi_sig = -1.0\n    elif rsi > 60:\n        rsi_sig = -0.5\n    elif rsi < 30:\n        rsi_sig = 1.0\n    elif rsi < 40:\n        rsi_sig = 0.5\n    else:\n        rsi_sig = 0.0\n\n    # EMA crossover signal\n    ema_fast = calc_ema(closes, EMA_FAST)\n    ema_slow = calc_ema(closes, EMA_SLOW)\n    if ema_fast is None or ema_slow is None:\n        ema_sig = 0.0\n        ema_label = "FLAT"\n    else:\n        diff_pct = (ema_fast - ema_slow) / ema_slow * 100\n        if diff_pct > 0.1:\n            ema_sig, ema_label = 1.0, "BULL"\n        elif diff_pct < -0.1:\n            ema_sig, ema_label = -1.0, "BEAR"\n        else:\n            ema_sig, ema_label = 0.0, "FLAT"\n\n    # Order book imbalance signal: maps 0→-1, 0.5→0, 1→+1\n    ob_ratio = calc_ob_imbalance(ob, OB_DEPTH)\n    ob_sig = (ob_ratio - 0.5) * 2  # range -1 to +1\n\n    # Volume spike signal: spike > 2x is bullish confirmation (direction from EMA)\n    vol_ratio = calc_vol_spike(volumes, VOL_SPIKE_WINDOW)\n    if vol_ratio >= 2.0:\n        vol_sig = ema_sig  # spike amplifies prevailing direction\n    elif vol_ratio >= 1.5:\n        vol_sig = ema_sig * 0.5\n    else:\n        vol_sig = 0.0\n\n    # VWAP deviation signal\n    vwap = calc_vwap(klines)\n    if vwap:\n        vwap_dev_pct = (price - vwap) / vwap * 100\n        # Far above VWAP → mean reversion DOWN; far below → UP\n        if vwap_dev_pct > 1.0:\n            vwap_sig = -0.5\n        elif vwap_dev_pct > 0.5:\n            vwap_sig = -0.25\n        elif vwap_dev_pct < -1.0:\n            vwap_sig = 0.5\n        elif vwap_dev_pct < -0.5:\n            vwap_sig = 0.25\n        else:\n            vwap_sig = 0.0\n    else:\n        vwap_dev_pct = 0.0\n        vwap_sig = 0.0\n\n    composite = (\n        WEIGHTS["rsi"]       * rsi_sig  +\n        WEIGHTS["ema"]       * ema_sig  +\n        WEIGHTS["ob_imbal"]  * ob_sig   +\n        WEIGHTS["vol_spike"] * vol_sig  +\n        WEIGHTS["vwap_dev"]  * vwap_sig\n    )\n\n    direction  = "UP" if composite > 0 else "DOWN"\n    confidence = round(abs(composite) * 100, 1)\n\n    return {\n        "symbol":     symbol,\n        "price":      price,\n        "direction":  direction,\n        "confidence": confidence,\n        "rsi":        round(rsi, 1) if rsi else "",\n        "ema_label":  ema_label,\n        "ob_ratio":   round(ob_ratio, 3),\n        "vol_ratio":  round(vol_ratio, 2),\n        "vwap_dev":   round(vwap_dev_pct, 3) if vwap else "",\n        "composite":  round(composite, 4),\n    }\n\n\n# ─── PREDICTION LOGGING ──────────────────────────────────────────────────────\n\ndef run_predictions():\n    client = _get_client()\n    ws     = open_pred_sheet(client)\n    now    = datetime.now(timezone.utc)\n    eval_t = now + timedelta(minutes=PREDICT_HORIZON)\n\n    ts_str   = now.strftime("%Y-%m-%d %H:%M UTC")\n    eval_str = eval_t.strftime("%Y-%m-%d %H:%M UTC")\n\n    for symbol in SYMBOLS:\n        try:\n            sig = compute_signal(symbol)\n            row = [\n                ts_str,\n                symbol,\n                sig["price"],\n                sig["direction"],\n                sig["confidence"],\n                sig["rsi"],\n                sig["ema_label"],\n                sig["ob_ratio"],\n                sig["vol_ratio"],\n                sig["vwap_dev"],\n                sig["composite"],\n                eval_str,\n                "", "", "",  # Price at Eval, Actual Change %, Correct?\n            ]\n            ws.append_row(row, value_input_option="USER_ENTERED")\n            print(f"  {symbol}: {sig['direction']} {sig['confidence']:.1f}% conf "\n                  f"(RSI={sig['rsi']}, EMA={sig['ema_label']}, OB={sig['ob_ratio']:.2f}, "\n                  f"Vol={sig['vol_ratio']:.1f}x, composite={sig['composite']:.3f})")\n        except Exception as e:\n            print(f"  {symbol}: ERROR — {e}")\n\n\n# ─── OUTCOME RESOLUTION ──────────────────────────────────────────────────────\n\ndef resolve_outcomes():\n    """\n    Find predictions whose eval time has passed and fill in actual price + correct?.\n    """\n    client = _get_client()\n    ws     = open_pred_sheet(client)\n    rows   = ws.get_all_values()\n    if len(rows) < 2:\n        print("  No predictions to resolve.")\n        return\n\n    import gspread\n    now     = datetime.now(timezone.utc)\n    updates = []\n\n    ts_col    = PRED_HEADERS.index("Timestamp")\n    sym_col   = PRED_HEADERS.index("Symbol")\n    price_col = PRED_HEADERS.index("Price at Pred")\n    dir_col   = PRED_HEADERS.index("Direction")\n    eval_col  = PRED_HEADERS.index("Eval Time")\n    res_col   = PRED_HEADERS.index("Price at Eval")\n    chg_col   = PRED_HEADERS.index("Actual Change %")\n    cor_col   = PRED_HEADERS.index("Correct?")\n\n    resolved = 0\n    for i, row in enumerate(rows[1:], start=2):\n        if len(row) <= eval_col: continue\n        if len(row) > res_col and row[res_col]: continue  # already resolved\n\n        try:\n            eval_time = datetime.strptime(row[eval_col], "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc)\n        except ValueError:\n            continue\n        if eval_time > now:\n            continue  # not due yet\n\n        symbol = row[sym_col] if len(row) > sym_col else ""\n        if not symbol: continue\n\n        try:\n            actual_price = get_price(symbol)\n            pred_price   = float(row[price_col])\n            change_pct   = round((actual_price - pred_price) / pred_price * 100, 3)\n            pred_dir     = row[dir_col] if len(row) > dir_col else ""\n            correct      = "Yes" if (pred_dir == "UP" and change_pct > 0) or \\\n                                    (pred_dir == "DOWN" and change_pct < 0) else "No"\n\n            updates.append(gspread.Cell(i, res_col + 1, actual_price))\n            updates.append(gspread.Cell(i, chg_col + 1, change_pct))\n            updates.append(gspread.Cell(i, cor_col + 1, correct))\n            resolved += 1\n        except Exception as e:\n            print(f"  Row {i} ({symbol}): resolve error — {e}")\n\n    if updates:\n        ws.update_cells(updates, value_input_option="RAW")\n    print(f"  Resolved {resolved} prediction(s).")\n\n\n# ─── BACKTEST ────────────────────────────────────────────────────────────────\n\ndef backtest(lookback_hours=24):\n    """\n    Pull historical 1m candles and simulate predictions every 5 minutes.\n    Compare composite score direction to actual price 15 min later.\n    """\n    print(f"\nBacktest: last {lookback_hours}h, predicting {PREDICT_HORIZON}min direction\n")\n    for symbol in SYMBOLS:\n        klines = get_klines(symbol, "1m", min(lookback_hours * 60 + 30, 720))\n        closes = [float(k[4]) for k in klines]\n        vols   = [float(k[5]) for k in klines]\n\n        correct, total = 0, 0\n        for i in range(CANDLE_LOOKBACK, len(closes) - PREDICT_HORIZON, 5):\n            window_c = closes[max(0, i - CANDLE_LOOKBACK):i + 1]\n            window_v = vols[max(0, i - CANDLE_LOOKBACK):i + 1]\n\n            rsi = calc_rsi(window_c, RSI_PERIOD)\n            ema_f = calc_ema(window_c, EMA_FAST)\n            ema_s = calc_ema(window_c, EMA_SLOW)\n            vol_r = calc_vol_spike(window_v, VOL_SPIKE_WINDOW)\n\n            if rsi is None or ema_f is None or ema_s is None:\n                continue\n\n            rsi_sig = -1 if rsi > 70 else (-0.5 if rsi > 60 else (1 if rsi < 30 else (0.5 if rsi < 40 else 0)))\n            diff_pct = (ema_f - ema_s) / ema_s * 100\n            ema_sig = 1 if diff_pct > 0.1 else (-1 if diff_pct < -0.1 else 0)\n            vol_sig = ema_sig if vol_r >= 2.0 else (ema_sig * 0.5 if vol_r >= 1.5 else 0)\n\n            # VWAP from window\n            total_pv = sum(((float(klines[max(0,i-CANDLE_LOOKBACK)+j][2]) +\n                             float(klines[max(0,i-CANDLE_LOOKBACK)+j][3]) +\n                             float(klines[max(0,i-CANDLE_LOOKBACK)+j][4])) / 3) *\n                           float(klines[max(0,i-CANDLE_LOOKBACK)+j][5])\n                           for j in range(len(window_c)))\n            total_vol = sum(window_v)\n            vwap = total_pv / total_vol if total_vol else window_c[-1]\n            vwap_dev = (window_c[-1] - vwap) / vwap * 100\n            vwap_sig = (-0.5 if vwap_dev > 1 else (-0.25 if vwap_dev > 0.5 else\n                        (0.5 if vwap_dev < -1 else (0.25 if vwap_dev < -0.5 else 0))))\n\n            # OB imbalance not available in historical data — skip (set to 0)\n            composite = (WEIGHTS["rsi"] * rsi_sig + WEIGHTS["ema"] * ema_sig +\n                         WEIGHTS["vol_spike"] * vol_sig + WEIGHTS["vwap_dev"] * vwap_sig)\n\n            direction = "UP" if composite > 0 else "DOWN"\n            future_price = closes[i + PREDICT_HORIZON]\n            actual_dir   = "UP" if future_price > closes[i] else "DOWN"\n\n            if direction == actual_dir:\n                correct += 1\n            total += 1\n\n        acc = correct / total * 100 if total else 0\n        print(f"  {symbol}: {correct}/{total} correct = {acc:.1f}% accuracy "\n              f"(baseline ~50%)")\n\n    print(f"\nNote: OB imbalance excluded from backtest (no historical order book data).\n"\n          f"Live accuracy will differ. This is directional signal only.\n")\n\n\n# ─── ENTRYPOINT ──────────────────────────────────────────────────────────────\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument("--resolve",   action="store_true", help="Fill in outcomes for due predictions")\n    parser.add_argument("--backtest",  action="store_true", help="Backtest on last 24h of data")\n    parser.add_argument("--hours",     type=int, default=24, help="Lookback hours for backtest")\n    args = parser.parse_args()\n\n    if args.backtest:\n        backtest(args.hours)\n    elif args.resolve:\n        resolve_outcomes()\n    else:\n        print(f"=== Crypto Predictor ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}) ===")\n        run_predictions()\n\n\nif __name__ == "__main__":\n    main()\n
+"""
+15-Minute Crypto Direction Predictor
+Targets: BTC, ETH, SOL — uses Kraken public API (no geo-restriction)
+Logs predictions to Google Sheets; resolves outcomes 15 min later.
+
+Usage:
+    python predictor.py              # generate new predictions
+    python predictor.py --resolve    # fill in outcomes for predictions due
+    python predictor.py --backtest   # backtest composite score on last 24h of data
+"""
+
+import os, sys, json, time, argparse, requests
+from datetime import datetime, timedelta, timezone
+
+# --- CONFIG ---
+
+SPREADSHEET_ID    = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
+PRED_SHEET        = "Predictions"
+SYMBOLS           = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+KRAKEN_PAIRS      = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD"}
+PREDICT_HORIZON   = 15
+CANDLE_INTERVAL   = "1m"
+CANDLE_LOOKBACK   = 60
+OB_DEPTH          = 20
+RSI_PERIOD        = 7
+EMA_FAST          = 9
+EMA_SLOW          = 21
+VOL_SPIKE_WINDOW  = 20
+
+WEIGHTS = {
+    "rsi":        0.25,
+    "ema":        0.25,
+    "ob_imbal":   0.25,
+    "vol_spike":  0.15,
+    "vwap_dev":   0.10,
+}
+
+PRED_HEADERS = [
+    "Timestamp",
+    "Symbol",
+    "Price at Pred",
+    "Direction",
+    "Confidence",
+    "RSI(7)",
+    "EMA Signal",
+    "OB Imbalance",
+    "Vol Spike Ratio",
+    "VWAP Dev %",
+    "Composite Score",
+    "Eval Time",
+    "Price at Eval",
+    "Actual Change %",
+    "Correct?",
+]
+
+# --- GOOGLE SHEETS ---
+
+def _get_client():
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+    except ImportError:
+        sys.exit("gspread not installed")
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    raw = os.environ.get("GOOGLE_CREDENTIALS")
+    if raw:
+        creds = Credentials.from_service_account_info(json.loads(raw), scopes=scopes)
+    else:
+        f = os.environ.get("GOOGLE_CREDENTIALS_FILE", "meme-coin-creds.json")
+        if not os.path.exists(f):
+            sys.exit("No Google credentials found")
+        creds = Credentials.from_service_account_file(f, scopes=scopes)
+    return gspread.authorize(creds)
+
+
+def open_pred_sheet(client):
+    sh = client.open_by_key(SPREADSHEET_ID)
+    try:
+        ws = sh.worksheet(PRED_SHEET)
+    except Exception:
+        ws = sh.add_worksheet(title=PRED_SHEET, rows=5000, cols=len(PRED_HEADERS))
+    existing = ws.row_values(1)
+    if existing != PRED_HEADERS:
+        if ws.col_count < len(PRED_HEADERS):
+            ws.add_cols(len(PRED_HEADERS) - ws.col_count)
+        ws.update([PRED_HEADERS], "A1")
+    return ws
+
+
+# --- KRAKEN API ---
+
+KRAKEN_BASE = "https://api.kraken.com/0/public"
+
+
+def get_klines(symbol, interval="1m", limit=60):
+    pair = KRAKEN_PAIRS[symbol]
+    r = requests.get(
+        f"{KRAKEN_BASE}/OHLC",
+        params={"pair": pair, "interval": 1},
+        timeout=15,
+    )
+    r.raise_for_status()
+    data = r.json()
+    if data.get("error"):
+        raise ValueError(f"Kraken error: {data['error']}")
+    result_key = [k for k in data["result"] if k != "last"][0]
+    candles = data["result"][result_key]
+    normalized = [
+        [int(c[0]) * 1000, c[1], c[2], c[3], c[4], c[6]]
+        for c in candles
+    ]
+    return normalized[-limit:] if limit else normalized
+
+
+def get_orderbook(symbol, limit=20):
+    pair = KRAKEN_PAIRS[symbol]
+    r = requests.get(
+        f"{KRAKEN_BASE}/Depth",
+        params={"pair": pair, "count": limit},
+        timeout=10,
+    )
+    r.raise_for_status()
+    data = r.json()
+    if data.get("error"):
+        raise ValueError(f"Kraken error: {data['error']}")
+    result_key = [k for k in data["result"]][0]
+    ob = data["result"][result_key]
+    return {"bids": ob["bids"], "asks": ob["asks"]}
+
+
+def get_price(symbol):
+    pair = KRAKEN_PAIRS[symbol]
+    r = requests.get(
+        f"{KRAKEN_BASE}/Ticker",
+        params={"pair": pair},
+        timeout=10,
+    )
+    r.raise_for_status()
+    data = r.json()
+    if data.get("error"):
+        raise ValueError(f"Kraken error: {data['error']}")
+    result_key = [k for k in data["result"]][0]
+    return float(data["result"][result_key]["c"][0])
+
+
+# --- INDICATORS ---
+
+def calc_rsi(closes, period=7):
+    if len(closes) < period + 1:
+        return None
+    gains, losses = [], []
+    for i in range(1, period + 1):
+        diff = closes[-(period + 1 - i)] - closes[-(period + 2 - i)]
+        (gains if diff > 0 else losses).append(abs(diff))
+    avg_gain = sum(gains) / period if gains else 0
+    avg_loss = sum(losses) / period if losses else 1e-9
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def calc_ema(values, period):
+    if len(values) < period:
+        return None
+    k = 2 / (period + 1)
+    ema = sum(values[:period]) / period
+    for v in values[period:]:
+        ema = v * k + ema * (1 - k)
+    return ema
+
+
+def calc_vwap(klines):
+    total_vol, total_pv = 0, 0
+    for k in klines:
+        high, low, close, vol = float(k[2]), float(k[3]), float(k[4]), float(k[5])
+        typical = (high + low + close) / 3
+        total_pv += typical * vol
+        total_vol += vol
+    return total_pv / total_vol if total_vol else None
+
+
+def calc_ob_imbalance(ob, levels=10):
+    bids = sum(float(b[1]) for b in ob["bids"][:levels])
+    asks = sum(float(a[1]) for a in ob["asks"][:levels])
+    total = bids + asks
+    return bids / total if total else 0.5
+
+
+def calc_vol_spike(volumes, window=20):
+    if len(volumes) < window + 1:
+        return 1.0
+    avg = sum(volumes[-window - 1:-1]) / window
+    return volumes[-1] / avg if avg else 1.0
+
+
+# --- COMPOSITE SCORE ---
+
+def compute_signal(symbol):
+    klines = get_klines(symbol, CANDLE_INTERVAL, CANDLE_LOOKBACK + 5)
+    ob = get_orderbook(symbol, OB_DEPTH)
+
+    closes = [float(k[4]) for k in klines]
+    volumes = [float(k[5]) for k in klines]
+    price = closes[-1]
+
+    rsi = calc_rsi(closes, RSI_PERIOD)
+    if rsi is None:
+        rsi_sig = 0.0
+    elif rsi > 70:
+        rsi_sig = -1.0
+    elif rsi > 60:
+        rsi_sig = -0.5
+    elif rsi < 30:
+        rsi_sig = 1.0
+    elif rsi < 40:
+        rsi_sig = 0.5
+    else:
+        rsi_sig = 0.0
+
+    ema_fast = calc_ema(closes, EMA_FAST)
+    ema_slow = calc_ema(closes, EMA_SLOW)
+    if ema_fast is None or ema_slow is None:
+        ema_sig = 0.0
+        ema_label = "FLAT"
+    else:
+        diff_pct = (ema_fast - ema_slow) / ema_slow * 100
+        if diff_pct > 0.1:
+            ema_sig, ema_label = 1.0, "BULL"
+        elif diff_pct < -0.1:
+            ema_sig, ema_label = -1.0, "BEAR"
+        else:
+            ema_sig, ema_label = 0.0, "FLAT"
+
+    ob_ratio = calc_ob_imbalance(ob, OB_DEPTH)
+    ob_sig = (ob_ratio - 0.5) * 2
+
+    vol_ratio = calc_vol_spike(volumes, VOL_SPIKE_WINDOW)
+    if vol_ratio >= 2.0:
+        vol_sig = ema_sig
+    elif vol_ratio >= 1.5:
+        vol_sig = ema_sig * 0.5
+    else:
+        vol_sig = 0.0
+
+    vwap = calc_vwap(klines)
+    if vwap:
+        vwap_dev_pct = (price - vwap) / vwap * 100
+        if vwap_dev_pct > 1.0:
+            vwap_sig = -0.5
+        elif vwap_dev_pct > 0.5:
+            vwap_sig = -0.25
+        elif vwap_dev_pct < -1.0:
+            vwap_sig = 0.5
+        elif vwap_dev_pct < -0.5:
+            vwap_sig = 0.25
+        else:
+            vwap_sig = 0.0
+    else:
+        vwap_dev_pct = 0.0
+        vwap_sig = 0.0
+
+    composite = (
+        WEIGHTS["rsi"] * rsi_sig
+        + WEIGHTS["ema"] * ema_sig
+        + WEIGHTS["ob_imbal"] * ob_sig
+        + WEIGHTS["vol_spike"] * vol_sig
+        + WEIGHTS["vwap_dev"] * vwap_sig
+    )
+
+    direction = "UP" if composite > 0 else "DOWN"
+    confidence = round(abs(composite) * 100, 1)
+
+    return {
+        "symbol": symbol,
+        "price": price,
+        "direction": direction,
+        "confidence": confidence,
+        "rsi": round(rsi, 1) if rsi else "",
+        "ema_label": ema_label,
+        "ob_ratio": round(ob_ratio, 3),
+        "vol_ratio": round(vol_ratio, 2),
+        "vwap_dev": round(vwap_dev_pct, 3) if vwap else "",
+        "composite": round(composite, 4),
+    }
+
+
+# --- PREDICTION LOGGING ---
+
+def run_predictions():
+    client = _get_client()
+    ws = open_pred_sheet(client)
+    now = datetime.now(timezone.utc)
+    eval_t = now + timedelta(minutes=PREDICT_HORIZON)
+
+    ts_str = now.strftime("%Y-%m-%d %H:%M UTC")
+    eval_str = eval_t.strftime("%Y-%m-%d %H:%M UTC")
+
+    for symbol in SYMBOLS:
+        try:
+            sig = compute_signal(symbol)
+            row = [
+                ts_str,
+                symbol,
+                sig["price"],
+                sig["direction"],
+                sig["confidence"],
+                sig["rsi"],
+                sig["ema_label"],
+                sig["ob_ratio"],
+                sig["vol_ratio"],
+                sig["vwap_dev"],
+                sig["composite"],
+                eval_str,
+                "", "", "",
+            ]
+            ws.append_row(row, value_input_option="USER_ENTERED")
+            print(
+                f"  {symbol}: {sig['direction']} {sig['confidence']:.1f}% conf "
+                f"(RSI={sig['rsi']}, EMA={sig['ema_label']}, OB={sig['ob_ratio']:.2f}, "
+                f"Vol={sig['vol_ratio']:.1f}x, composite={sig['composite']:.3f})"
+            )
+        except Exception as e:
+            print(f"  {symbol}: ERROR -- {e}")
+
+
+# --- OUTCOME RESOLUTION ---
+
+def resolve_outcomes():
+    client = _get_client()
+    ws = open_pred_sheet(client)
+    rows = ws.get_all_values()
+    if len(rows) < 2:
+        print("  No predictions to resolve.")
+        return
+
+    import gspread
+    now = datetime.now(timezone.utc)
+    updates = []
+
+    sym_col = PRED_HEADERS.index("Symbol")
+    price_col = PRED_HEADERS.index("Price at Pred")
+    dir_col = PRED_HEADERS.index("Direction")
+    eval_col = PRED_HEADERS.index("Eval Time")
+    res_col = PRED_HEADERS.index("Price at Eval")
+    chg_col = PRED_HEADERS.index("Actual Change %")
+    cor_col = PRED_HEADERS.index("Correct?")
+
+    resolved = 0
+    for i, row in enumerate(rows[1:], start=2):
+        if len(row) <= eval_col:
+            continue
+        if len(row) > res_col and row[res_col]:
+            continue
+
+        try:
+            eval_time = datetime.strptime(row[eval_col], "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if eval_time > now:
+            continue
+
+        symbol = row[sym_col] if len(row) > sym_col else ""
+        if not symbol:
+            continue
+
+        try:
+            actual_price = get_price(symbol)
+            pred_price = float(row[price_col])
+            change_pct = round((actual_price - pred_price) / pred_price * 100, 3)
+            pred_dir = row[dir_col] if len(row) > dir_col else ""
+            correct = (
+                "Yes"
+                if (pred_dir == "UP" and change_pct > 0) or (pred_dir == "DOWN" and change_pct < 0)
+                else "No"
+            )
+            updates.append(gspread.Cell(i, res_col + 1, actual_price))
+            updates.append(gspread.Cell(i, chg_col + 1, change_pct))
+            updates.append(gspread.Cell(i, cor_col + 1, correct))
+            resolved += 1
+        except Exception as e:
+            print(f"  Row {i} ({symbol}): resolve error -- {e}")
+
+    if updates:
+        ws.update_cells(updates, value_input_option="RAW")
+    print(f"  Resolved {resolved} prediction(s).")
+
+
+# --- BACKTEST ---
+
+def backtest(lookback_hours=24):
+    print(f"\nBacktest: last {lookback_hours}h, predicting {PREDICT_HORIZON}min direction\n")
+    for symbol in SYMBOLS:
+        klines = get_klines(symbol, "1m", min(lookback_hours * 60 + 30, 720))
+        closes = [float(k[4]) for k in klines]
+        vols = [float(k[5]) for k in klines]
+
+        correct, total = 0, 0
+        for i in range(CANDLE_LOOKBACK, len(closes) - PREDICT_HORIZON, 5):
+            window_c = closes[max(0, i - CANDLE_LOOKBACK):i + 1]
+            window_v = vols[max(0, i - CANDLE_LOOKBACK):i + 1]
+
+            rsi = calc_rsi(window_c, RSI_PERIOD)
+            ema_f = calc_ema(window_c, EMA_FAST)
+            ema_s = calc_ema(window_c, EMA_SLOW)
+            vol_r = calc_vol_spike(window_v, VOL_SPIKE_WINDOW)
+
+            if rsi is None or ema_f is None or ema_s is None:
+                continue
+
+            rsi_sig = -1 if rsi > 70 else (-0.5 if rsi > 60 else (1 if rsi < 30 else (0.5 if rsi < 40 else 0)))
+            diff_pct = (ema_f - ema_s) / ema_s * 100
+            ema_sig = 1 if diff_pct > 0.1 else (-1 if diff_pct < -0.1 else 0)
+            vol_sig = ema_sig if vol_r >= 2.0 else (ema_sig * 0.5 if vol_r >= 1.5 else 0)
+
+            total_pv = sum(
+                ((float(klines[max(0, i - CANDLE_LOOKBACK) + j][2])
+                  + float(klines[max(0, i - CANDLE_LOOKBACK) + j][3])
+                  + float(klines[max(0, i - CANDLE_LOOKBACK) + j][4])) / 3)
+                * float(klines[max(0, i - CANDLE_LOOKBACK) + j][5])
+                for j in range(len(window_c))
+            )
+            total_vol = sum(window_v)
+            vwap = total_pv / total_vol if total_vol else window_c[-1]
+            vwap_dev = (window_c[-1] - vwap) / vwap * 100
+            vwap_sig = (
+                -0.5 if vwap_dev > 1 else
+                (-0.25 if vwap_dev > 0.5 else
+                 (0.5 if vwap_dev < -1 else
+                  (0.25 if vwap_dev < -0.5 else 0)))
+            )
+
+            composite = (
+                WEIGHTS["rsi"] * rsi_sig
+                + WEIGHTS["ema"] * ema_sig
+                + WEIGHTS["vol_spike"] * vol_sig
+                + WEIGHTS["vwap_dev"] * vwap_sig
+            )
+
+            direction = "UP" if composite > 0 else "DOWN"
+            future_price = closes[i + PREDICT_HORIZON]
+            actual_dir = "UP" if future_price > closes[i] else "DOWN"
+
+            if direction == actual_dir:
+                correct += 1
+            total += 1
+
+        acc = correct / total * 100 if total else 0
+        print(f"  {symbol}: {correct}/{total} correct = {acc:.1f}% accuracy (baseline ~50%)")
+
+    print("\nNote: OB imbalance excluded from backtest (no historical order book data).")
+    print("Live accuracy will differ. This is directional signal only.\n")
+
+
+# --- ENTRYPOINT ---
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resolve", action="store_true")
+    parser.add_argument("--backtest", action="store_true")
+    parser.add_argument("--hours", type=int, default=24)
+    args = parser.parse_args()
+
+    if args.backtest:
+        backtest(args.hours)
+    elif args.resolve:
+        resolve_outcomes()
+    else:
+        print(f"=== Crypto Predictor ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}) ===")
+        run_predictions()
+
+
+if __name__ == "__main__":
+    main()
