@@ -16,8 +16,9 @@ from datetime import datetime, timedelta, timezone
 
 SPREADSHEET_ID   = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
 PRED_SHEET       = "Predictions"
-SYMBOLS          = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-KRAKEN_PAIRS     = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD"}
+SYMBOLS          = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
+KRAKEN_PAIRS     = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
+                    "XRPUSDT": "XRPUSD", "DOGEUSDT": "XDGUSD"}
 PREDICT_HORIZON  = 15
 CANDLE_INTERVAL  = "1m"
 CANDLE_LOOKBACK  = 60
