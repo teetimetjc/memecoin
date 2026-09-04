@@ -195,7 +195,7 @@ def get_kalshi_odds(symbol, direction):
         print(f"  [Kalshi] KALSHI_API_KEY not set -- skipping")
         return None
 
-    headers = {"Authorization": f"Bearer {api_key}"}
+    headers = {"Authorization": f"Token {api_key}"}
     now = datetime.now(timezone.utc)
     target_close = now + timedelta(minutes=PREDICT_HORIZON)
 
