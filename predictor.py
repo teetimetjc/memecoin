@@ -187,10 +187,13 @@ def get_price(symbol):
 
 def _kalshi_headers(method, path):
     """Build RSA-signed headers for Kalshi API v2."""
-    key_id      = os.environ.get("KALSHI_KEY_ID", "")
-    private_pem = os.environ.get("KALSHI_API_KEY", "")
+    key_id      = os.environ.get("KALSHI_KEY_ID", "").strip()
+    private_pem = os.environ.get("KALSHI_API_KEY", "").strip()
     if not key_id or not private_pem:
         return None
+    # Fix literal \n sequences that can appear when a PEM key is stored as a single-line secret
+    if "\\n" in private_pem and "\n" not in private_pem:
+        private_pem = private_pem.replace("\\n", "\n")
     try:
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import padding
@@ -200,6 +203,7 @@ def _kalshi_headers(method, path):
         private_key = serialization.load_pem_private_key(private_pem.encode(), password=None)
         sig = private_key.sign(msg, padding.PKCS1v15(), hashes.SHA256())
         sig_b64 = base64.b64encode(sig).decode()
+        print(f"  [Kalshi] Auth OK: key_id={key_id[:8]}... ts={ts}")
         return {
             "KALSHI-ACCESS-KEY":       key_id,
             "KALSHI-ACCESS-TIMESTAMP": ts,
@@ -234,7 +238,9 @@ def get_kalshi_odds(symbol, direction):
             headers=headers,
             timeout=10,
         )
-        r.raise_for_status()
+        if not r.ok:
+            print(f"  [Kalshi] {symbol}: HTTP {r.status_code} -- {r.text[:300]}")
+            r.raise_for_status()
         markets = r.json().get("markets", [])
 
         # Find the market whose close time is nearest to our prediction window
