@@ -74,7 +74,7 @@ KALSHI_SERIES = {
     "ETHUSDT":  "KXETH15M",
     "SOLUSDT":  "KXSOL15M",
     "XRPUSDT":  "KXXRP15M",
-    "DOGEUSDT": None,
+    "DOGEUSDT": "KXDOGE15M",
 }
 
 
