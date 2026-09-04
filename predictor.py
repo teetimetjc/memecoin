@@ -191,7 +191,6 @@ def _kalshi_headers(method, path):
     private_pem = os.environ.get("KALSHI_API_KEY", "").strip()
     if not key_id or not private_pem:
         return None
-    # Fix literal \n sequences that can appear when a PEM key is stored as a single-line secret
     if "\\n" in private_pem and "\n" not in private_pem:
         private_pem = private_pem.replace("\\n", "\n")
     try:
@@ -259,13 +258,23 @@ def get_kalshi_odds(symbol, direction):
                 best = m
 
         if best is None:
-            print(f"  [Kalshi] {symbol}: no open market found for series {series}")
+            print(f"  [Kalshi] {symbol}: no open market found for series {series} (got {len(markets)} markets)")
+            if markets:
+                print(f"  [Kalshi] {symbol}: sample market keys: {list(markets[0].keys())}")
             return None
 
-        yes_price = best.get("yes_ask") or best.get("last_price") or best.get("yes_bid")
-        no_price  = best.get("no_ask")  or best.get("no_bid")
+        # Debug: show all price-related keys in the best market
+        price_keys = {k: v for k, v in best.items() if any(x in k.lower() for x in ["price", "bid", "ask", "yes", "no", "last"])}
+        print(f"  [Kalshi] {symbol}: price fields = {price_keys}")
+
+        yes_price = (best.get("yes_ask") or best.get("yes_bid") or
+                     best.get("last_yes_price") or best.get("last_price") or
+                     best.get("yes_price"))
+        no_price  = (best.get("no_ask") or best.get("no_bid") or
+                     best.get("last_no_price") or best.get("no_price"))
+
         if yes_price is None:
-            print(f"  [Kalshi] {symbol}: no price data in market response")
+            print(f"  [Kalshi] {symbol}: no price data -- all market keys: {list(best.keys())}")
             return None
         if no_price is None:
             no_price = 100 - yes_price
@@ -276,7 +285,6 @@ def get_kalshi_odds(symbol, direction):
         bet_side  = "YES" if direction == "UP" else "NO"
         bet_price = yes_price if bet_side == "YES" else no_price
 
-        # $10 bet: each contract costs bet_price cents; win 100 cents per contract
         payout = round(10 * 100 / bet_price, 2) if bet_price > 0 else ""
 
         contrarian = "Yes" if (
@@ -573,7 +581,6 @@ def run_predictions():
             else:
                 sig = compute_signal(symbol, btc_composite=btc_composite)
 
-            # Fetch Kalshi odds (columns S-X); blank on failure
             kalshi = get_kalshi_odds(symbol, sig["direction"])
             if kalshi:
                 kalshi_row = [
