@@ -185,17 +185,45 @@ def get_price(symbol):
 
 # --- KALSHI ---
 
+def _kalshi_headers(method, path):
+    """Build RSA-signed headers for Kalshi API v2."""
+    key_id      = os.environ.get("KALSHI_KEY_ID", "")
+    private_pem = os.environ.get("KALSHI_API_KEY", "")
+    if not key_id or not private_pem:
+        return None
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+        import base64
+        ts = str(int(datetime.now(timezone.utc).timestamp() * 1000))
+        msg = (ts + method.upper() + path).encode()
+        private_key = serialization.load_pem_private_key(private_pem.encode(), password=None)
+        sig = private_key.sign(msg, padding.PKCS1v15(), hashes.SHA256())
+        sig_b64 = base64.b64encode(sig).decode()
+        return {
+            "KALSHI-ACCESS-KEY":       key_id,
+            "KALSHI-ACCESS-TIMESTAMP": ts,
+            "KALSHI-ACCESS-SIGNATURE": sig_b64,
+        }
+    except Exception as e:
+        print(f"  [Kalshi] Auth error: {e}")
+        return None
+
+
 def get_kalshi_odds(symbol, direction):
     """Fetch Kalshi market odds for the upcoming 15-min window. Returns dict or None."""
     series = KALSHI_SERIES.get(symbol)
     if not series:
         return None
-    api_key = os.environ.get("KALSHI_API_KEY")
-    if not api_key:
-        print(f"  [Kalshi] KALSHI_API_KEY not set -- skipping")
+    if not os.environ.get("KALSHI_KEY_ID") or not os.environ.get("KALSHI_API_KEY"):
+        print(f"  [Kalshi] KALSHI_KEY_ID or KALSHI_API_KEY not set -- skipping")
         return None
 
-    headers = {"Authorization": f"Token {api_key}"}
+    api_path = "/trade-api/v2/markets"
+    headers = _kalshi_headers("GET", api_path)
+    if headers is None:
+        return None
+
     now = datetime.now(timezone.utc)
     target_close = now + timedelta(minutes=PREDICT_HORIZON)
 
