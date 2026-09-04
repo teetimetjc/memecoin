@@ -57,12 +57,18 @@ PRED_HEADERS = [
     "Eval Time", "Price at Eval", "Actual Change %", "Correct?",
 ]
 
-# Columns S-X: Kalshi market data
+# Columns S-X: nearest-expiry Kalshi market
 KALSHI_HEADERS = [
     "Kalshi YES¢", "Kalshi NO¢", "Bet Side", "Bet Price¢", "Bet Payout ($10)", "Contrarian?",
 ]
 
-ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS
+# Columns Y-AD: nearest-strike Kalshi market
+KALSHI_STRIKE_HEADERS = [
+    "Strike", "Strike YES¢", "Strike NO¢", "Strike Bet Side", "Strike Bet Price¢",
+    "Strike Payout ($10)", "Strike Contrarian?",
+]
+
+ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS + KALSHI_STRIKE_HEADERS
 
 # Kalshi series tickers for each symbol
 KALSHI_BASE   = "https://api.elections.kalshi.com/trade-api/v2"
@@ -212,18 +218,50 @@ def _kalshi_headers(method, path):
         return None
 
 
-def get_kalshi_odds(symbol, direction):
-    """Fetch Kalshi market odds for the upcoming 15-min window. Returns dict or None."""
+def _extract_prices(market, direction):
+    """Extract YES/NO cents and betting info from a market dict. Returns dict or None."""
+    yes_ask_d = market.get("yes_ask_dollars")
+    yes_bid_d = market.get("yes_bid_dollars")
+    no_ask_d  = market.get("no_ask_dollars")
+    no_bid_d  = market.get("no_bid_dollars")
+
+    yes_raw = yes_ask_d if yes_ask_d is not None else yes_bid_d
+    no_raw  = no_ask_d  if no_ask_d  is not None else no_bid_d
+
+    if yes_raw is None:
+        return None
+
+    yes_price = round(float(yes_raw) * 100)
+    no_price  = round(float(no_raw) * 100) if no_raw is not None else 100 - yes_price
+
+    bet_side  = "YES" if direction == "UP" else "NO"
+    bet_price = yes_price if bet_side == "YES" else no_price
+    payout    = round(10 * 100 / bet_price, 2) if bet_price > 0 else ""
+    contrarian = "Yes" if (
+        (direction == "UP" and yes_price < 50) or
+        (direction == "DOWN" and yes_price > 50)
+    ) else "No"
+
+    return {
+        "yes": yes_price, "no": no_price,
+        "bet_side": bet_side, "bet_price": bet_price,
+        "payout": payout, "contrarian": contrarian,
+    }
+
+
+def get_kalshi_odds(symbol, direction, current_price):
+    """Fetch Kalshi odds for nearest-expiry and nearest-strike markets.
+    Returns (by_expiry, by_strike) — each is a dict or None."""
     series = KALSHI_SERIES.get(symbol)
     if not series:
-        return None
+        return None, None
     if not os.environ.get("KALSHI_KEY_ID") or not os.environ.get("KALSHI_API_KEY"):
-        return None
+        return None, None
 
     api_path = "/trade-api/v2/markets"
     headers = _kalshi_headers("GET", api_path)
     if headers is None:
-        return None
+        return None, None
 
     now = datetime.now(timezone.utc)
     target_close = now + timedelta(minutes=PREDICT_HORIZON)
@@ -237,12 +275,14 @@ def get_kalshi_odds(symbol, direction):
         )
         if not r.ok:
             print(f"  [Kalshi] {symbol}: HTTP {r.status_code} -- {r.text[:200]}")
-            return None
+            return None, None
         markets = r.json().get("markets", [])
+        if not markets:
+            return None, None
 
-        # Find the market whose close time is nearest to our prediction window
-        best = None
-        best_delta = None
+        # --- nearest-expiry market ---
+        best_expiry = None
+        best_expiry_delta = None
         for m in markets:
             close_str = m.get("close_time") or m.get("expiration_time")
             if not close_str:
@@ -252,54 +292,65 @@ def get_kalshi_odds(symbol, direction):
             except Exception:
                 continue
             delta = abs((close_dt - target_close).total_seconds())
-            if best_delta is None or delta < best_delta:
-                best_delta = delta
-                best = m
+            if best_expiry_delta is None or delta < best_expiry_delta:
+                best_expiry_delta = delta
+                best_expiry = m
 
-        if best is None:
-            return None
+        # --- nearest-strike market (among markets closing within 60 min) ---
+        # Uses floor_strike field; pick the one whose strike is closest to current price
+        best_strike = None
+        best_strike_delta = None
+        for m in markets:
+            close_str = m.get("close_time") or m.get("expiration_time")
+            if not close_str:
+                continue
+            try:
+                close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            minutes_away = (close_dt - now).total_seconds() / 60
+            if minutes_away < 0 or minutes_away > 60:
+                continue
+            strike_raw = m.get("floor_strike")
+            if strike_raw is None:
+                continue
+            try:
+                strike = float(strike_raw)
+            except (TypeError, ValueError):
+                continue
+            delta = abs(strike - current_price)
+            if best_strike_delta is None or delta < best_strike_delta:
+                best_strike_delta = delta
+                best_strike = m
 
-        # Kalshi API returns prices as dollar strings (0.0000-1.0000); convert to cents
-        yes_ask_d = best.get("yes_ask_dollars")
-        yes_bid_d = best.get("yes_bid_dollars")
-        no_ask_d  = best.get("no_ask_dollars")
-        no_bid_d  = best.get("no_bid_dollars")
+        by_expiry = None
+        if best_expiry:
+            by_expiry = _extract_prices(best_expiry, direction)
+            if by_expiry:
+                print(
+                    f"  [Kalshi/expiry] {symbol}: YES={by_expiry['yes']}¢ NO={by_expiry['no']}¢ "
+                    f"Bet={by_expiry['bet_side']}@{by_expiry['bet_price']}¢ "
+                    f"Payout=${by_expiry['payout']} Contrarian={by_expiry['contrarian']}"
+                )
 
-        yes_raw = yes_ask_d if yes_ask_d is not None else yes_bid_d
-        no_raw  = no_ask_d  if no_ask_d  is not None else no_bid_d
+        by_strike = None
+        if best_strike:
+            strike_val = best_strike.get("floor_strike", "")
+            by_strike = _extract_prices(best_strike, direction)
+            if by_strike:
+                by_strike["strike"] = strike_val
+                print(
+                    f"  [Kalshi/strike] {symbol}: strike={strike_val} "
+                    f"YES={by_strike['yes']}¢ NO={by_strike['no']}¢ "
+                    f"Bet={by_strike['bet_side']}@{by_strike['bet_price']}¢ "
+                    f"Payout=${by_strike['payout']} Contrarian={by_strike['contrarian']}"
+                )
 
-        if yes_raw is None:
-            return None
-
-        yes_price = round(float(yes_raw) * 100)
-        no_price  = round(float(no_raw) * 100) if no_raw is not None else 100 - yes_price
-
-        bet_side  = "YES" if direction == "UP" else "NO"
-        bet_price = yes_price if bet_side == "YES" else no_price
-
-        payout = round(10 * 100 / bet_price, 2) if bet_price > 0 else ""
-
-        contrarian = "Yes" if (
-            (direction == "UP" and yes_price < 50) or
-            (direction == "DOWN" and yes_price > 50)
-        ) else "No"
-
-        print(
-            f"  [Kalshi] {symbol}: YES={yes_price}¢ NO={no_price}¢ "
-            f"Bet={bet_side}@{bet_price}¢ Payout=${payout} Contrarian={contrarian}"
-        )
-        return {
-            "yes": yes_price,
-            "no":  no_price,
-            "bet_side":   bet_side,
-            "bet_price":  bet_price,
-            "payout":     payout,
-            "contrarian": contrarian,
-        }
+        return by_expiry, by_strike
 
     except Exception as e:
         print(f"  [Kalshi] {symbol}: {e}")
-        return None
+        return None, None
 
 
 # --- INDICATORS ---
@@ -573,22 +624,33 @@ def run_predictions():
             else:
                 sig = compute_signal(symbol, btc_composite=btc_composite)
 
-            kalshi = get_kalshi_odds(symbol, sig["direction"])
-            if kalshi:
-                kalshi_row = [
-                    kalshi["yes"], kalshi["no"],
-                    kalshi["bet_side"], kalshi["bet_price"],
-                    kalshi["payout"], kalshi["contrarian"],
-                ]
-            else:
-                kalshi_row = ["", "", "", "", "", ""]
+            by_expiry, by_strike = get_kalshi_odds(symbol, sig["direction"], sig["price"])
+
+            kalshi_row = [
+                by_expiry["yes"] if by_expiry else "",
+                by_expiry["no"]  if by_expiry else "",
+                by_expiry["bet_side"]  if by_expiry else "",
+                by_expiry["bet_price"] if by_expiry else "",
+                by_expiry["payout"]    if by_expiry else "",
+                by_expiry["contrarian"] if by_expiry else "",
+            ]
+
+            strike_row = [
+                by_strike["strike"]    if by_strike else "",
+                by_strike["yes"]       if by_strike else "",
+                by_strike["no"]        if by_strike else "",
+                by_strike["bet_side"]  if by_strike else "",
+                by_strike["bet_price"] if by_strike else "",
+                by_strike["payout"]    if by_strike else "",
+                by_strike["contrarian"] if by_strike else "",
+            ]
 
             row = [
                 ts_str, symbol, sig["price"], sig["direction"], sig["confidence"],
                 sig["rsi"], sig["stoch_rsi"], sig["ema_label"], sig["macd_label"],
                 sig["bb_position"], sig["ob_ratio"], sig["vol_ratio"], sig["vwap_dev"],
                 sig["composite"], eval_str, "", "", "",
-            ] + kalshi_row
+            ] + kalshi_row + strike_row
 
             ws.append_row(row, value_input_option="USER_ENTERED")
             print(
@@ -599,11 +661,18 @@ def run_predictions():
 
             if sig["confidence"] >= ALERT_THRESHOLD:
                 kalshi_line = ""
-                if kalshi:
+                if by_strike:
                     kalshi_line = (
-                        f"\nKalshi: Bet {kalshi['bet_side']} @ {kalshi['bet_price']}¢"
-                        f" | Payout ${kalshi['payout']} on $10"
-                        f" | Contrarian: {kalshi['contrarian']}"
+                        f"\nKalshi (strike ${by_strike['strike']}): "
+                        f"Bet {by_strike['bet_side']} @ {by_strike['bet_price']}¢"
+                        f" | Payout ${by_strike['payout']} on $10"
+                        f" | Contrarian: {by_strike['contrarian']}"
+                    )
+                elif by_expiry:
+                    kalshi_line = (
+                        f"\nKalshi: Bet {by_expiry['bet_side']} @ {by_expiry['bet_price']}¢"
+                        f" | Payout ${by_expiry['payout']} on $10"
+                        f" | Contrarian: {by_expiry['contrarian']}"
                     )
                 send_pushover(
                     title=f"{symbol} {sig['direction']} {sig['confidence']:.0f}%",
