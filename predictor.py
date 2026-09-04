@@ -218,7 +218,6 @@ def get_kalshi_odds(symbol, direction):
     if not series:
         return None
     if not os.environ.get("KALSHI_KEY_ID") or not os.environ.get("KALSHI_API_KEY"):
-        print(f"  [Kalshi] KALSHI_KEY_ID or KALSHI_API_KEY not set -- skipping")
         return None
 
     api_path = "/trade-api/v2/markets"
@@ -237,8 +236,8 @@ def get_kalshi_odds(symbol, direction):
             timeout=10,
         )
         if not r.ok:
-            print(f"  [Kalshi] {symbol}: HTTP {r.status_code} -- {r.text[:300]}")
-            r.raise_for_status()
+            print(f"  [Kalshi] {symbol}: HTTP {r.status_code} -- {r.text[:200]}")
+            return None
         markets = r.json().get("markets", [])
 
         # Find the market whose close time is nearest to our prediction window
@@ -258,29 +257,22 @@ def get_kalshi_odds(symbol, direction):
                 best = m
 
         if best is None:
-            print(f"  [Kalshi] {symbol}: no open market found for series {series} (got {len(markets)} markets)")
-            if markets:
-                print(f"  [Kalshi] {symbol}: sample market keys: {list(markets[0].keys())}")
             return None
 
-        # Debug: show all price-related keys in the best market
-        price_keys = {k: v for k, v in best.items() if any(x in k.lower() for x in ["price", "bid", "ask", "yes", "no", "last"])}
-        print(f"  [Kalshi] {symbol}: price fields = {price_keys}")
+        # Kalshi API returns prices as dollar strings (0.0000-1.0000); convert to cents
+        yes_ask_d = best.get("yes_ask_dollars")
+        yes_bid_d = best.get("yes_bid_dollars")
+        no_ask_d  = best.get("no_ask_dollars")
+        no_bid_d  = best.get("no_bid_dollars")
 
-        yes_price = (best.get("yes_ask") or best.get("yes_bid") or
-                     best.get("last_yes_price") or best.get("last_price") or
-                     best.get("yes_price"))
-        no_price  = (best.get("no_ask") or best.get("no_bid") or
-                     best.get("last_no_price") or best.get("no_price"))
+        yes_raw = yes_ask_d if yes_ask_d is not None else yes_bid_d
+        no_raw  = no_ask_d  if no_ask_d  is not None else no_bid_d
 
-        if yes_price is None:
-            print(f"  [Kalshi] {symbol}: no price data -- all market keys: {list(best.keys())}")
+        if yes_raw is None:
             return None
-        if no_price is None:
-            no_price = 100 - yes_price
 
-        yes_price = int(yes_price)
-        no_price  = int(no_price)
+        yes_price = round(float(yes_raw) * 100)
+        no_price  = round(float(no_raw) * 100) if no_raw is not None else 100 - yes_price
 
         bet_side  = "YES" if direction == "UP" else "NO"
         bet_price = yes_price if bet_side == "YES" else no_price
