@@ -215,12 +215,88 @@ def _kalshi_headers(method, path):
         return None
 
 
-def get_kalshi_odds(symbol):
-    """Fetch the freshest open Kalshi 15-min up/down market for symbol.
+def _pick_best_market(markets, now):
+    """Return the open market with the most time left (>=1 min), or None."""
+    best = None
+    best_mins = None
+    for m in markets:
+        close_str = m.get("close_time") or m.get("expiration_time")
+        if not close_str:
+            continue
+        try:
+            close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        mins = (close_dt - now).total_seconds() / 60
+        if mins < 1:
+            continue
+        if best_mins is None or mins > best_mins:
+            best_mins = mins
+            best = m
+    return best
 
-    Picks the open market with the most time remaining (>=1 min so we skip
-    markets that are settling). Uses last_price_dollars for Up% so that
-    Down% = 100 - Up% always.  Returns a dict or None.
+
+def _pick_recent_closed(markets, now, max_age_min=10):
+    """Return the most recently closed market (closed within max_age_min), or None."""
+    best = None
+    best_age = None
+    for m in markets:
+        close_str = m.get("close_time") or m.get("expiration_time")
+        if not close_str:
+            continue
+        try:
+            close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        age_min = (now - close_dt).total_seconds() / 60
+        if age_min < 0 or age_min > max_age_min:
+            continue
+        if best_age is None or age_min < best_age:
+            best_age = age_min
+            best = m
+    return best
+
+
+def _extract_odds(market):
+    """Pull up_cents/down_cents/profits/target from a market dict, or return None."""
+    last_d = market.get("last_price_dollars")
+    if last_d is None:
+        yes_ask = market.get("yes_ask_dollars")
+        yes_bid = market.get("yes_bid_dollars")
+        if yes_ask is not None and yes_bid is not None:
+            last_d = (float(yes_ask) + float(yes_bid)) / 2
+        elif yes_ask is not None:
+            last_d = yes_ask
+        elif yes_bid is not None:
+            last_d = yes_bid
+        else:
+            return None
+
+    up_cents   = round(float(last_d) * 100)
+    down_cents = 100 - up_cents
+    if up_cents <= 0 or down_cents <= 0:
+        return None
+
+    up_profit   = round(1000 / up_cents   - 10, 2)
+    down_profit = round(1000 / down_cents - 10, 2)
+    target      = market.get("floor_strike") or market.get("custom_strike") or ""
+
+    return {
+        "target":       target,
+        "up_cents":     up_cents,
+        "down_cents":   down_cents,
+        "up_profit":    up_profit,
+        "down_profit":  down_profit,
+    }
+
+
+def get_kalshi_odds(symbol):
+    """Fetch the best available Kalshi 15-min up/down market for symbol.
+
+    Primary: open market with >=1 min remaining (most time left wins).
+    Fallback: most recently closed market within the last 10 min — covers
+              the gap between when one market closes and the next opens.
+    Uses last_price_dollars so Up% + Down% always = 100.
     """
     series = KALSHI_SERIES.get(symbol)
     if not series:
@@ -228,84 +304,55 @@ def get_kalshi_odds(symbol):
     if not os.environ.get("KALSHI_KEY_ID") or not os.environ.get("KALSHI_API_KEY"):
         return None
 
-    headers = _kalshi_headers("GET", "/trade-api/v2/markets")
-    if headers is None:
-        return None
-
-    now = datetime.now(timezone.utc)
+    path = "/trade-api/v2/markets"
+    now  = datetime.now(timezone.utc)
 
     try:
+        # --- primary: open markets ---
+        hdrs = _kalshi_headers("GET", path)
+        if hdrs is None:
+            return None
+
         r = requests.get(
             f"{KALSHI_BASE}/markets",
             params={"series_ticker": series, "status": "open", "limit": 10},
-            headers=headers,
+            headers=hdrs,
             timeout=10,
         )
         if not r.ok:
             print(f"  [Kalshi] {symbol}: HTTP {r.status_code} -- {r.text[:200]}")
             return None
-        markets = r.json().get("markets", [])
-        if not markets:
-            return None
 
-        # Pick the market with the most time remaining (>=1 min — excludes settling markets)
-        best = None
-        best_mins = None
-        for m in markets:
-            close_str = m.get("close_time") or m.get("expiration_time")
-            if not close_str:
-                continue
-            try:
-                close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
-            except Exception:
-                continue
-            mins = (close_dt - now).total_seconds() / 60
-            if mins < 1:
-                continue
-            if best_mins is None or mins > best_mins:
-                best_mins = mins
-                best = m
+        open_markets = r.json().get("markets", [])
+        best = _pick_best_market(open_markets, now)
+
+        # --- fallback: recently closed markets ---
+        if best is None:
+            hdrs2 = _kalshi_headers("GET", path)
+            if hdrs2 is not None:
+                r2 = requests.get(
+                    f"{KALSHI_BASE}/markets",
+                    params={"series_ticker": series, "status": "closed", "limit": 5},
+                    headers=hdrs2,
+                    timeout=10,
+                )
+                if r2.ok:
+                    closed_markets = r2.json().get("markets", [])
+                    best = _pick_recent_closed(closed_markets, now, max_age_min=10)
 
         if best is None:
             return None
 
-        # Use last_price_dollars (last traded YES price) so Up + Down = 100
-        last_d = best.get("last_price_dollars")
-        if last_d is None:
-            # fall back to mid of bid/ask
-            yes_ask = best.get("yes_ask_dollars")
-            yes_bid = best.get("yes_bid_dollars")
-            if yes_ask is not None and yes_bid is not None:
-                last_d = (float(yes_ask) + float(yes_bid)) / 2
-            elif yes_ask is not None:
-                last_d = yes_ask
-            elif yes_bid is not None:
-                last_d = yes_bid
-            else:
-                return None
-
-        up_cents   = round(float(last_d) * 100)
-        down_cents = 100 - up_cents
-
-        # $10 bet profit: buys (1000/price_cents) contracts, each pays $1 if correct
-        up_profit   = round(1000 / up_cents   - 10, 2) if up_cents   > 0 else ""
-        down_profit = round(1000 / down_cents - 10, 2) if down_cents > 0 else ""
-
-        # Reference price Kalshi set at market open (floor_strike when available)
-        target = best.get("floor_strike") or best.get("custom_strike") or ""
+        odds = _extract_odds(best)
+        if odds is None:
+            return None
 
         print(
-            f"  [Kalshi] {symbol}: target={target} "
-            f"Up={up_cents}% Down={down_cents}% "
-            f"$10 Up=${up_profit} $10 Down=${down_profit}"
+            f"  [Kalshi] {symbol}: target={odds['target']} "
+            f"Up={odds['up_cents']}% Down={odds['down_cents']}% "
+            f"$10 Up=${odds['up_profit']} $10 Down=${odds['down_profit']}"
         )
-        return {
-            "target":       target,
-            "up_cents":     up_cents,
-            "down_cents":   down_cents,
-            "up_profit":    up_profit,
-            "down_profit":  down_profit,
-        }
+        return odds
 
     except Exception as e:
         print(f"  [Kalshi] {symbol}: {e}")
