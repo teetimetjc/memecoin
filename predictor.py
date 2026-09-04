@@ -49,12 +49,30 @@ WEIGHTS = {
     "vwap_dev":  0.10,
 }
 
+# Columns A-R: untouched prediction data
 PRED_HEADERS = [
     "Timestamp", "Symbol", "Price at Pred", "Direction", "Confidence",
     "RSI(7)", "Stoch RSI", "EMA Signal", "MACD Signal", "BB Position",
     "OB Imbalance", "Vol Spike Ratio", "VWAP Dev %", "Composite Score",
     "Eval Time", "Price at Eval", "Actual Change %", "Correct?",
 ]
+
+# Columns S-X: Kalshi market data
+KALSHI_HEADERS = [
+    "Kalshi YES¢", "Kalshi NO¢", "Bet Side", "Bet Price¢", "Bet Payout ($10)", "Contrarian?",
+]
+
+ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS
+
+# Kalshi series tickers for each symbol
+KALSHI_BASE   = "https://trading-api.kalshi.com/trade-api/v2"
+KALSHI_SERIES = {
+    "BTCUSDT":  "KXBTC",
+    "ETHUSDT":  "KXETH",
+    "SOLUSDT":  "KXSOL",
+    "XRPUSDT":  "KXXRP",
+    "DOGEUSDT": None,
+}
 
 
 # --- PUSHOVER ---
@@ -102,12 +120,12 @@ def open_pred_sheet(client):
     try:
         ws = sh.worksheet(PRED_SHEET)
     except Exception:
-        ws = sh.add_worksheet(title=PRED_SHEET, rows=5000, cols=len(PRED_HEADERS))
+        ws = sh.add_worksheet(title=PRED_SHEET, rows=5000, cols=len(ALL_HEADERS))
     existing = ws.row_values(1)
-    if existing != PRED_HEADERS:
-        if ws.col_count < len(PRED_HEADERS):
-            ws.add_cols(len(PRED_HEADERS) - ws.col_count)
-        ws.update([PRED_HEADERS], "A1")
+    if existing != ALL_HEADERS:
+        if ws.col_count < len(ALL_HEADERS):
+            ws.add_cols(len(ALL_HEADERS) - ws.col_count)
+        ws.update([ALL_HEADERS], "A1")
     return ws
 
 
@@ -163,6 +181,92 @@ def get_price(symbol):
         raise ValueError(f"Kraken error: {data['error']}")
     result_key = [k for k in data["result"]][0]
     return float(data["result"][result_key]["c"][0])
+
+
+# --- KALSHI ---
+
+def get_kalshi_odds(symbol, direction):
+    """Fetch Kalshi market odds for the upcoming 15-min window. Returns dict or None."""
+    series = KALSHI_SERIES.get(symbol)
+    if not series:
+        return None
+    api_key = os.environ.get("KALSHI_API_KEY")
+    if not api_key:
+        print(f"  [Kalshi] KALSHI_API_KEY not set -- skipping")
+        return None
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    now = datetime.now(timezone.utc)
+    target_close = now + timedelta(minutes=PREDICT_HORIZON)
+
+    try:
+        r = requests.get(
+            f"{KALSHI_BASE}/markets",
+            params={"series_ticker": series, "status": "open", "limit": 20},
+            headers=headers,
+            timeout=10,
+        )
+        r.raise_for_status()
+        markets = r.json().get("markets", [])
+
+        # Find the market whose close time is nearest to our prediction window
+        best = None
+        best_delta = None
+        for m in markets:
+            close_str = m.get("close_time") or m.get("expiration_time")
+            if not close_str:
+                continue
+            try:
+                close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            delta = abs((close_dt - target_close).total_seconds())
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best = m
+
+        if best is None:
+            print(f"  [Kalshi] {symbol}: no open market found for series {series}")
+            return None
+
+        yes_price = best.get("yes_ask") or best.get("last_price") or best.get("yes_bid")
+        no_price  = best.get("no_ask")  or best.get("no_bid")
+        if yes_price is None:
+            print(f"  [Kalshi] {symbol}: no price data in market response")
+            return None
+        if no_price is None:
+            no_price = 100 - yes_price
+
+        yes_price = int(yes_price)
+        no_price  = int(no_price)
+
+        bet_side  = "YES" if direction == "UP" else "NO"
+        bet_price = yes_price if bet_side == "YES" else no_price
+
+        # $10 bet: each contract costs bet_price cents; win 100 cents per contract
+        payout = round(10 * 100 / bet_price, 2) if bet_price > 0 else ""
+
+        contrarian = "Yes" if (
+            (direction == "UP" and yes_price < 50) or
+            (direction == "DOWN" and yes_price > 50)
+        ) else "No"
+
+        print(
+            f"  [Kalshi] {symbol}: YES={yes_price}¢ NO={no_price}¢ "
+            f"Bet={bet_side}@{bet_price}¢ Payout=${payout} Contrarian={contrarian}"
+        )
+        return {
+            "yes": yes_price,
+            "no":  no_price,
+            "bet_side":   bet_side,
+            "bet_price":  bet_price,
+            "payout":     payout,
+            "contrarian": contrarian,
+        }
+
+    except Exception as e:
+        print(f"  [Kalshi] {symbol}: {e}")
+        return None
 
 
 # --- INDICATORS ---
@@ -436,12 +540,24 @@ def run_predictions():
             else:
                 sig = compute_signal(symbol, btc_composite=btc_composite)
 
+            # Fetch Kalshi odds (columns S-X); blank on failure
+            kalshi = get_kalshi_odds(symbol, sig["direction"])
+            if kalshi:
+                kalshi_row = [
+                    kalshi["yes"], kalshi["no"],
+                    kalshi["bet_side"], kalshi["bet_price"],
+                    kalshi["payout"], kalshi["contrarian"],
+                ]
+            else:
+                kalshi_row = ["", "", "", "", "", ""]
+
             row = [
                 ts_str, symbol, sig["price"], sig["direction"], sig["confidence"],
                 sig["rsi"], sig["stoch_rsi"], sig["ema_label"], sig["macd_label"],
                 sig["bb_position"], sig["ob_ratio"], sig["vol_ratio"], sig["vwap_dev"],
                 sig["composite"], eval_str, "", "", "",
-            ]
+            ] + kalshi_row
+
             ws.append_row(row, value_input_option="USER_ENTERED")
             print(
                 f"  {symbol}: {sig['direction']} {sig['confidence']:.1f}% conf "
@@ -450,6 +566,13 @@ def run_predictions():
             )
 
             if sig["confidence"] >= ALERT_THRESHOLD:
+                kalshi_line = ""
+                if kalshi:
+                    kalshi_line = (
+                        f"\nKalshi: Bet {kalshi['bet_side']} @ {kalshi['bet_price']}¢"
+                        f" | Payout ${kalshi['payout']} on $10"
+                        f" | Contrarian: {kalshi['contrarian']}"
+                    )
                 send_pushover(
                     title=f"{symbol} {sig['direction']} {sig['confidence']:.0f}%",
                     message=(
@@ -457,6 +580,7 @@ def run_predictions():
                         f"Direction: {sig['direction']} | Confidence: {sig['confidence']:.1f}%\n"
                         f"Trend: {sig['trend']} | EMA={sig['ema_label']} | MACD={sig['macd_label']}\n"
                         f"RSI={sig['rsi']}"
+                        f"{kalshi_line}"
                     ),
                 )
         except Exception as e:
