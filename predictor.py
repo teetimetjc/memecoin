@@ -215,48 +215,6 @@ def _kalshi_headers(method, path):
         return None
 
 
-def _pick_best_market(markets, now):
-    """Return the open market with the most time left (>=1 min), or None."""
-    best = None
-    best_mins = None
-    for m in markets:
-        close_str = m.get("close_time") or m.get("expiration_time")
-        if not close_str:
-            continue
-        try:
-            close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
-        except Exception:
-            continue
-        mins = (close_dt - now).total_seconds() / 60
-        if mins < 1:
-            continue
-        if best_mins is None or mins > best_mins:
-            best_mins = mins
-            best = m
-    return best
-
-
-def _pick_recent_closed(markets, now, max_age_min=10):
-    """Return the most recently closed market (closed within max_age_min), or None."""
-    best = None
-    best_age = None
-    for m in markets:
-        close_str = m.get("close_time") or m.get("expiration_time")
-        if not close_str:
-            continue
-        try:
-            close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
-        except Exception:
-            continue
-        age_min = (now - close_dt).total_seconds() / 60
-        if age_min < 0 or age_min > max_age_min:
-            continue
-        if best_age is None or age_min < best_age:
-            best_age = age_min
-            best = m
-    return best
-
-
 def _extract_odds(market):
     """Pull up_cents/down_cents/profits/target from a market dict, or return None."""
     last_d = market.get("last_price_dollars")
@@ -293,9 +251,10 @@ def _extract_odds(market):
 def get_kalshi_odds(symbol):
     """Fetch the best available Kalshi 15-min up/down market for symbol.
 
-    Primary: open market with >=1 min remaining (most time left wins).
-    Fallback: most recently closed market within the last 10 min — covers
-              the gap between when one market closes and the next opens.
+    Makes one call with no status filter to get all recent markets, then:
+      - Prefers the open market with the most time left (>=1 min).
+      - Falls back to the most recently expired market (within 10 min) to
+        cover the gap between when one market closes and the next opens.
     Uses last_price_dollars so Up% + Down% always = 100.
     """
     series = KALSHI_SERIES.get(symbol)
@@ -304,18 +263,16 @@ def get_kalshi_odds(symbol):
     if not os.environ.get("KALSHI_KEY_ID") or not os.environ.get("KALSHI_API_KEY"):
         return None
 
-    path = "/trade-api/v2/markets"
-    now  = datetime.now(timezone.utc)
+    hdrs = _kalshi_headers("GET", "/trade-api/v2/markets")
+    if hdrs is None:
+        return None
+
+    now = datetime.now(timezone.utc)
 
     try:
-        # --- primary: open markets ---
-        hdrs = _kalshi_headers("GET", path)
-        if hdrs is None:
-            return None
-
         r = requests.get(
             f"{KALSHI_BASE}/markets",
-            params={"series_ticker": series, "status": "open", "limit": 10},
+            params={"series_ticker": series, "limit": 20},
             headers=hdrs,
             timeout=10,
         )
@@ -323,22 +280,30 @@ def get_kalshi_odds(symbol):
             print(f"  [Kalshi] {symbol}: HTTP {r.status_code} -- {r.text[:200]}")
             return None
 
-        open_markets = r.json().get("markets", [])
-        best = _pick_best_market(open_markets, now)
+        markets = r.json().get("markets", [])
+        if not markets:
+            return None
 
-        # --- fallback: recently closed markets ---
+        # Parse close_time for every market
+        timed = []
+        for m in markets:
+            close_str = m.get("close_time") or m.get("expiration_time")
+            if not close_str:
+                continue
+            try:
+                close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            timed.append((m, (close_dt - now).total_seconds() / 60))
+
+        # Primary: open market with most time left (>=1 min)
+        open_candidates = [(m, mins) for m, mins in timed if mins >= 1]
+        best = max(open_candidates, key=lambda x: x[1])[0] if open_candidates else None
+
+        # Fallback: most recently expired market (0–10 min ago)
         if best is None:
-            hdrs2 = _kalshi_headers("GET", path)
-            if hdrs2 is not None:
-                r2 = requests.get(
-                    f"{KALSHI_BASE}/markets",
-                    params={"series_ticker": series, "status": "closed", "limit": 5},
-                    headers=hdrs2,
-                    timeout=10,
-                )
-                if r2.ok:
-                    closed_markets = r2.json().get("markets", [])
-                    best = _pick_recent_closed(closed_markets, now, max_age_min=10)
+            recent = [(m, mins) for m, mins in timed if -10 <= mins < 1]
+            best = max(recent, key=lambda x: x[1])[0] if recent else None
 
         if best is None:
             return None
