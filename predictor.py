@@ -9,7 +9,7 @@ Usage:
     python predictor.py --backtest   # backtest composite score on last 24h of data
 """
 
-import os, sys, json, math, argparse, requests
+import os, sys, json, math, time, argparse, requests
 from datetime import datetime, timedelta, timezone
 
 # --- CONFIG ---
@@ -573,6 +573,9 @@ def compute_signal(symbol, btc_composite=None):
 # --- PREDICTION LOGGING ---
 
 def run_predictions():
+    print("  Waiting 30s for Kalshi markets to open after interval boundary...")
+    time.sleep(30)
+
     client   = _get_client()
     ws       = open_pred_sheet(client)
     now      = datetime.now(timezone.utc)
