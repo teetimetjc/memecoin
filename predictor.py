@@ -65,7 +65,7 @@ KALSHI_HEADERS = [
 ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS
 
 # Kalshi series tickers for each symbol
-KALSHI_BASE   = "https://trading-api.kalshi.com/trade-api/v2"
+KALSHI_BASE   = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_SERIES = {
     "BTCUSDT":  "KXBTC",
     "ETHUSDT":  "KXETH",
@@ -203,7 +203,6 @@ def _kalshi_headers(method, path):
         private_key = serialization.load_pem_private_key(private_pem.encode(), password=None)
         sig = private_key.sign(msg, padding.PKCS1v15(), hashes.SHA256())
         sig_b64 = base64.b64encode(sig).decode()
-        print(f"  [Kalshi] Auth OK: key_id={key_id[:8]}... ts={ts}")
         return {
             "KALSHI-ACCESS-KEY":       key_id,
             "KALSHI-ACCESS-TIMESTAMP": ts,
