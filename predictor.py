@@ -251,10 +251,11 @@ def _extract_odds(market):
 def get_kalshi_odds(symbol):
     """Fetch the best available Kalshi 15-min up/down market for symbol.
 
-    Makes one call with no status filter to get all recent markets, then:
-      - Prefers the open market with the most time left (>=1 min).
-      - Falls back to the most recently expired market (within 10 min) to
-        cover the gap between when one market closes and the next opens.
+    Fetches all markets for the series (no status filter), then:
+      1. Tries open markets (>=1 min left), most time first, skipping any
+         with no price data yet (brand-new markets often have none).
+      2. Falls back to recently expired markets (0-10 min ago), most
+         recent first, again skipping those with no price data.
     Uses last_price_dollars so Up% + Down% always = 100.
     """
     series = KALSHI_SERIES.get(symbol)
@@ -284,7 +285,7 @@ def get_kalshi_odds(symbol):
         if not markets:
             return None
 
-        # Parse close_time for every market
+        # Attach minutes-until-close to each market
         timed = []
         for m in markets:
             close_str = m.get("close_time") or m.get("expiration_time")
@@ -296,28 +297,29 @@ def get_kalshi_odds(symbol):
                 continue
             timed.append((m, (close_dt - now).total_seconds() / 60))
 
-        # Primary: open market with most time left (>=1 min)
-        open_candidates = [(m, mins) for m, mins in timed if mins >= 1]
-        best = max(open_candidates, key=lambda x: x[1])[0] if open_candidates else None
-
-        # Fallback: most recently expired market (0–10 min ago)
-        if best is None:
-            recent = [(m, mins) for m, mins in timed if -10 <= mins < 1]
-            best = max(recent, key=lambda x: x[1])[0] if recent else None
-
-        if best is None:
-            return None
-
-        odds = _extract_odds(best)
-        if odds is None:
-            return None
-
-        print(
-            f"  [Kalshi] {symbol}: target={odds['target']} "
-            f"Up={odds['up_cents']}% Down={odds['down_cents']}% "
-            f"$10 Up=${odds['up_profit']} $10 Down=${odds['down_profit']}"
+        # Open markets: >=1 min left, sorted most-time-first
+        open_candidates = sorted(
+            [(m, mins) for m, mins in timed if mins >= 1],
+            key=lambda x: x[1], reverse=True,
         )
-        return odds
+        # Recently expired: 0-10 min ago, sorted most-recent-first
+        recent_candidates = sorted(
+            [(m, mins) for m, mins in timed if -10 <= mins < 1],
+            key=lambda x: x[1], reverse=True,
+        )
+
+        # Try each candidate in order until one has valid price data
+        for m, _ in open_candidates + recent_candidates:
+            odds = _extract_odds(m)
+            if odds is not None:
+                print(
+                    f"  [Kalshi] {symbol}: target={odds['target']} "
+                    f"Up={odds['up_cents']}% Down={odds['down_cents']}% "
+                    f"$10 Up=${odds['up_profit']} $10 Down=${odds['down_profit']}"
+                )
+                return odds
+
+        return None
 
     except Exception as e:
         print(f"  [Kalshi] {symbol}: {e}")
