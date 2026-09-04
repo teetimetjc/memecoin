@@ -62,7 +62,7 @@ KALSHI_HEADERS = [
     "Kalshi YES¢", "Kalshi NO¢", "Bet Side", "Bet Price¢", "Bet Payout ($10)", "Contrarian?",
 ]
 
-# Columns Y-AD: nearest-strike Kalshi market
+# Columns Y-AE: nearest-strike Kalshi market
 KALSHI_STRIKE_HEADERS = [
     "Strike", "Strike YES¢", "Strike NO¢", "Strike Bet Side", "Strike Bet Price¢",
     "Strike Payout ($10)", "Strike Contrarian?",
@@ -281,6 +281,8 @@ def get_kalshi_odds(symbol, direction, current_price):
             return None, None
 
         # --- nearest-expiry market ---
+        # Require >=10 min remaining so we always get a freshly-opened market,
+        # not one that's almost expired from the previous window.
         best_expiry = None
         best_expiry_delta = None
         for m in markets:
@@ -291,13 +293,15 @@ def get_kalshi_odds(symbol, direction, current_price):
                 close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
             except Exception:
                 continue
+            if (close_dt - now).total_seconds() < 600:
+                continue  # skip markets with <10 min left
             delta = abs((close_dt - target_close).total_seconds())
             if best_expiry_delta is None or delta < best_expiry_delta:
                 best_expiry_delta = delta
                 best_expiry = m
 
         # --- nearest-strike market (among markets closing within 60 min) ---
-        # Uses floor_strike field; pick the one whose strike is closest to current price
+        # Uses floor_strike field; pick the one whose strike is closest to current price.
         best_strike = None
         best_strike_delta = None
         for m in markets:
@@ -309,7 +313,7 @@ def get_kalshi_odds(symbol, direction, current_price):
             except Exception:
                 continue
             minutes_away = (close_dt - now).total_seconds() / 60
-            if minutes_away < 0 or minutes_away > 60:
+            if minutes_away < 10 or minutes_away > 60:
                 continue
             strike_raw = m.get("floor_strike")
             if strike_raw is None:
