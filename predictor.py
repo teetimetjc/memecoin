@@ -53,67 +53,8 @@ PRED_HEADERS = [
     "Timestamp", "Symbol", "Price at Pred", "Direction", "Confidence",
     "RSI(7)", "Stoch RSI", "EMA Signal", "MACD Signal", "BB Position",
     "OB Imbalance", "Vol Spike Ratio", "VWAP Dev %", "Composite Score",
-    "Kalshi YES¢", "Kalshi NO¢", "Bet Side", "Bet Price¢", "Bet Payout", "Contrarian?",
     "Eval Time", "Price at Eval", "Actual Change %", "Correct?",
 ]
-
-# Kalshi ticker mapping (15-min contracts)
-KALSHI_BASE = "https://trading-api.kalshi.com/trade-api/v2"
-KALSHI_TICKERS = {
-    "BTCUSDT":  "KXBTC",
-    "ETHUSDT":  "KXETH",
-    "SOLUSDT":  "KXSOL",
-    "XRPUSDT":  "KXRIP",
-    "DOGEUSDT": "KXDOGE",
-}
-
-
-# --- KALSHI ---
-
-def get_kalshi_odds(symbol):
-    api_key = os.environ.get("KALSHI_API_KEY")
-    if not api_key:
-        return None
-
-    ticker = KALSHI_TICKERS.get(symbol)
-    if not ticker:
-        return None
-
-    try:
-        r = requests.get(
-            f"{KALSHI_BASE}/markets",
-            params={"tickers": ticker, "status": "open", "limit": 10},
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=10,
-        )
-        r.raise_for_status()
-        markets = r.json().get("markets", [])
-
-        fifteen_min = [
-            m for m in markets
-            if "15" in m.get("title", "").lower() or "15" in m.get("subtitle", "").lower()
-        ]
-        if not fifteen_min:
-            fifteen_min = markets
-        if not fifteen_min:
-            return None
-
-        m = fifteen_min[0]
-        yes_price = m.get("yes_ask") or m.get("yes_bid") or 50
-        no_price  = 100 - yes_price
-        yes_payout = round(100 / yes_price, 2) if yes_price > 0 else 0
-        no_payout  = round(100 / no_price, 2)  if no_price  > 0 else 0
-
-        return {
-            "yes_price":  yes_price,
-            "no_price":   no_price,
-            "yes_payout": yes_payout,
-            "no_payout":  no_payout,
-            "title":      m.get("title", ""),
-        }
-    except Exception as e:
-        print(f"  [Kalshi] Failed for {symbol}: {e}")
-        return None
 
 
 # --- PUSHOVER ---
@@ -495,24 +436,11 @@ def run_predictions():
             else:
                 sig = compute_signal(symbol, btc_composite=btc_composite)
 
-            # Fetch Kalshi odds for every prediction
-            odds = get_kalshi_odds(symbol)
-            if odds:
-                bet_side     = sig["direction"]
-                bet_price    = odds["yes_price"]  if bet_side == "UP" else odds["no_price"]
-                bet_payout   = odds["yes_payout"] if bet_side == "UP" else odds["no_payout"]
-                crowd_favors = "UP" if odds["yes_price"] > 50 else "DOWN"
-                contrarian   = "⚡ Yes" if crowd_favors != bet_side else "No"
-                kalshi_row   = [odds["yes_price"], odds["no_price"], bet_side, bet_price, f"{bet_payout}x", contrarian]
-            else:
-                bet_price, bet_payout, contrarian = None, None, None
-                kalshi_row = ["", "", "", "", "", ""]
-
             row = [
                 ts_str, symbol, sig["price"], sig["direction"], sig["confidence"],
                 sig["rsi"], sig["stoch_rsi"], sig["ema_label"], sig["macd_label"],
                 sig["bb_position"], sig["ob_ratio"], sig["vol_ratio"], sig["vwap_dev"],
-                sig["composite"], *kalshi_row, eval_str, "", "", "",
+                sig["composite"], eval_str, "", "", "",
             ]
             ws.append_row(row, value_input_option="USER_ENTERED")
             print(
@@ -522,25 +450,13 @@ def run_predictions():
             )
 
             if sig["confidence"] >= ALERT_THRESHOLD:
-                if odds:
-                    other_price  = odds["no_price"]   if sig["direction"] == "UP" else odds["yes_price"]
-                    other_payout = odds["no_payout"]  if sig["direction"] == "UP" else odds["yes_payout"]
-                    kalshi_line = (
-                        f"Kalshi: {sig['direction']}={bet_price}¢ ({bet_payout}x) | "
-                        f"{'DOWN' if sig['direction']=='UP' else 'UP'}={other_price}¢ ({other_payout}x)\n"
-                        f"{'⚡ Model vs crowd — better payout!' if contrarian == '⚡ Yes' else '✓ Model agrees with crowd'}"
-                    )
-                else:
-                    kalshi_line = "Kalshi: odds unavailable"
-
                 send_pushover(
                     title=f"{symbol} {sig['direction']} {sig['confidence']:.0f}%",
                     message=(
                         f"{symbol} @ ${sig['price']:,.4f}\n"
                         f"Direction: {sig['direction']} | Confidence: {sig['confidence']:.1f}%\n"
                         f"Trend: {sig['trend']} | EMA={sig['ema_label']} | MACD={sig['macd_label']}\n"
-                        f"RSI={sig['rsi']}\n"
-                        f"{kalshi_line}"
+                        f"RSI={sig['rsi']}"
                     ),
                 )
         except Exception as e:
