@@ -213,16 +213,7 @@ def _kalshi_headers(method, path):
 
 
 def get_kalshi_odds(symbol, current_price):
-    """Fetch the nearest-strike Kalshi market for symbol and return raw odds.
-
-    Finds the open market (>=10 min remaining, closing within 60 min) whose
-    floor_strike is closest to current_price. Returns a dict with:
-        strike, yes_cents, no_cents, yes_profit, no_profit
-    or None if unavailable.
-
-    Profit is calculated for a $10 bet:
-        profit = round($1000 / price_cents - $10, 2)
-    """
+    """Fetch the nearest-strike Kalshi market for symbol and return raw odds."""
     series = KALSHI_SERIES.get(symbol)
     if not series:
         return None
@@ -249,6 +240,23 @@ def get_kalshi_odds(symbol, current_price):
         markets = r.json().get("markets", [])
         if not markets:
             return None
+
+        # DEBUG: dump all available markets so we can understand the structure
+        print(f"  [Kalshi DEBUG] {symbol} current_price={current_price} -- {len(markets)} markets returned:")
+        for m in markets:
+            close_str = m.get("close_time") or m.get("expiration_time") or "?"
+            try:
+                close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+                mins = round((close_dt - now).total_seconds() / 60, 1)
+            except Exception:
+                mins = "?"
+            strike = m.get("floor_strike", "none")
+            ticker = m.get("ticker", "?")
+            yes_d  = m.get("yes_ask_dollars") or m.get("yes_bid_dollars") or "?"
+            no_d   = m.get("no_ask_dollars")  or m.get("no_bid_dollars")  or "?"
+            yes_c  = round(float(yes_d) * 100) if yes_d != "?" else "?"
+            no_c   = round(float(no_d)  * 100) if no_d  != "?" else "?"
+            print(f"    ticker={ticker} strike={strike} mins_left={mins} YES={yes_c}¢ NO={no_c}¢")
 
         # Find the market with floor_strike closest to current price,
         # among markets with >=10 min and <=60 min remaining.
@@ -278,7 +286,7 @@ def get_kalshi_odds(symbol, current_price):
                 best = m
 
         if best is None:
-            print(f"  [Kalshi] {symbol}: no suitable market found")
+            print(f"  [Kalshi] {symbol}: no market passed 10-60 min filter")
             return None
 
         # Extract YES/NO prices (API returns dollar strings 0.0000-1.0000)
