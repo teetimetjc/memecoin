@@ -46,8 +46,11 @@ BTC_FILTER_STRENGTH = 0.3
 #                   6/17 = 35.3% over the same window, and confidence correlates
 #                   with correctness at r=+0.011 (t=0.53, i.e. no signal at all).
 #                   Kept only for comparison; do not enable to trade on.
-#   "off"        -- no alerts.
-ALERT_MODE          = "ema"
+#   "off"        -- no alerts. Currently selected: the EMA rule is still
+#                   unvalidated out-of-sample, and the two indicator fixes below
+#                   change composite output, so both need a clean week of data
+#                   before anything is worth being woken up for.
+ALERT_MODE          = "off"
 ALERT_THRESHOLD     = 40.0
 
 WEIGHTS = {
@@ -87,7 +90,7 @@ LEGACY_HEADERS = [
 
 # Columns AF-AG: EMA-divergence rule, logged alongside the composite so its
 # accuracy accrues out-of-sample without changing what the composite predicts.
-EMA_HEADERS = ["EMA-Only Call", "EMA-Only Correct?"]
+EMA_HEADERS = ["EMA-Only Call", "EMA-Only Entry ¢", "EMA-Only Correct?"]
 
 ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS + EMA_HEADERS
 
@@ -370,8 +373,14 @@ def calc_stoch_rsi(closes, rsi_period=14, stoch_period=14):
         return None
     rsi_values = []
     for i in range(stoch_period):
-        window = closes[-(rsi_period + stoch_period - i):-(stoch_period - i) or None]
-        r = calc_rsi(window, rsi_period)
+        # Walk a window forward one candle at a time, oldest first, ending with
+        # the window that closes on the latest candle. Each needs rsi_period + 1
+        # closes so calc_rsi can form rsi_period diffs.
+        end   = len(closes) - (stoch_period - 1 - i)
+        start = end - (rsi_period + 1)
+        if start < 0:
+            continue
+        r = calc_rsi(closes[start:end], rsi_period)
         if r is not None:
             rsi_values.append(r)
     if not rsi_values:
@@ -446,11 +455,19 @@ def calc_ob_imbalance(ob, levels=10):
     return bids / total if total else 0.5
 
 
-def calc_vol_spike(volumes, window=20):
-    if len(volumes) < window + 1:
+def calc_vol_spike(volumes, window=20, drop_in_progress=True):
+    """Ratio of the latest completed candle's volume to the mean of the prior `window`.
+
+    Kraken's OHLC feed returns the in-progress candle last. Including it compares
+    a partially-filled minute against complete minutes, which pushed this to a
+    median of 0.10 across 2,540 logged predictions (87% of readings below 1.0)
+    and meant the >=1.5 spike threshold effectively never fired on a real spike.
+    """
+    v = volumes[:-1] if drop_in_progress and len(volumes) > 1 else volumes
+    if len(v) < window + 1:
         return 1.0
-    avg = sum(volumes[-window - 1:-1]) / window
-    return volumes[-1] / avg if avg else 1.0
+    avg = sum(v[-window - 1:-1]) / window
+    return v[-1] / avg if avg else 1.0
 
 
 def get_daily_trend(symbol):
@@ -628,6 +645,14 @@ def run_predictions():
                 sig = compute_signal(symbol, btc_composite=btc_composite)
 
             kalshi = get_kalshi_odds(symbol)
+
+            if kalshi and sig["ema_only_call"] == "UP":
+                ema_entry = kalshi["up_cents"]
+            elif kalshi and sig["ema_only_call"] == "DOWN":
+                ema_entry = kalshi["down_cents"]
+            else:
+                ema_entry = ""
+
             kalshi_row = [
                 kalshi["target"]      if kalshi else "",
                 kalshi["up_cents"]    if kalshi else "",
@@ -641,7 +666,9 @@ def run_predictions():
                 sig["rsi"], sig["stoch_rsi"], sig["ema_label"], sig["macd_label"],
                 sig["bb_position"], sig["ob_ratio"], sig["vol_ratio"], sig["vwap_dev"],
                 sig["composite"], eval_str, "", "", "",
-            ] + kalshi_row + [""] * len(LEGACY_HEADERS) + [sig["ema_only_call"], ""]
+            ] + kalshi_row + [""] * len(LEGACY_HEADERS) + [
+                sig["ema_only_call"], ema_entry, "",
+            ]
 
             ws.append_row(row, value_input_option="USER_ENTERED")
             print(
