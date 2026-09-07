@@ -138,6 +138,7 @@ EMA_HEADERS = ["EMA-Only Call", "EMA-Only Entry ¢", "EMA-Only Correct?", "Model
 V3_HEADERS = [
     "K Early Up%", "K Early Spread ¢", "K Early Secs",
     "K Late Spread ¢", "K Late Secs", "K Volume", "K Open Interest",
+    "K Early Ticker", "K Late Ticker",
 ]
 
 ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS + EMA_HEADERS + V3_HEADERS
@@ -323,16 +324,27 @@ def _extract_odds(market):
     except (TypeError, ValueError):
         spread = ""
 
+    def first_of(*keys):
+        for k in keys:
+            v = market.get(k)
+            if v is not None:
+                return v
+        return ""
+
     return {
+        "ticker":        market.get("ticker", ""),
         "target":        target,
         "up_cents":      up_cents,
         "down_cents":    down_cents,
         "up_profit":     up_profit,
         "down_profit":   down_profit,
         "spread_cents":  spread,
-        "volume":        market.get("volume", ""),
-        "open_interest": market.get("open_interest", ""),
+        "volume":        first_of("volume", "volume_24h", "dollar_volume"),
+        "open_interest": first_of("open_interest", "openInterest", "oi"),
     }
+
+
+_KEYS_LOGGED = []
 
 
 def _fetch_kalshi_markets(series, hdrs, status=None, limit=200):
@@ -353,8 +365,17 @@ def _fetch_kalshi_markets(series, hdrs, status=None, limit=200):
         return None, f"bad JSON: {e}"
 
 
-def get_kalshi_odds(symbol):
+def get_kalshi_odds(symbol, allow_recent=True, want_ticker=None):
     """Fetch the best available Kalshi 15-min up/down market for symbol.
+
+    allow_recent=False restricts the search to markets that are still open.
+    The early v3 sweep sets this: a market that has already closed quotes near
+    0 or 100, and pairing one of those against the live late quote manufactures
+    a ~50c gap that has nothing to do with opening staleness.
+
+    want_ticker pins the search to one market, so the late sweep can be made to
+    quote the same contract the early sweep saw rather than whichever market
+    happens to sort first.
 
     Tries status=open first, then an unfiltered call, because the series holds
     hundreds of settled markets and a small unfiltered page can miss the live
@@ -383,6 +404,9 @@ def get_kalshi_odds(symbol):
     for status in ("open", None):
         label = status or "unfiltered"
         markets, err = _fetch_kalshi_markets(series, hdrs, status=status)
+        if markets and not _KEYS_LOGGED:
+            _KEYS_LOGGED.append(1)
+            print(f"  [Kalshi] market object keys: {sorted(markets[0].keys())}")
         if err:
             print(f"  [Kalshi] {symbol}: {label} -- {err}")
             continue
@@ -403,10 +427,13 @@ def get_kalshi_odds(symbol):
                 continue
             timed.append((m, (close_dt - now).total_seconds() / 60))
 
+        if want_ticker:
+            timed = [t for t in timed if t[0].get("ticker") == want_ticker]
+
         open_c = sorted([t for t in timed if t[1] >= 1],
                         key=lambda x: x[1], reverse=True)
         recent_c = sorted([t for t in timed if -10 <= t[1] < 1],
-                          key=lambda x: x[1], reverse=True)
+                          key=lambda x: x[1], reverse=True) if allow_recent else []
 
         for m, mins in open_c + recent_c:
             odds = _extract_odds(m)
@@ -722,7 +749,7 @@ def run_predictions():
     early = {}
     for symbol in SYMBOLS:
         try:
-            early[symbol] = (get_kalshi_odds(symbol), secs_in())
+            early[symbol] = (get_kalshi_odds(symbol, allow_recent=False), secs_in())
         except Exception as e:
             print(f"  [Kalshi] {symbol}: early sweep failed -- {e}")
             early[symbol] = (None, secs_in())
@@ -753,7 +780,14 @@ def run_predictions():
 
             early_odds, early_secs = early.get(symbol, (None, ""))
             late_secs = secs_in()
-            kalshi    = get_kalshi_odds(symbol)
+            # Quote the same contract the early sweep saw, so the pair is a
+            # before/after of one market rather than two different ones.
+            kalshi    = get_kalshi_odds(
+                symbol,
+                want_ticker=early_odds["ticker"] if early_odds else None,
+            )
+            if kalshi is None and early_odds:
+                kalshi = get_kalshi_odds(symbol)
 
             if kalshi and sig["ema_only_call"] == "UP":
                 ema_entry = kalshi["up_cents"]
@@ -778,6 +812,8 @@ def run_predictions():
                 late_secs,
                 kalshi["volume"]           if kalshi else "",
                 kalshi["open_interest"]    if kalshi else "",
+                early_odds["ticker"]       if early_odds else "",
+                kalshi["ticker"]           if kalshi else "",
             ]
 
             row = [
@@ -1035,10 +1071,14 @@ def build_report(rows, version):
     R.append(["", "", ""])
 
     # ---- the v3 test -------------------------------------------------------
-    pairs = []
+    pairs, mismatched = [], 0
     for r in S:
         e, l, chg = num(r, "K Early Up%"), num(r, "K Up%"), num(r, "Actual Change %")
         if e is None or l is None or chg is None:
+            continue
+        et, lt = cell(r, "K Early Ticker"), cell(r, "K Late Ticker")
+        if et and lt and et != lt:
+            mismatched += 1          # different contracts -- not a before/after
             continue
         pairs.append((e, l, 1.0 if chg > 0 else 0.0, num(r, "K Early Spread ¢")))
 
@@ -1049,7 +1089,8 @@ def build_report(rows, version):
         brier = lambda qs: sum((q / 100.0 - y) ** 2 for q, (_, _, y, _) in zip(qs, pairs)) / len(pairs)
         be = brier([e for e, _, _, _ in pairs])
         bl = brier([l for _, l, _, _ in pairs])
-        R.append(["  paired rows", len(pairs), ""])
+        R.append(["  paired rows", len(pairs),
+                  f"{mismatched} excluded (ticker mismatch)" if mismatched else ""])
         R.append(["  Brier early", f"{be:.4f}", "lower = better calibrated"])
         R.append(["  Brier late", f"{bl:.4f}", ""])
 
