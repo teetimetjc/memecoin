@@ -8,6 +8,7 @@ Usage:
     python predictor.py --resolve    # fill in outcomes for predictions due
     python predictor.py --backtest   # backtest composite score on last 24h of data
     python predictor.py --report     # score the current model version vs fixed thresholds
+    python predictor.py --report --sheet   # ...and refresh the Report tab
 """
 
 import os, sys, json, math, time, argparse, requests
@@ -50,6 +51,7 @@ MODEL_VERSION       = "v3"
 
 SPREADSHEET_ID      = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
 PRED_SHEET          = "Predictions"
+REPORT_SHEET        = "Report"
 SYMBOLS             = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
 KRAKEN_PAIRS        = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
                        "XRPUSDT": "XRPUSD", "DOGEUSDT": "XDGUSD"}
@@ -948,59 +950,54 @@ def _kalshi_pnl(entry_cents, won, stake=10.0):
     return (contracts - stake - fee) if won else (-stake - fee)
 
 
-def _score(name, rows, call_of, entry_of):
-    """Print accuracy, realised P&L and a pass/fail against the entry-implied bar."""
+def _pct(a, b):
+    return f"{a}/{b} ({a / b * 100:.1f}%)" if b else "--"
+
+
+def _score_rows(name, rows, call_of, entry_of):
+    """Accuracy, realised P&L and a pass/fail against the entry-implied bar."""
+    out = [[name, "", ""]]
     graded = [r for r in rows if call_of(r) in ("Yes", "No")]
     n = len(graded)
     if not n:
-        print(f"  {name}: no graded rows yet")
-        return
+        return out + [["  graded", "no rows yet", ""]]
+
     wins = sum(1 for r in graded if call_of(r) == "Yes")
-    acc  = wins / n * 100
+    out.append(["  graded", _pct(wins, n), ""])
 
     priced = [(r, entry_of(r)) for r in graded]
     priced = [(r, e) for r, e in priced if e is not None]
-
-    print(f"  {name}")
-    print(f"    graded      : {wins}/{n} = {acc:.1f}%")
-
     if not priced:
-        print("    priced      : 0 rows -- cannot judge profitability, only accuracy")
-        print("    verdict     : INCONCLUSIVE (no Kalshi prices captured)")
-        return
+        out.append(["  priced", "0 rows", "cannot judge profitability"])
+        out.append(["  VERDICT", "INCONCLUSIVE", "no Kalshi prices captured"])
+        return out
 
-    avg_entry = sum(e for _, e in priced) / len(priced)
-    pnl       = sum(_kalshi_pnl(e, call_of(r) == "Yes") for r, e in priced)
-    pw        = sum(1 for r, _ in priced if call_of(r) == "Yes")
-    pacc      = pw / len(priced) * 100
+    avg   = sum(e for _, e in priced) / len(priced)
+    pnl   = sum(_kalshi_pnl(e, call_of(r) == "Yes") for r, e in priced)
+    pw    = sum(1 for r, _ in priced if call_of(r) == "Yes")
+    pacc  = pw / len(priced) * 100
 
-    print(f"    priced      : {pw}/{len(priced)} = {pacc:.1f}%  avg entry {avg_entry:.1f}c")
-    print(f"    P&L ($10)   : ${pnl:+.2f}   EV/bet ${pnl / len(priced):+.2f}")
-    print(f"    bar to beat : {avg_entry:.1f}% (entry-implied) + {BREAKEVEN_MARGIN:.1f}pp")
+    out.append(["  priced", _pct(pw, len(priced)), f"avg entry {avg:.1f}c"])
+    out.append(["  P&L ($10 flat)", f"${pnl:+.2f}", f"EV/bet ${pnl / len(priced):+.2f}"])
+    out.append(["  bar to beat", f"{avg + BREAKEVEN_MARGIN:.1f}%",
+                f"entry-implied {avg:.1f}% + {BREAKEVEN_MARGIN:.1f}pp"])
 
     if len(priced) < MIN_SAMPLE:
-        print(f"    verdict     : TOO EARLY ({len(priced)}/{MIN_SAMPLE} priced rows)")
-    elif pacc >= avg_entry + BREAKEVEN_MARGIN and pnl > 0:
-        print("    verdict     : PASS -- clears its entry-implied breakeven")
+        out.append(["  VERDICT", "TOO EARLY", f"{len(priced)}/{MIN_SAMPLE} priced rows"])
+    elif pacc >= avg + BREAKEVEN_MARGIN and pnl > 0:
+        out.append(["  VERDICT", "PASS", "clears entry-implied breakeven"])
     else:
-        print("    verdict     : FAIL -- does not clear breakeven at the prices paid")
+        out.append(["  VERDICT", "FAIL", "does not clear breakeven at prices paid"])
+    return out
 
 
-def report(version=None):
-    """Score the logged predictions for one model version against fixed thresholds."""
-    version = version or MODEL_VERSION
-    ws   = open_pred_sheet(_get_client())
-    rows = ws.get_all_values()
-    if len(rows) < 2:
-        print("  No rows.")
-        return
-
+def build_report(rows, version):
+    """Return the report as a list of [label, value, note] rows."""
     idx = {h: i for i, h in enumerate(ALL_HEADERS)}
-    ver_col = idx["Model Version"]
 
     def cell(r, name):
-        i = idx[name]
-        return r[i] if len(r) > i else ""
+        i = idx.get(name)
+        return r[i] if i is not None and len(r) > i else ""
 
     def num(r, name):
         try:
@@ -1008,86 +1005,153 @@ def report(version=None):
         except (TypeError, ValueError):
             return None
 
-    scoped = [r for r in rows[1:] if cell(r, "Model Version") == version]
-    print(f"\n=== {version} validation report ===")
-    print(f"  rows logged as {version}: {len(scoped)}")
-    if not scoped:
-        print("  Nothing logged under this version yet.")
-        return
-    print(f"  window: {cell(scoped[0], 'Timestamp')}  ->  {cell(scoped[-1], 'Timestamp')}\n")
+    S = [r for r in rows[1:] if cell(r, "Model Version") == version]
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    # Indicator health -- both of these were broken in v1 and should now be live.
-    stoch = [r for r in scoped if cell(r, "Stoch RSI") not in ("", None)]
-    print(f"  Stoch RSI populated : {len(stoch)}/{len(scoped)}"
-          f"   {'OK' if len(stoch) > 0.9 * len(scoped) else 'STILL BROKEN'}")
+    R = [[f"CRYPTO PREDICTOR -- {version} REPORT", "", ""],
+         ["Last updated", now, ""],
+         [f"Rows logged as {version}", len(S), ""]]
+    if not S:
+        return R + [["", "", ""], ["Nothing logged under this version yet.", "", ""]]
+    R.append(["Window", f"{cell(S[0], 'Timestamp')} -> {cell(S[-1], 'Timestamp')}", ""])
+    R.append(["", "", ""])
 
-    vols = sorted(v for v in (num(r, "Vol Spike Ratio") for r in scoped) if v is not None)
+    # ---- data health -------------------------------------------------------
+    R.append(["DATA HEALTH", "", ""])
+    st = sum(1 for r in S if cell(r, "Stoch RSI") not in ("", None))
+    R.append(["  Stoch RSI populated", _pct(st, len(S)),
+              "OK" if st > 0.9 * len(S) else "STILL BROKEN"])
+
+    vols = [v for v in (num(r, "Vol Spike Ratio") for r in S) if v is not None]
     if vols:
-        med = vols[len(vols) // 2]
-        over = sum(1 for v in vols if v >= 1.5) / len(vols) * 100
-        print(f"  Vol Spike median    : {med:.2f}   (v1 was 0.10; ~1.0 expected)"
-              f"   {'OK' if 0.5 <= med <= 2.0 else 'STILL SKEWED'}")
-        print(f"  Vol Spike >=1.5     : {over:.1f}% of rows")
+        mean = sum(vols) / len(vols)
+        # Judged on the mean, not the median: 1-min crypto volume is heavily
+        # right-skewed, so a healthy indicator sits well below 1.0 at the median.
+        R.append(["  Vol Spike mean", f"{mean:.2f}",
+                  "OK" if 0.6 <= mean <= 1.8 else "CHECK -- expected ~1.0"])
+    kal = sum(1 for r in S if cell(r, "K Up%") not in ("", None))
+    R.append(["  Kalshi priced", _pct(kal, len(S)),
+              "OK" if kal > 0.9 * len(S) else "INCOMPLETE"])
+    R.append(["", "", ""])
 
-    kal = sum(1 for r in scoped if cell(r, "K Up%") not in ("", None))
-    print(f"  Kalshi priced       : {kal}/{len(scoped)} = {kal / len(scoped) * 100:.1f}%"
-          f"   {'OK' if kal > 0.9 * len(scoped) else 'INCOMPLETE -- profitability cannot be judged'}")
-    print()
-
-    def composite_entry(r):
-        side = cell(r, "Direction")
-        return num(r, "K Up%") if side == "UP" else num(r, "K Down%")
-
-    # --- v3: is the early quote worse calibrated than the late one? ---------
-    # The whole v3 hypothesis. If the market is briefly mispriced at the open,
-    # the early quote should predict settlement worse than the late one, and
-    # the gap between them is the edge. Equal calibration means no edge here.
+    # ---- the v3 test -------------------------------------------------------
     pairs = []
-    for r in scoped:
-        e, l = num(r, "K Early Up%"), num(r, "K Up%")
-        chg = num(r, "Actual Change %")
+    for r in S:
+        e, l, chg = num(r, "K Early Up%"), num(r, "K Up%"), num(r, "Actual Change %")
         if e is None or l is None or chg is None:
             continue
         pairs.append((e, l, 1.0 if chg > 0 else 0.0, num(r, "K Early Spread ¢")))
 
-    if pairs:
-        print(f"  EARLY vs LATE QUOTE  (n={len(pairs)})")
-
-        def brier(qs, ys):
-            return sum((q / 100.0 - y) ** 2 for q, y in zip(qs, ys)) / len(ys)
-
-        ys = [y for _, _, y, _ in pairs]
-        be = brier([e for e, _, _, _ in pairs], ys)
-        bl = brier([l for _, l, _, _ in pairs], ys)
-        print(f"    Brier early {be:.4f}   late {bl:.4f}   "
-              f"(lower = better calibrated)")
+    R.append(["THE V3 TEST -- IS THE OPENING PRICE STALE?", "", ""])
+    if not pairs:
+        R.append(["  paired early/late rows", 0, "waiting for data"])
+    else:
+        brier = lambda qs: sum((q / 100.0 - y) ** 2 for q, (_, _, y, _) in zip(qs, pairs)) / len(pairs)
+        be = brier([e for e, _, _, _ in pairs])
+        bl = brier([l for _, l, _, _ in pairs])
+        R.append(["  paired rows", len(pairs), ""])
+        R.append(["  Brier early", f"{be:.4f}", "lower = better calibrated"])
+        R.append(["  Brier late", f"{bl:.4f}", ""])
 
         moved = [(e, l, y) for e, l, y, _ in pairs if abs(e - l) >= 3]
         if moved:
-            # When the two quotes disagree, which one was right more often?
             lw = sum(1 for e, l, y in moved if (l > 50) == (y > 0.5))
             ew = sum(1 for e, l, y in moved if (e > 50) == (y > 0.5))
-            print(f"    quotes differ by >=3c on {len(moved)} rows: "
-                  f"late side right {lw}/{len(moved)} ({lw / len(moved) * 100:.1f}%), "
-                  f"early side right {ew}/{len(moved)} ({ew / len(moved) * 100:.1f}%)")
-            print(f"    -> {'EARLY QUOTE IS STALE - the drift is tradeable' if lw > ew else 'no exploitable gap'}")
-
-        sp = [s for _, _, _, s in pairs if s is not None]
+            R.append(["  rows differing >=3c", len(moved), ""])
+            R.append(["    late side right", _pct(lw, len(moved)), ""])
+            R.append(["    early side right", _pct(ew, len(moved)), ""])
+            if len(moved) < MIN_SAMPLE:
+                R.append(["  VERDICT", "TOO EARLY",
+                          f"{len(moved)}/{MIN_SAMPLE} disagreeing rows"])
+            elif lw > ew and be > bl:
+                R.append(["  VERDICT", "EARLY QUOTE IS STALE", "the drift is tradeable"])
+            else:
+                R.append(["  VERDICT", "NO EXPLOITABLE GAP",
+                          "opening price is as good as the late one"])
+        sp = sorted(s for _, _, _, s in pairs if s is not None)
         if sp:
-            sp.sort()
-            print(f"    early spread: median {sp[len(sp) // 2]:.1f}c  "
-                  f"p90 {sp[int(len(sp) * .9) - 1]:.1f}c")
-        print()
+            R.append(["  early spread median", f"{sp[len(sp) // 2]:.1f}c",
+                      f"p90 {sp[int(len(sp) * .9) - 1]:.1f}c"])
+    R.append(["", "", ""])
 
-    _score("COMPOSITE", scoped, lambda r: cell(r, "Correct?"), composite_entry)
+    # ---- strategies --------------------------------------------------------
+    def comp_entry(r):
+        return num(r, "K Up%") if cell(r, "Direction") == "UP" else num(r, "K Down%")
+
+    R += _score_rows("COMPOSITE", S, lambda r: cell(r, "Correct?"), comp_entry)
+    R.append(["", "", ""])
+    R += _score_rows("EMA-ONLY RULE",
+                     [r for r in S if cell(r, "EMA-Only Call") in ("UP", "DOWN")],
+                     lambda r: cell(r, "EMA-Only Correct?"),
+                     lambda r: num(r, "EMA-Only Entry ¢"))
+    R.append(["", "", ""])
+
+    # ---- drill-down --------------------------------------------------------
+    G = [r for r in S if cell(r, "Correct?") in ("Yes", "No")]
+
+    R.append(["BY COIN", "acc", "P&L / EV per bet"])
+    for sym in sorted({cell(r, "Symbol") for r in G}):
+        C = [r for r in G if cell(r, "Symbol") == sym]
+        w = sum(1 for r in C if cell(r, "Correct?") == "Yes")
+        P = [(r, comp_entry(r)) for r in C]
+        P = [(r, e) for r, e in P if e is not None]
+        if P:
+            pnl = sum(_kalshi_pnl(e, cell(r, "Correct?") == "Yes") for r, e in P)
+            note = f"${pnl:+.2f} / ${pnl / len(P):+.2f}"
+        else:
+            note = "--"
+        R.append([f"  {sym}", _pct(w, len(C)), note])
+    R.append(["", "", ""])
+
+    R.append(["BY ENTRY PRICE", "acc", "breakeven / EV per bet"])
+    for lo, hi, lab in [(0, 40, "<40c deep underdog"), (40, 50, "40-50c underdog"),
+                        (50, 60, "50-60c favorite"), (60, 101, ">=60c strong favorite")]:
+        B = [(r, comp_entry(r)) for r in G]
+        B = [(r, e) for r, e in B if e is not None and lo <= e < hi]
+        if len(B) < 10:
+            continue
+        w = sum(1 for r, _ in B if cell(r, "Correct?") == "Yes")
+        avg = sum(e for _, e in B) / len(B)
+        pnl = sum(_kalshi_pnl(e, cell(r, "Correct?") == "Yes") for r, e in B)
+        R.append([f"  {lab}", _pct(w, len(B)),
+                  f"{avg:.1f}% / ${pnl / len(B):+.2f}"])
+
+    return R
+
+
+def _write_report_tab(client, rows):
+    sh = client.open_by_key(SPREADSHEET_ID)
+    try:
+        ws = sh.worksheet(REPORT_SHEET)
+    except Exception:
+        ws = sh.add_worksheet(title=REPORT_SHEET, rows=200, cols=6)
+    width = max(len(r) for r in rows)
+    padded = [[str(c) for c in r] + [""] * (width - len(r)) for r in rows]
+    ws.clear()
+    ws.update(padded, "A1")
+    print(f"  Report tab updated ({len(padded)} rows).")
+
+
+def report(version=None, to_sheet=False):
+    """Score the logged predictions for one model version against fixed thresholds."""
+    version = version or MODEL_VERSION
+    client  = _get_client()
+    ws      = open_pred_sheet(client)
+    rows    = ws.get_all_values()
+    if len(rows) < 2:
+        print("  No rows.")
+        return
+
+    R = build_report(rows, version)
     print()
-    _score(
-        "EMA-ONLY RULE",
-        [r for r in scoped if cell(r, "EMA-Only Call") in ("UP", "DOWN")],
-        lambda r: cell(r, "EMA-Only Correct?"),
-        lambda r: num(r, "EMA-Only Entry ¢"),
-    )
+    for r in R:
+        label = str(r[0])
+        rest  = "  ".join(str(c) for c in r[1:] if str(c) != "")
+        print(f"  {label:42} {rest}".rstrip())
     print()
+
+    if to_sheet:
+        _write_report_tab(client, R)
 
 
 # --- ENTRYPOINT ---
@@ -1099,11 +1163,13 @@ def main():
     parser.add_argument("--report",   action="store_true")
     parser.add_argument("--version",  type=str, default=None,
                         help="model version to score with --report (default: current)")
+    parser.add_argument("--sheet",    action="store_true",
+                        help="with --report, also write the Report tab")
     parser.add_argument("--hours",    type=int, default=24)
     args = parser.parse_args()
 
     if args.report:
-        report(args.version)
+        report(args.version, to_sheet=args.sheet)
     elif args.backtest:
         backtest(args.hours)
     elif args.resolve:

@@ -3,12 +3,6 @@ name: Crypto Predictor
 on:
   workflow_dispatch:
 
-# To enable on a schedule, change 'on' to:
-# on:
-#   schedule:
-#     - cron: "*/5 * * * *"
-#   workflow_dispatch:
-
 jobs:
   predict:
     runs-on: ubuntu-latest
@@ -20,12 +14,20 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install requests gspread google-auth
+      - run: pip install requests gspread google-auth cryptography
       - name: Generate predictions
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
         run: python predictor.py
       - name: Resolve outcomes
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python predictor.py --resolve
+      - name: Refresh Report tab
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python predictor.py --report --sheet
