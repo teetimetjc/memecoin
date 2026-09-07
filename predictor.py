@@ -291,82 +291,106 @@ def _extract_odds(market):
     }
 
 
+def _fetch_kalshi_markets(series, hdrs, status=None, limit=200):
+    """One /markets call. Returns (markets, error_string)."""
+    params = {"series_ticker": series, "limit": limit}
+    if status:
+        params["status"] = status
+    try:
+        r = requests.get(f"{KALSHI_BASE}/markets", params=params,
+                         headers=hdrs, timeout=10)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if not r.ok:
+        return None, f"HTTP {r.status_code} -- {r.text[:120]}"
+    try:
+        return r.json().get("markets", []), None
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+
+
 def get_kalshi_odds(symbol):
     """Fetch the best available Kalshi 15-min up/down market for symbol.
 
-    Fetches all markets for the series (no status filter), then:
-      1. Tries open markets (>=1 min left), most time first, skipping any
-         with no price data yet (brand-new markets often have none).
-      2. Falls back to recently expired markets (0-10 min ago), most
-         recent first, again skipping those with no price data.
-    Uses last_price_dollars so Up% + Down% always = 100.
+    Tries status=open first, then an unfiltered call, because the series holds
+    hundreds of settled markets and a small unfiltered page can miss the live
+    one entirely. Within a response, prefers open markets (>=1 min to close,
+    most time first) and falls back to ones that closed in the last 10 minutes,
+    skipping any with no price data -- brand-new markets often have none.
+
+    Every failure path logs why. Silent returns here are what made an earlier
+    round of this bug undiagnosable from the Actions logs.
     """
     series = KALSHI_SERIES.get(symbol)
     if not series:
+        print(f"  [Kalshi] {symbol}: no series ticker mapped")
         return None
     if not os.environ.get("KALSHI_KEY_ID") or not os.environ.get("KALSHI_API_KEY"):
+        print(f"  [Kalshi] {symbol}: KALSHI_KEY_ID / KALSHI_API_KEY not set")
         return None
 
     hdrs = _kalshi_headers("GET", "/trade-api/v2/markets")
     if hdrs is None:
+        print(f"  [Kalshi] {symbol}: could not build signed headers")
         return None
 
     now = datetime.now(timezone.utc)
 
-    try:
-        r = requests.get(
-            f"{KALSHI_BASE}/markets",
-            params={"series_ticker": series, "limit": 20},
-            headers=hdrs,
-            timeout=10,
-        )
-        if not r.ok:
-            print(f"  [Kalshi] {symbol}: HTTP {r.status_code} -- {r.text[:200]}")
-            return None
-
-        markets = r.json().get("markets", [])
+    for status in ("open", None):
+        label = status or "unfiltered"
+        markets, err = _fetch_kalshi_markets(series, hdrs, status=status)
+        if err:
+            print(f"  [Kalshi] {symbol}: {label} -- {err}")
+            continue
         if not markets:
-            return None
+            print(f"  [Kalshi] {symbol}: {label} -- 0 markets returned")
+            continue
 
-        # Attach minutes-until-close to each market
-        timed = []
+        timed, undated = [], 0
         for m in markets:
             close_str = m.get("close_time") or m.get("expiration_time")
             if not close_str:
+                undated += 1
                 continue
             try:
                 close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
             except Exception:
+                undated += 1
                 continue
             timed.append((m, (close_dt - now).total_seconds() / 60))
 
-        # Open markets: >=1 min left, sorted most-time-first
-        open_candidates = sorted(
-            [(m, mins) for m, mins in timed if mins >= 1],
-            key=lambda x: x[1], reverse=True,
-        )
-        # Recently expired: 0-10 min ago, sorted most-recent-first
-        recent_candidates = sorted(
-            [(m, mins) for m, mins in timed if -10 <= mins < 1],
-            key=lambda x: x[1], reverse=True,
-        )
+        open_c = sorted([t for t in timed if t[1] >= 1],
+                        key=lambda x: x[1], reverse=True)
+        recent_c = sorted([t for t in timed if -10 <= t[1] < 1],
+                          key=lambda x: x[1], reverse=True)
 
-        # Try each candidate in order until one has valid price data
-        for m, _ in open_candidates + recent_candidates:
+        for m, mins in open_c + recent_c:
             odds = _extract_odds(m)
             if odds is not None:
                 print(
-                    f"  [Kalshi] {symbol}: target={odds['target']} "
+                    f"  [Kalshi] {symbol}: {label} {m.get('ticker', '?')} "
+                    f"({mins:+.1f}m) target={odds['target']} "
                     f"Up={odds['up_cents']}% Down={odds['down_cents']}% "
                     f"$10 Up=${odds['up_profit']} $10 Down=${odds['down_profit']}"
                 )
                 return odds
 
-        return None
+        # Nothing usable -- say what was actually in the response so the next
+        # run's log answers the question instead of raising it again.
+        nearest = sorted(timed, key=lambda x: abs(x[1]))[:3]
+        detail = ", ".join(
+            f"{m.get('ticker', '?')} {mins:+.0f}m "
+            f"last={m.get('last_price_dollars')} "
+            f"bid={m.get('yes_bid_dollars')} ask={m.get('yes_ask_dollars')}"
+            for m, mins in nearest
+        ) or "none dated"
+        print(
+            f"  [Kalshi] {symbol}: {label} -- {len(markets)} markets, "
+            f"{len(open_c)} open / {len(recent_c)} recent / {undated} undated, "
+            f"no price data. nearest: {detail}"
+        )
 
-    except Exception as e:
-        print(f"  [Kalshi] {symbol}: {e}")
-        return None
+    return None
 
 
 # --- INDICATORS ---
