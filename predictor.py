@@ -7,12 +7,28 @@ Usage:
     python predictor.py              # generate new predictions
     python predictor.py --resolve    # fill in outcomes for predictions due
     python predictor.py --backtest   # backtest composite score on last 24h of data
+    python predictor.py --report     # score the current model version vs fixed thresholds
 """
 
 import os, sys, json, math, time, argparse, requests
 from datetime import datetime, timedelta, timezone
 
 # --- CONFIG ---
+
+# Stamped onto every logged row so a run's data can be tied to the code that
+# produced it. Bump whenever a change alters composite output or what a column
+# means; never pool accuracy figures across versions.
+#
+#   v1  (through 2026-09-06)
+#       calc_stoch_rsi returned None on every call (window one element short of
+#       what calc_rsi needs) and calc_vol_spike compared the in-progress candle
+#       against completed ones -- 0.20 of the weight vector dead or inverted.
+#       Alerts fired on confidence >= 40, measured at 6/17 = 35.3%.
+#       Recorded baseline: 1231/2521 = 48.8% over Sep 1-6.
+#   v2  (2026-09-07 onward)
+#       Both indicators fixed. Alerts off. EMA-divergence rule and its Kalshi
+#       entry price logged in parallel for out-of-sample validation.
+MODEL_VERSION       = "v2"
 
 SPREADSHEET_ID      = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
 PRED_SHEET          = "Predictions"
@@ -90,7 +106,7 @@ LEGACY_HEADERS = [
 
 # Columns AF-AG: EMA-divergence rule, logged alongside the composite so its
 # accuracy accrues out-of-sample without changing what the composite predicts.
-EMA_HEADERS = ["EMA-Only Call", "EMA-Only Entry ¢", "EMA-Only Correct?"]
+EMA_HEADERS = ["EMA-Only Call", "EMA-Only Entry ¢", "EMA-Only Correct?", "Model Version"]
 
 ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS + EMA_HEADERS
 
@@ -667,7 +683,7 @@ def run_predictions():
                 sig["bb_position"], sig["ob_ratio"], sig["vol_ratio"], sig["vwap_dev"],
                 sig["composite"], eval_str, "", "", "",
             ] + kalshi_row + [""] * len(LEGACY_HEADERS) + [
-                sig["ema_only_call"], ema_entry, "",
+                sig["ema_only_call"], ema_entry, "", MODEL_VERSION,
             ]
 
             ws.append_row(row, value_input_option="USER_ENTERED")
@@ -812,16 +828,138 @@ def backtest(lookback_hours=24):
     print("\nNote: OB imbalance, daily trend, and BTC filter excluded from backtest.")
 
 
+# --- VALIDATION REPORT ---
+
+# Thresholds fixed in advance, before v2 data existed, so the verdict cannot be
+# talked into existence after the fact. Rationale for each is in VALIDATION.md.
+MIN_SAMPLE       = 300     # below this, nothing is called either way
+BREAKEVEN_MARGIN = 1.0     # pp above entry-implied breakeven to count as a pass
+
+
+def _kalshi_pnl(entry_cents, won, stake=10.0):
+    """P&L on a $10 binary at entry_cents, net of Kalshi's 0.07*C*P*(1-P) fee."""
+    price     = entry_cents / 100.0
+    contracts = stake / price
+    fee       = 0.07 * contracts * price * (1 - price)
+    return (contracts - stake - fee) if won else (-stake - fee)
+
+
+def _score(name, rows, call_of, entry_of):
+    """Print accuracy, realised P&L and a pass/fail against the entry-implied bar."""
+    graded = [r for r in rows if call_of(r) in ("Yes", "No")]
+    n = len(graded)
+    if not n:
+        print(f"  {name}: no graded rows yet")
+        return
+    wins = sum(1 for r in graded if call_of(r) == "Yes")
+    acc  = wins / n * 100
+
+    priced = [(r, entry_of(r)) for r in graded]
+    priced = [(r, e) for r, e in priced if e is not None]
+
+    print(f"  {name}")
+    print(f"    graded      : {wins}/{n} = {acc:.1f}%")
+
+    if not priced:
+        print("    priced      : 0 rows -- cannot judge profitability, only accuracy")
+        print("    verdict     : INCONCLUSIVE (no Kalshi prices captured)")
+        return
+
+    avg_entry = sum(e for _, e in priced) / len(priced)
+    pnl       = sum(_kalshi_pnl(e, call_of(r) == "Yes") for r, e in priced)
+    pw        = sum(1 for r, _ in priced if call_of(r) == "Yes")
+    pacc      = pw / len(priced) * 100
+
+    print(f"    priced      : {pw}/{len(priced)} = {pacc:.1f}%  avg entry {avg_entry:.1f}c")
+    print(f"    P&L ($10)   : ${pnl:+.2f}   EV/bet ${pnl / len(priced):+.2f}")
+    print(f"    bar to beat : {avg_entry:.1f}% (entry-implied) + {BREAKEVEN_MARGIN:.1f}pp")
+
+    if len(priced) < MIN_SAMPLE:
+        print(f"    verdict     : TOO EARLY ({len(priced)}/{MIN_SAMPLE} priced rows)")
+    elif pacc >= avg_entry + BREAKEVEN_MARGIN and pnl > 0:
+        print("    verdict     : PASS -- clears its entry-implied breakeven")
+    else:
+        print("    verdict     : FAIL -- does not clear breakeven at the prices paid")
+
+
+def report(version=None):
+    """Score the logged predictions for one model version against fixed thresholds."""
+    version = version or MODEL_VERSION
+    ws   = open_pred_sheet(_get_client())
+    rows = ws.get_all_values()
+    if len(rows) < 2:
+        print("  No rows.")
+        return
+
+    idx = {h: i for i, h in enumerate(ALL_HEADERS)}
+    ver_col = idx["Model Version"]
+
+    def cell(r, name):
+        i = idx[name]
+        return r[i] if len(r) > i else ""
+
+    def num(r, name):
+        try:
+            return float(cell(r, name))
+        except (TypeError, ValueError):
+            return None
+
+    scoped = [r for r in rows[1:] if cell(r, "Model Version") == version]
+    print(f"\n=== {version} validation report ===")
+    print(f"  rows logged as {version}: {len(scoped)}")
+    if not scoped:
+        print("  Nothing logged under this version yet.")
+        return
+    print(f"  window: {cell(scoped[0], 'Timestamp')}  ->  {cell(scoped[-1], 'Timestamp')}\n")
+
+    # Indicator health -- both of these were broken in v1 and should now be live.
+    stoch = [r for r in scoped if cell(r, "Stoch RSI") not in ("", None)]
+    print(f"  Stoch RSI populated : {len(stoch)}/{len(scoped)}"
+          f"   {'OK' if len(stoch) > 0.9 * len(scoped) else 'STILL BROKEN'}")
+
+    vols = sorted(v for v in (num(r, "Vol Spike Ratio") for r in scoped) if v is not None)
+    if vols:
+        med = vols[len(vols) // 2]
+        over = sum(1 for v in vols if v >= 1.5) / len(vols) * 100
+        print(f"  Vol Spike median    : {med:.2f}   (v1 was 0.10; ~1.0 expected)"
+              f"   {'OK' if 0.5 <= med <= 2.0 else 'STILL SKEWED'}")
+        print(f"  Vol Spike >=1.5     : {over:.1f}% of rows")
+
+    kal = sum(1 for r in scoped if cell(r, "K Up%") not in ("", None))
+    print(f"  Kalshi priced       : {kal}/{len(scoped)} = {kal / len(scoped) * 100:.1f}%"
+          f"   {'OK' if kal > 0.9 * len(scoped) else 'INCOMPLETE -- profitability cannot be judged'}")
+    print()
+
+    def composite_entry(r):
+        side = cell(r, "Direction")
+        return num(r, "K Up%") if side == "UP" else num(r, "K Down%")
+
+    _score("COMPOSITE", scoped, lambda r: cell(r, "Correct?"), composite_entry)
+    print()
+    _score(
+        "EMA-ONLY RULE",
+        [r for r in scoped if cell(r, "EMA-Only Call") in ("UP", "DOWN")],
+        lambda r: cell(r, "EMA-Only Correct?"),
+        lambda r: num(r, "EMA-Only Entry ¢"),
+    )
+    print()
+
+
 # --- ENTRYPOINT ---
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--resolve",  action="store_true")
     parser.add_argument("--backtest", action="store_true")
+    parser.add_argument("--report",   action="store_true")
+    parser.add_argument("--version",  type=str, default=None,
+                        help="model version to score with --report (default: current)")
     parser.add_argument("--hours",    type=int, default=24)
     args = parser.parse_args()
 
-    if args.backtest:
+    if args.report:
+        report(args.version)
+    elif args.backtest:
         backtest(args.hours)
     elif args.resolve:
         resolve_outcomes()
