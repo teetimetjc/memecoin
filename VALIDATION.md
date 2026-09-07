@@ -59,6 +59,40 @@ Then, for the composite and the EMA-only rule independently: accuracy, average
 entry price, realised P&L net of Kalshi's `0.07 × C × P × (1−P)` fee, and a
 PASS / FAIL / TOO EARLY verdict.
 
+## v3: what is actually being tested
+
+v2 settled the question v1 could not. Over 309 priced rows, a logistic fit of
+
+    actual_up ~ kalshi_price + composite
+
+put the Kalshi price at z=+3.52 and the composite at z=+0.53, with a
+likelihood-ratio p of 0.594. The composite adds nothing once the price is
+known, and Kalshi's prices are well calibrated across the range (41c -> 38.5%
+actual, 59c -> 56.2%, 70c -> 75.9%). Accuracy tracked the entry price in every
+bucket and in all five coins.
+
+That closes off indicator work. Any model built from public price and volume
+history is reproducing information the market already holds, so reweighting or
+adding indicators of the same kind cannot produce an edge.
+
+v3 therefore stops trying to out-predict the price and asks whether the price
+is briefly wrong instead. Kalshi is sampled twice per window: once immediately
+at the boundary, while the new market is thin, and again at
+`KALSHI_LATE_DELAY` seconds once liquidity has arrived. v1 and v2 slept 30s
+before their only sample, so neither ever observed the opening window.
+
+`--report` compares the two by Brier score and, on rows where they disagree by
+3c or more, by which side settlement actually favoured:
+
+- **Early worse than late** -> the opening quote is stale and the drift between
+  them is tradeable.
+- **Equal** -> there is no opening inefficiency, and this line of attack is
+  finished. That is a real result and worth having.
+
+v3 also aligns the prediction window to the Kalshi 15-min boundary. v2
+timestamped rows at :16 for a market running :15-:30, so its accuracy column
+and Kalshi's settlement were scoring slightly different windows.
+
 ## The open question
 
 The EMA-divergence rule (EMA BEAR → UP, EMA BULL → DOWN, no call on FLAT) scored
@@ -69,8 +103,10 @@ The EMA-divergence rule (EMA BEAR → UP, EMA BULL → DOWN, no call on FLAT) sc
 - **Unstable day to day**: 60.5%, 58.5%, 59.2%, 47.4%, 44.0%, 83.8%. Two of six
   days sat below breakeven and one outlier carries much of the average.
 
-It is logged in parallel, and alerts are off, so it accrues an honest
-out-of-sample record without anyone acting on it. A cautionary example of why:
+It did not replicate. Over v2's 61 graded rows it came in at 26/61 = 42.6%,
+95% CI 30.2%-55.0% -- an interval that excludes the 58.8% v1 claimed (z=-2.55
+against that estimate). Logging it in parallel with alerts off is what made
+that visible before any money was on it. A cautionary example of why:
 on the 55 v1 rows that did carry prices, the composite showed 60% accuracy and
 +$202 P&L — but those rows turned out to be 13 time slots across two evenings,
 and *every* prediction in those same slots ran 61.5%. The apparent edge was a

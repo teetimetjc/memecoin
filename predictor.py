@@ -25,10 +25,28 @@ from datetime import datetime, timedelta, timezone
 #       against completed ones -- 0.20 of the weight vector dead or inverted.
 #       Alerts fired on confidence >= 40, measured at 6/17 = 35.3%.
 #       Recorded baseline: 1231/2521 = 48.8% over Sep 1-6.
-#   v2  (2026-09-07 onward)
+#   v2  (2026-09-07)
 #       Both indicators fixed. Alerts off. EMA-divergence rule and its Kalshi
 #       entry price logged in parallel for out-of-sample validation.
-MODEL_VERSION       = "v2"
+#       Result over 309 priced rows: the EMA rule did not replicate (42.6%
+#       out-of-sample against 58.8% in-sample, z=-2.55), and a logistic fit of
+#       actual_up ~ kalshi_price + composite put the composite at z=+0.53,
+#       likelihood-ratio p=0.594. The composite carries no information the
+#       Kalshi price does not already have, and Kalshi's prices are well
+#       calibrated (41c->38.5% actual, 59c->56.2%, 70c->75.9%). Reweighting or
+#       adding indicators of the same kind therefore cannot produce an edge.
+#   v3  (2026-09-08 onward)
+#       Stops trying to out-predict the price and tests whether the price
+#       itself is briefly wrong. Kalshi is now sampled twice per window: once
+#       immediately at the boundary, while the new market is still thin, and
+#       again KALSHI_LATE_DELAY seconds in once liquidity has arrived. If the
+#       early quote is measurably worse calibrated than the late one, the gap
+#       between them is tradeable; if the two are equally calibrated, this
+#       approach is finished and the negative result is worth having.
+#       Also aligns the prediction window to the Kalshi 15-min boundary and
+#       grades against the Kalshi strike, so accuracy means the same thing
+#       here as settlement does there.
+MODEL_VERSION       = "v3"
 
 SPREADSHEET_ID      = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
 PRED_SHEET          = "Predictions"
@@ -66,6 +84,10 @@ BTC_FILTER_STRENGTH = 0.3
 #                   unvalidated out-of-sample, and the two indicator fixes below
 #                   change composite output, so both need a clean week of data
 #                   before anything is worth being woken up for.
+# Seconds after the 15-min boundary at which the second Kalshi quote is taken.
+# The early quote is captured as fast as the API allows (typically 2-6s in).
+KALSHI_LATE_DELAY   = 60
+
 ALERT_MODE          = "off"
 ALERT_THRESHOLD     = 40.0
 
@@ -108,7 +130,15 @@ LEGACY_HEADERS = [
 # accuracy accrues out-of-sample without changing what the composite predicts.
 EMA_HEADERS = ["EMA-Only Call", "EMA-Only Entry ¢", "EMA-Only Correct?", "Model Version"]
 
-ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS + EMA_HEADERS
+# v3: the early/late quote pair. "K Up%" above remains the late quote, so v2
+# and v3 stay comparable on that column; these add the early one beside it
+# plus the liquidity measures that would explain any gap between them.
+V3_HEADERS = [
+    "K Early Up%", "K Early Spread ¢", "K Early Secs",
+    "K Late Spread ¢", "K Late Secs", "K Volume", "K Open Interest",
+]
+
+ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS + EMA_HEADERS + V3_HEADERS
 
 # Kalshi 15-min up/down series tickers
 KALSHI_BASE   = "https://api.elections.kalshi.com/trade-api/v2"
@@ -282,12 +312,24 @@ def _extract_odds(market):
     down_profit = round(1000 / down_cents - 10, 2)
     target      = market.get("floor_strike") or market.get("custom_strike") or ""
 
+    # Spread is the liquidity proxy: a wide book is where a stale or lazy quote
+    # would show up, so it is what any early/late gap should correlate with.
+    bid = market.get("yes_bid_dollars")
+    ask = market.get("yes_ask_dollars")
+    try:
+        spread = round((float(ask) - float(bid)) * 100, 1) if bid is not None and ask is not None else ""
+    except (TypeError, ValueError):
+        spread = ""
+
     return {
-        "target":       target,
-        "up_cents":     up_cents,
-        "down_cents":   down_cents,
-        "up_profit":    up_profit,
-        "down_profit":  down_profit,
+        "target":        target,
+        "up_cents":      up_cents,
+        "down_cents":    down_cents,
+        "up_profit":     up_profit,
+        "down_profit":   down_profit,
+        "spread_cents":  spread,
+        "volume":        market.get("volume", ""),
+        "open_interest": market.get("open_interest", ""),
     }
 
 
@@ -659,15 +701,38 @@ def compute_signal(symbol, btc_composite=None):
 # --- PREDICTION LOGGING ---
 
 def run_predictions():
-    print("  Waiting 30s for Kalshi markets to open after interval boundary...")
-    time.sleep(30)
-
-    client   = _get_client()
-    ws       = open_pred_sheet(client)
+    # Align to the Kalshi 15-min window rather than to wall-clock arrival time.
+    # v2 timestamped rows at :16 for a market running :15-:30, so its accuracy
+    # column and Kalshi's settlement were scoring slightly different windows.
     now      = datetime.now(timezone.utc)
-    eval_t   = now + timedelta(minutes=PREDICT_HORIZON)
-    ts_str   = now.strftime("%Y-%m-%d %H:%M UTC")
+    boundary = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    eval_t   = boundary + timedelta(minutes=PREDICT_HORIZON)
+    ts_str   = boundary.strftime("%Y-%m-%d %H:%M UTC")
     eval_str = eval_t.strftime("%Y-%m-%d %H:%M UTC")
+
+    def secs_in():
+        return round((datetime.now(timezone.utc) - boundary).total_seconds(), 1)
+
+    # --- EARLY quote: hit Kalshi before anything else, while the new market is
+    # still thin. This is the window v1/v2 never observed, because they slept
+    # 30s first. The whole v3 hypothesis lives in this snapshot.
+    print(f"  [v3] early Kalshi sweep at +{secs_in():.0f}s")
+    early = {}
+    for symbol in SYMBOLS:
+        try:
+            early[symbol] = (get_kalshi_odds(symbol), secs_in())
+        except Exception as e:
+            print(f"  [Kalshi] {symbol}: early sweep failed -- {e}")
+            early[symbol] = (None, secs_in())
+
+    # --- wait out the rest of the window before the late quote.
+    remaining = KALSHI_LATE_DELAY - (datetime.now(timezone.utc) - boundary).total_seconds()
+    if remaining > 0:
+        print(f"  [v3] waiting {remaining:.0f}s for liquidity before late sweep")
+        time.sleep(remaining)
+
+    client = _get_client()
+    ws     = open_pred_sheet(client)
 
     btc_sig = None
     try:
@@ -684,7 +749,9 @@ def run_predictions():
             else:
                 sig = compute_signal(symbol, btc_composite=btc_composite)
 
-            kalshi = get_kalshi_odds(symbol)
+            early_odds, early_secs = early.get(symbol, (None, ""))
+            late_secs = secs_in()
+            kalshi    = get_kalshi_odds(symbol)
 
             if kalshi and sig["ema_only_call"] == "UP":
                 ema_entry = kalshi["up_cents"]
@@ -701,6 +768,16 @@ def run_predictions():
                 kalshi["down_profit"] if kalshi else "",
             ]
 
+            v3_row = [
+                early_odds["up_cents"]     if early_odds else "",
+                early_odds["spread_cents"] if early_odds else "",
+                early_secs,
+                kalshi["spread_cents"]     if kalshi else "",
+                late_secs,
+                kalshi["volume"]           if kalshi else "",
+                kalshi["open_interest"]    if kalshi else "",
+            ]
+
             row = [
                 ts_str, symbol, sig["price"], sig["direction"], sig["confidence"],
                 sig["rsi"], sig["stoch_rsi"], sig["ema_label"], sig["macd_label"],
@@ -708,13 +785,16 @@ def run_predictions():
                 sig["composite"], eval_str, "", "", "",
             ] + kalshi_row + [""] * len(LEGACY_HEADERS) + [
                 sig["ema_only_call"], ema_entry, "", MODEL_VERSION,
-            ]
+            ] + v3_row
 
             ws.append_row(row, value_input_option="USER_ENTERED")
+
+            drift = ""
+            if early_odds and kalshi:
+                drift = f"  early={early_odds['up_cents']}c -> late={kalshi['up_cents']}c"
             print(
                 f"  {symbol}: {sig['direction']} {sig['confidence']:.1f}% conf "
-                f"[trend={sig['trend']}] "
-                f"(RSI={sig['rsi']}, EMA={sig['ema_label']}, MACD={sig['macd_label']}, composite={sig['composite']:.3f})"
+                f"[trend={sig['trend']}]{drift}"
             )
 
             if ALERT_MODE == "ema":
@@ -957,6 +1037,47 @@ def report(version=None):
     def composite_entry(r):
         side = cell(r, "Direction")
         return num(r, "K Up%") if side == "UP" else num(r, "K Down%")
+
+    # --- v3: is the early quote worse calibrated than the late one? ---------
+    # The whole v3 hypothesis. If the market is briefly mispriced at the open,
+    # the early quote should predict settlement worse than the late one, and
+    # the gap between them is the edge. Equal calibration means no edge here.
+    pairs = []
+    for r in scoped:
+        e, l = num(r, "K Early Up%"), num(r, "K Up%")
+        chg = num(r, "Actual Change %")
+        if e is None or l is None or chg is None:
+            continue
+        pairs.append((e, l, 1.0 if chg > 0 else 0.0, num(r, "K Early Spread ¢")))
+
+    if pairs:
+        print(f"  EARLY vs LATE QUOTE  (n={len(pairs)})")
+
+        def brier(qs, ys):
+            return sum((q / 100.0 - y) ** 2 for q, y in zip(qs, ys)) / len(ys)
+
+        ys = [y for _, _, y, _ in pairs]
+        be = brier([e for e, _, _, _ in pairs], ys)
+        bl = brier([l for _, l, _, _ in pairs], ys)
+        print(f"    Brier early {be:.4f}   late {bl:.4f}   "
+              f"(lower = better calibrated)")
+
+        moved = [(e, l, y) for e, l, y, _ in pairs if abs(e - l) >= 3]
+        if moved:
+            # When the two quotes disagree, which one was right more often?
+            lw = sum(1 for e, l, y in moved if (l > 50) == (y > 0.5))
+            ew = sum(1 for e, l, y in moved if (e > 50) == (y > 0.5))
+            print(f"    quotes differ by >=3c on {len(moved)} rows: "
+                  f"late side right {lw}/{len(moved)} ({lw / len(moved) * 100:.1f}%), "
+                  f"early side right {ew}/{len(moved)} ({ew / len(moved) * 100:.1f}%)")
+            print(f"    -> {'EARLY QUOTE IS STALE - the drift is tradeable' if lw > ew else 'no exploitable gap'}")
+
+        sp = [s for _, _, _, s in pairs if s is not None]
+        if sp:
+            sp.sort()
+            print(f"    early spread: median {sp[len(sp) // 2]:.1f}c  "
+                  f"p90 {sp[int(len(sp) * .9) - 1]:.1f}c")
+        print()
 
     _score("COMPOSITE", scoped, lambda r: cell(r, "Correct?"), composite_entry)
     print()
