@@ -36,6 +36,18 @@ BB_STDDEV           = 2.0
 VOL_SPIKE_WINDOW    = 20
 DAILY_EMA_PERIOD    = 50
 BTC_FILTER_STRENGTH = 0.3
+
+# Alerting mode.
+#   "ema"        -- fire on the EMA-divergence rule (see ema_only_call). Backtest
+#                   over 2,521 logged predictions (Sep 1-6 2026): 188/320 = 58.8%,
+#                   z=+3.13. This is IN-SAMPLE and day-to-day unstable (44%-84%);
+#                   treat as provisional until out-of-sample data confirms it.
+#   "confidence" -- legacy: fire when confidence >= ALERT_THRESHOLD. Measured at
+#                   6/17 = 35.3% over the same window, and confidence correlates
+#                   with correctness at r=+0.011 (t=0.53, i.e. no signal at all).
+#                   Kept only for comparison; do not enable to trade on.
+#   "off"        -- no alerts.
+ALERT_MODE          = "ema"
 ALERT_THRESHOLD     = 40.0
 
 WEIGHTS = {
@@ -65,7 +77,19 @@ KALSHI_HEADERS = [
     "K Target", "K Up%", "K Down%", "K $10 Up Profit", "K $10 Down Profit",
 ]
 
-ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS
+# Columns X-AE: present in the live sheet but never populated by this script.
+# Declared so header sync does not clobber them and so new columns append after.
+LEGACY_HEADERS = [
+    "Contrarian?", "Strike", "Strike YES¢", "Strike NO¢",
+    "Strike Bet Side", "Strike Bet Price¢", "Strike Payout ($10)",
+    "Strike Contrarian?",
+]
+
+# Columns AF-AG: EMA-divergence rule, logged alongside the composite so its
+# accuracy accrues out-of-sample without changing what the composite predicts.
+EMA_HEADERS = ["EMA-Only Call", "EMA-Only Correct?"]
+
+ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS + EMA_HEADERS
 
 # Kalshi 15-min up/down series tickers
 KALSHI_BASE   = "https://api.elections.kalshi.com/trade-api/v2"
@@ -561,14 +585,17 @@ def compute_signal(symbol, btc_composite=None):
     direction  = "UP" if composite > 0 else "DOWN"
     confidence = round(abs(composite) * 100, 1)
 
+    ema_only_call = {"BEAR": "UP", "BULL": "DOWN"}.get(indicators["ema_label"], "")
+
     return {
-        "symbol":     symbol,
-        "price":      price,
-        "direction":  direction,
-        "confidence": confidence,
-        "trend":      trend_label,
+        "symbol":        symbol,
+        "price":         price,
+        "direction":     direction,
+        "confidence":    confidence,
+        "trend":         trend_label,
         **indicators,
-        "composite":  round(composite, 4),
+        "composite":     round(composite, 4),
+        "ema_only_call": ema_only_call,
     }
 
 
@@ -614,7 +641,7 @@ def run_predictions():
                 sig["rsi"], sig["stoch_rsi"], sig["ema_label"], sig["macd_label"],
                 sig["bb_position"], sig["ob_ratio"], sig["vol_ratio"], sig["vwap_dev"],
                 sig["composite"], eval_str, "", "", "",
-            ] + kalshi_row
+            ] + kalshi_row + [""] * len(LEGACY_HEADERS) + [sig["ema_only_call"], ""]
 
             ws.append_row(row, value_input_option="USER_ENTERED")
             print(
@@ -623,7 +650,17 @@ def run_predictions():
                 f"(RSI={sig['rsi']}, EMA={sig['ema_label']}, MACD={sig['macd_label']}, composite={sig['composite']:.3f})"
             )
 
-            if sig["confidence"] >= ALERT_THRESHOLD:
+            if ALERT_MODE == "ema":
+                should_alert = bool(sig["ema_only_call"])
+                alert_dir    = sig["ema_only_call"]
+            elif ALERT_MODE == "confidence":
+                should_alert = sig["confidence"] >= ALERT_THRESHOLD
+                alert_dir    = sig["direction"]
+            else:
+                should_alert = False
+                alert_dir    = ""
+
+            if should_alert:
                 kalshi_line = ""
                 if kalshi:
                     kalshi_line = (
@@ -633,12 +670,13 @@ def run_predictions():
                         f" | $10 Down profit=${kalshi['down_profit']}"
                     )
                 send_pushover(
-                    title=f"{symbol} {sig['direction']} {sig['confidence']:.0f}%",
+                    title=f"{symbol} {alert_dir} ({ALERT_MODE})",
                     message=(
                         f"{symbol} @ ${sig['price']:,.4f}\n"
-                        f"Direction: {sig['direction']} | Confidence: {sig['confidence']:.1f}%\n"
-                        f"Trend: {sig['trend']} | EMA={sig['ema_label']} | MACD={sig['macd_label']}\n"
-                        f"RSI={sig['rsi']}"
+                        f"Call: {alert_dir}  [rule={ALERT_MODE}]\n"
+                        f"EMA={sig['ema_label']} -> {sig['ema_only_call'] or 'no call'}\n"
+                        f"Composite says: {sig['direction']} ({sig['confidence']:.1f}% conf)\n"
+                        f"Trend: {sig['trend']} | MACD={sig['macd_label']} | RSI={sig['rsi']}"
                         f"{kalshi_line}"
                     ),
                 )
@@ -667,6 +705,8 @@ def resolve_outcomes():
     res_col   = PRED_HEADERS.index("Price at Eval")
     chg_col   = PRED_HEADERS.index("Actual Change %")
     cor_col   = PRED_HEADERS.index("Correct?")
+    ema_call_col = ALL_HEADERS.index("EMA-Only Call")
+    ema_cor_col  = ALL_HEADERS.index("EMA-Only Correct?")
 
     resolved = 0
     for i, row in enumerate(rows[1:], start=2):
@@ -696,6 +736,17 @@ def resolve_outcomes():
             updates.append(gspread.Cell(i, res_col + 1, actual_price))
             updates.append(gspread.Cell(i, chg_col + 1, change_pct))
             updates.append(gspread.Cell(i, cor_col + 1, correct))
+
+            ema_call = row[ema_call_col] if len(row) > ema_call_col else ""
+            if ema_call in ("UP", "DOWN"):
+                ema_correct = (
+                    "Yes"
+                    if (ema_call == "UP" and change_pct > 0)
+                    or (ema_call == "DOWN" and change_pct < 0)
+                    else "No"
+                )
+                updates.append(gspread.Cell(i, ema_cor_col + 1, ema_correct))
+
             resolved += 1
         except Exception as e:
             print(f"  Row {i} ({symbol}): resolve error -- {e}")
