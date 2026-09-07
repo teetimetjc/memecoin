@@ -59,7 +59,7 @@ Then, for the composite and the EMA-only rule independently: accuracy, average
 entry price, realised P&L net of Kalshi's `0.07 × C × P × (1−P)` fee, and a
 PASS / FAIL / TOO EARLY verdict.
 
-## v3: what is actually being tested
+## v3 / v4: what is actually being tested
 
 v2 settled the question v1 could not. Over 309 priced rows, a logistic fit of
 
@@ -88,6 +88,24 @@ before their only sample, so neither ever observed the opening window.
   them is tradeable.
 - **Equal** -> there is no opening inefficiency, and this line of attack is
   finished. That is a real result and worth having.
+
+v3 was superseded after 10 rows. Its early sweep could fall back to the
+previous window's market, which quotes near 0 or 100 as it settles: one row
+logged an early quote of 97c against a late quote of 46c for what should have
+been one contract. Every such row would have entered the comparison as a large
+fake early error and produced a confident "stale" verdict built on mismatched
+contracts. v4 collects the same hypothesis correctly -- the early sweep refuses
+closed markets, the late sweep pins to the contract the early sweep saw, and
+rows whose tickers disagree are excluded and counted rather than averaged in.
+The v3 rows are not usable and are kept only as a record.
+
+**Known limit.** The early sweep lands 17-22 seconds into the window, because
+that is how long a GitHub Actions runner takes to boot, install dependencies
+and start. v4 therefore tests whether the ~20s quote is stale relative to the
+~70s one -- not whether the opening tick is. A "no gap" result rules out
+staleness across that span, not staleness at the open, which a cron-triggered
+runner cannot observe at all. Acting on any gap that is found would likewise
+need a persistent process holding a websocket.
 
 v3 also aligns the prediction window to the Kalshi 15-min boundary. v2
 timestamped rows at :16 for a market running :15-:30, so its accuracy column

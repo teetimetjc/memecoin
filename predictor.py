@@ -47,7 +47,20 @@ from datetime import datetime, timedelta, timezone
 #       Also aligns the prediction window to the Kalshi 15-min boundary and
 #       grades against the Kalshi strike, so accuracy means the same thing
 #       here as settlement does there.
-MODEL_VERSION       = "v3"
+#       Superseded after 10 rows. The early sweep could fall back to the
+#       previous window's market, which quotes near 0 or 100 as it settles;
+#       one row logged an early quote of 97c against a late quote of 46c for
+#       what should have been the same contract. Those rows are not usable.
+#   v4  (2026-09-07 onward)
+#       Same hypothesis as v3, collected correctly. The early sweep refuses
+#       closed markets, the late sweep pins to the contract the early sweep
+#       saw, and both tickers are logged so any mismatch is excluded from the
+#       comparison rather than averaged into it. Volume and open interest key
+#       names are probed rather than assumed.
+#       Known limit: the early sweep lands 17-22s into the window because that
+#       is GitHub Actions runner startup. v4 therefore tests whether the ~20s
+#       quote is stale against the ~70s one, not whether the opening tick is.
+MODEL_VERSION       = "v4"
 
 SPREADSHEET_ID      = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
 PRED_SHEET          = "Predictions"
