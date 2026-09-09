@@ -65,7 +65,7 @@ from datetime import datetime, timedelta, timezone
 #       late side's 73 (McNemar z=+0.16), Brier scores tied at 0.2525 / 0.2544,
 #       and the median spread was 1.0c from the moment the book opened. The
 #       composite settled at 47.5% against a 47.2c average entry: breakeven.
-#   v5  (2026-09-09 onward, new "Predictions v5" tab)
+#   v5  (2026-09-09 onward)
 #       Everything measured so far says the composite carries no information
 #       beyond the price, and that searching this data for a profitable subgroup
 #       finds only noise: 1,567 rules screened on older rows produced hits at
@@ -79,10 +79,14 @@ from datetime import datetime, timedelta, timezone
 #       Caveat recorded up front: screening ~1,567 rules would be expected to
 #       throw up roughly 50-90 such survivors by chance, and only 29 appeared.
 #       These are candidates, not findings, and the forward test is what decides.
+#       Writes to the original Predictions tab. A brief "Predictions v5" tab was
+#       used on 2026-09-09 and abandoned: the version stamp already separates the
+#       generations, and every analysis filters on it rather than on tab name, so
+#       a second sheet bought nothing and split the history in two.
 MODEL_VERSION       = "v5"
 
 SPREADSHEET_ID      = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
-PRED_SHEET          = "Predictions v5"
+PRED_SHEET          = "Predictions"
 REPORT_SHEET        = "Report"
 SYMBOLS             = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
 KRAKEN_PAIRS        = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
@@ -121,6 +125,13 @@ BTC_FILTER_STRENGTH = 0.3
 # Seconds after the 15-min boundary at which the second Kalshi quote is taken.
 # The early quote is captured as fast as the API allows (typically 2-6s in).
 KALSHI_LATE_DELAY   = 60
+
+# A prediction is graded by fetching the price *now*, so the fetch is only a
+# fair reading of the eval moment if it happens shortly after it. Rows left
+# unresolved longer than this are skipped rather than scored against an
+# unrelated later price -- which is what would otherwise happen to any row
+# stranded by a paused workflow or a change of sheet.
+RESOLVE_GRACE_MIN   = 45
 
 ALERT_MODE          = "off"
 ALERT_THRESHOLD     = 40.0
@@ -1014,7 +1025,7 @@ def resolve_outcomes():
     ema_call_col = ALL_HEADERS.index("EMA-Only Call")
     ema_cor_col  = ALL_HEADERS.index("EMA-Only Correct?")
 
-    resolved = 0
+    resolved = stale = 0
     for i, row in enumerate(rows[1:], start=2):
         if len(row) <= eval_col:
             continue
@@ -1025,6 +1036,10 @@ def resolve_outcomes():
         except ValueError:
             continue
         if eval_time > now:
+            continue
+        late_min = (now - eval_time).total_seconds() / 60
+        if late_min > RESOLVE_GRACE_MIN:
+            stale += 1
             continue
         symbol = row[sym_col] if len(row) > sym_col else ""
         if not symbol:
@@ -1068,6 +1083,9 @@ def resolve_outcomes():
     if updates:
         ws.update_cells(updates, value_input_option="RAW")
     print(f"  Resolved {resolved} prediction(s).")
+    if stale:
+        print(f"  Skipped {stale} row(s) past the {RESOLVE_GRACE_MIN}min grace "
+              f"window -- grading them now would use an unrelated price.")
 
 
 # --- BACKTEST ---

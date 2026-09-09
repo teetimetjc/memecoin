@@ -153,6 +153,21 @@ survivors chance alone would produce from 1,567 screens, so it is not evidence
 of signal. It is a candidate list, and the only honest way to test a candidate
 list is forward.
 
+All versions share the one `Predictions` tab. The **Model Version** column is
+what separates the generations, and every analysis filters on it, so a second
+sheet bought nothing and split the history. A brief "Predictions v5" tab existed
+on 2026-09-09 and was abandoned.
+
+Merging is selective. RSI, BB Position, OB Imbalance, VWAP Dev %, EMA Signal,
+MACD Signal, Symbol, Timestamp and Actual Change % are calculated identically in
+every version and pool cleanly -- 3,815 graded rows as of 2026-09-09. Four
+columns look poolable and are not: Vol Spike Ratio is 100% populated in v1 but
+was measuring a partial candle (median 0.10 against 1.5 later); Composite Score,
+Confidence and Direction were computed in v1 with the Stoch leg dead and the Vol
+leg inverted, and from v4 they are computed ~30s later in the window; Stoch RSI
+is empty for all 2,564 v1 rows; K Up% reaches only 3% coverage in v1. Populated
+is not the same as comparable.
+
 The five rules in `PREREGISTERED_RULES` were fixed on 2026-09-09, before any v5
 row existed, along with the accuracy each claimed. They are logged and scored
 independently every window. **Do not add, remove or reword a rule while v5 is
