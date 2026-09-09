@@ -129,3 +129,38 @@ on the 55 v1 rows that did carry prices, the composite showed 60% accuracy and
 +$202 P&L — but those rows turned out to be 13 time slots across two evenings,
 and *every* prediction in those same slots ran 61.5%. The apparent edge was a
 good Tuesday and Wednesday night, not a property of the model.
+
+
+## v5: a preregistered forward test
+
+v4 closed the microstructure question. Over 897 rows the opening quote was no
+worse than the 60-second quote: on the 389 rows where they disagreed by 3c or
+more the early side was right 75 times against the late side's 73 (McNemar
+z=+0.16), Brier scores were tied, and the median spread was 1.0c from the
+moment the book opened. The composite settled at 47.5% against a 47.2c average
+entry, which is breakeven.
+
+A search for profitable subgroups was then run properly, on a chronological
+split. 1,567 rules over RSI, Bollinger position, order-book imbalance, VWAP
+deviation, EMA, MACD, coin and session were screened on the older 70% of
+history. The best hit 68-73%. On the held-out newer 30% they fell an average
+of 20.5 percentage points; one went from 72.1% to 22.2%. That is what
+searching noise looks like, and it is why no rule discovered by slicing past
+data should ever be traded on the strength of that slice.
+
+29 rules cleared 58% on both halves. That number is *lower* than the 50-90 such
+survivors chance alone would produce from 1,567 screens, so it is not evidence
+of signal. It is a candidate list, and the only honest way to test a candidate
+list is forward.
+
+The five rules in `PREREGISTERED_RULES` were fixed on 2026-09-09, before any v5
+row existed, along with the accuracy each claimed. They are logged and scored
+independently every window. **Do not add, remove or reword a rule while v5 is
+collecting** -- editing the list turns the forward test back into a search and
+destroys the only property that makes the result meaningful.
+
+They fire on about 9.8% of predictions, roughly 47 signals a day.
+
+Expect them to land near 50%. If one holds near its claimed accuracy over
+several hundred fires, that is the first result in this project that would
+justify money.

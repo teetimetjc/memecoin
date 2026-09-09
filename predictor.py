@@ -60,10 +60,29 @@ from datetime import datetime, timedelta, timezone
 #       Known limit: the early sweep lands 17-22s into the window because that
 #       is GitHub Actions runner startup. v4 therefore tests whether the ~20s
 #       quote is stale against the ~70s one, not whether the opening tick is.
-MODEL_VERSION       = "v4"
+#       Result over 897 rows: NO EXPLOITABLE GAP. On the 389 rows where the two
+#       quotes disagreed by >=3c, the early side was right 75 times against the
+#       late side's 73 (McNemar z=+0.16), Brier scores tied at 0.2525 / 0.2544,
+#       and the median spread was 1.0c from the moment the book opened. The
+#       composite settled at 47.5% against a 47.2c average entry: breakeven.
+#   v5  (2026-09-09 onward, new "Predictions v5" tab)
+#       Everything measured so far says the composite carries no information
+#       beyond the price, and that searching this data for a profitable subgroup
+#       finds only noise: 1,567 rules screened on older rows produced hits at
+#       68-73% that fell an average of 20.5 percentage points on unseen rows,
+#       one of them from 72.1% to 22.2%.
+#       v5 tests the only honest version of that idea. PREREGISTERED_RULES below
+#       were fixed BEFORE any v5 data existed, chosen for clearing 58% on both a
+#       training and a held-out slice of v1-v4 history. Each logs its own call
+#       and is scored independently, so the question is settled by what happens
+#       next rather than by re-slicing what already happened.
+#       Caveat recorded up front: screening ~1,567 rules would be expected to
+#       throw up roughly 50-90 such survivors by chance, and only 29 appeared.
+#       These are candidates, not findings, and the forward test is what decides.
+MODEL_VERSION       = "v5"
 
 SPREADSHEET_ID      = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
-PRED_SHEET          = "Predictions"
+PRED_SHEET          = "Predictions v5"
 REPORT_SHEET        = "Report"
 SYMBOLS             = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
 KRAKEN_PAIRS        = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
@@ -117,6 +136,81 @@ WEIGHTS = {
     "vwap_dev":  0.10,
 }
 
+# --- PREREGISTERED RULES (v5) ---
+#
+# Fixed 2026-09-09, before any v5 row was written. Do not add, drop or reword a
+# rule while v5 is collecting: doing so turns a forward test back into a search
+# and forfeits the only property that makes this evidence.
+#
+# Bin edges are part of the rule definition and must not drift.
+RULE_BINS = {
+    "RSI":  [30, 40, 50, 60, 70],      # bin 5 = RSI > 70 (overbought)
+    "BB":   [-1, -0.5, 0, 0.5, 1],     # bin 5 = above the upper band
+    "OB":   [0.40, 0.50, 0.60],        # bin 1 = 0.40-0.50
+    "VWAP": [-0.5, 0, 0.5],            # bin 2 = 0 to +0.5
+}
+
+PREREGISTERED_RULES = [
+    # name, side, conditions. Train/test accuracy from the v1-v4 screen is
+    # recorded so later results can be read against what was claimed up front.
+    {"name": "R1", "side": "UP",   "train": 58.5, "test": 73.1,
+     "cond": {"BB": 5, "VWAP": 2, "EMA": "FLAT"}},
+    {"name": "R2", "side": "UP",   "train": 59.6, "test": 71.8,
+     "cond": {"RSI": 5, "OB": 1}},
+    {"name": "R3", "side": "UP",   "train": 62.4, "test": 70.6,
+     "cond": {"RSI": 5, "OB": 1, "EMA": "FLAT"}},
+    {"name": "R4", "side": "UP",   "train": 58.3, "test": 68.6,
+     "cond": {"BB": 5, "EMA": "FLAT"}},
+    {"name": "R5", "side": "DOWN", "train": 58.1, "test": 65.8,
+     "cond": {"BB": 3, "VWAP": 2, "coin": "BTCUSDT"}},
+]
+
+
+def _bin(value, edges):
+    for i, e in enumerate(edges):
+        if value < e:
+            return i
+    return len(edges)
+
+
+def rule_features(sig, symbol, when):
+    """Feature dict a preregistered rule is evaluated against."""
+    def num(key):
+        try:
+            return float(sig[key])
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    rsi, bb, ob, vw = num("rsi"), num("bb_position"), num("ob_ratio"), num("vwap_dev")
+    if None in (rsi, bb, ob, vw):
+        return None
+
+    hour_ct = (when.hour - 5) % 24
+    return {
+        "RSI":     _bin(rsi, RULE_BINS["RSI"]),
+        "BB":      _bin(bb,  RULE_BINS["BB"]),
+        "OB":      _bin(ob,  RULE_BINS["OB"]),
+        "VWAP":    _bin(vw,  RULE_BINS["VWAP"]),
+        "EMA":     sig.get("ema_label"),
+        "MACD":    sig.get("macd_label"),
+        "coin":    symbol,
+        "session": ("night" if hour_ct < 6 else "morning" if hour_ct < 12
+                    else "afternoon" if hour_ct < 18 else "evening"),
+    }
+
+
+def evaluate_rules(sig, symbol, when):
+    """Return {rule_name: "UP"/"DOWN"/""} -- blank where the rule does not fire."""
+    f = rule_features(sig, symbol, when)
+    out = {r["name"]: "" for r in PREREGISTERED_RULES}
+    if f is None:
+        return out
+    for r in PREREGISTERED_RULES:
+        if all(f.get(k) == v for k, v in r["cond"].items()):
+            out[r["name"]] = r["side"]
+    return out
+
+
 # Columns A-R: prediction data
 PRED_HEADERS = [
     "Timestamp", "Symbol", "Price at Pred", "Direction", "Confidence",
@@ -154,7 +248,12 @@ V3_HEADERS = [
     "K Early Ticker", "K Late Ticker",
 ]
 
-ALL_HEADERS = PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS + EMA_HEADERS + V3_HEADERS
+# One call column and one outcome column per preregistered rule.
+RULE_HEADERS = [h for r in PREREGISTERED_RULES
+                for h in (f"{r['name']} Call", f"{r['name']} Correct?")]
+
+ALL_HEADERS = (PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS
+               + EMA_HEADERS + V3_HEADERS + RULE_HEADERS)
 
 # Kalshi 15-min up/down series tickers
 KALSHI_BASE   = "https://api.elections.kalshi.com/trade-api/v2"
@@ -829,6 +928,11 @@ def run_predictions():
                 kalshi["ticker"]           if kalshi else "",
             ]
 
+            calls = evaluate_rules(sig, symbol, boundary)
+            rule_row = []
+            for r in PREREGISTERED_RULES:
+                rule_row += [calls[r["name"]], ""]
+
             row = [
                 ts_str, symbol, sig["price"], sig["direction"], sig["confidence"],
                 sig["rsi"], sig["stoch_rsi"], sig["ema_label"], sig["macd_label"],
@@ -836,9 +940,13 @@ def run_predictions():
                 sig["composite"], eval_str, "", "", "",
             ] + kalshi_row + [""] * len(LEGACY_HEADERS) + [
                 sig["ema_only_call"], ema_entry, "", MODEL_VERSION,
-            ] + v3_row
+            ] + v3_row + rule_row
 
             ws.append_row(row, value_input_option="USER_ENTERED")
+
+            fired = [n for n, v in calls.items() if v]
+            if fired:
+                print(f"    rules fired: {', '.join(f'{n}={calls[n]}' for n in fired)}")
 
             drift = ""
             if early_odds and kalshi:
@@ -934,6 +1042,14 @@ def resolve_outcomes():
             updates.append(gspread.Cell(i, res_col + 1, actual_price))
             updates.append(gspread.Cell(i, chg_col + 1, change_pct))
             updates.append(gspread.Cell(i, cor_col + 1, correct))
+
+            for r in PREREGISTERED_RULES:
+                ci = ALL_HEADERS.index(f"{r['name']} Call")
+                oi = ALL_HEADERS.index(f"{r['name']} Correct?")
+                call = row[ci] if len(row) > ci else ""
+                if call in ("UP", "DOWN"):
+                    ok = (call == "UP" and change_pct > 0) or (call == "DOWN" and change_pct < 0)
+                    updates.append(gspread.Cell(i, oi + 1, "Yes" if ok else "No"))
 
             ema_call = row[ema_call_col] if len(row) > ema_call_col else ""
             if ema_call in ("UP", "DOWN"):
@@ -1138,6 +1254,34 @@ def build_report(rows, version):
                      [r for r in S if cell(r, "EMA-Only Call") in ("UP", "DOWN")],
                      lambda r: cell(r, "EMA-Only Correct?"),
                      lambda r: num(r, "EMA-Only Entry ¢"))
+    R.append(["", "", ""])
+
+    # ---- preregistered rules ----------------------------------------------
+    R.append(["PREREGISTERED RULES", "fired / correct", "claimed -> actual"])
+    for rule in PREREGISTERED_RULES:
+        fired = [r for r in S if cell(r, f"{rule['name']} Call") in ("UP", "DOWN")]
+        graded = [r for r in fired if cell(r, f"{rule['name']} Correct?") in ("Yes", "No")]
+        if not graded:
+            R.append([f"  {rule['name']} ({rule['side']})", f"{len(fired)} fired, 0 graded",
+                      f"claimed {rule['test']:.0f}%"])
+            continue
+        w = sum(1 for r in graded if cell(r, f"{rule['name']} Correct?") == "Yes")
+        acc = w / len(graded) * 100
+        ent = []
+        for r in graded:
+            e = num(r, "K Up%") if rule["side"] == "UP" else num(r, "K Down%")
+            if e is not None:
+                ent.append((e, cell(r, f"{rule['name']} Correct?") == "Yes"))
+        if ent:
+            avg = sum(e for e, _ in ent) / len(ent)
+            pnl = sum(_kalshi_pnl(e, won) for e, won in ent)
+            note = f"entry {avg:.1f}c  P&L ${pnl:+.2f}  EV ${pnl / len(ent):+.2f}"
+        else:
+            note = ""
+        R.append([f"  {rule['name']} ({rule['side']})", _pct(w, len(graded)),
+                  f"claimed {rule['test']:.0f}% -> {acc:.1f}%"])
+        if note:
+            R.append(["", "", f"    {note}"])
     R.append(["", "", ""])
 
     # ---- drill-down --------------------------------------------------------
