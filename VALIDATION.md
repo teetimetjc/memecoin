@@ -179,3 +179,42 @@ They fire on about 9.8% of predictions, roughly 47 signals a day.
 Expect them to land near 50%. If one holds near its claimed accuracy over
 several hundred fires, that is the first result in this project that would
 justify money.
+
+
+## v6: inputs the candles do not contain
+
+The preregistered rules failed decisively. R1 claimed 73% and returned 55.6%,
+R2 72% -> 22.2%, R3 71% -> 25.0%, R4 69% -> 50.0%, R5 66% -> 43.8%. Combined
+that is 26/71 = 36.6%, z=-2.25 against a coin flip, for -$320 over 71 bets.
+They fire on overbought conditions, which the market already prices at 52-67c,
+so several needed 60%+ merely to break even.
+
+That is the fifth negative in a row, and they all share one cause: every input
+tried so far is computed from public OHLC candles, which is the same material
+the Kalshi price is built from. A logistic fit of actual_up on price plus the
+indicators has put the indicator terms at z~0 every time it has been run.
+
+v6 therefore adds two inputs that are not derivable from candles at all.
+
+**Order flow.** Kraken's public trade tape marks the taker side of every trade,
+so aggressive buying can be separated from aggressive selling. Candles record
+where price finished; the tape records who moved it. A drift upward on passive
+limit fills and a move lifted by market buyers produce the same candle and
+different tape. Logged as buy volume, sell volume, CVD ratio ((buy-sell)/total,
++1 all buying, -1 all selling), trade count, market-order fraction and the
+window actually covered.
+
+**Perpetual open interest and funding.** Kraken's futures venue publishes both
+without auth. Change in open interest distinguishes positions being opened from
+positions being closed, which no spot candle expresses. Contract symbols are
+resolved against the live ticker list at runtime rather than hardcoded, and the
+first run logs which matched.
+
+**Collection only.** No rules, no alerts, nothing acting on these columns until
+the same test that killed the composite has been run on them:
+
+    actual_up ~ kalshi_price + order_flow + oi_change
+
+If the order flow term lands at z~0 like every previous input, that is a clean
+answer and this line of attack is finished. Nothing gets a strategy built on it
+before that test runs.

@@ -79,11 +79,32 @@ from datetime import datetime, timedelta, timezone
 #       Caveat recorded up front: screening ~1,567 rules would be expected to
 #       throw up roughly 50-90 such survivors by chance, and only 29 appeared.
 #       These are candidates, not findings, and the forward test is what decides.
-#       Writes to the original Predictions tab. A brief "Predictions v5" tab was
+#       Result after 71 rule fires: all five failed. R1 73->55.6, R2 72->22.2,
+#       R3 71->25.0, R4 69->50.0, R5 66->43.8, combined 26/71 = 36.6% (z=-2.25,
+#       significantly worse than chance) for -$320. They fire on overbought
+#       conditions, which the market already prices at 52-67c, so they needed
+#       56-67% just to break even. The forward test did its job.
+#   v6  (2026-09-10 onward)
+#       Every input tried so far is derived from public OHLC, which is what the
+#       Kalshi price is already built from -- hence the same answer five times.
+#       v6 adds two inputs that are not in the candles at all:
+#         - Order flow from the public trade tape. Each trade carries the taker
+#           side, so aggressive buying can be separated from aggressive selling.
+#           Candles say where price went; the tape says who pushed it, and a
+#           drift on passive fills is a different animal from one lifted by
+#           market buyers.
+#         - Perpetual open interest and funding rate. Change in open interest
+#           says whether positions are being opened or closed, which no spot
+#           candle contains.
+#       Collection only. No rules, no alerts, nothing acting on these until the
+#       same logistic test that killed the composite has been run on them:
+#           actual_up ~ kalshi_price + order_flow + oi_change
+#       If order flow lands at z~0 like everything else, that is a clean answer
+#       and the approach is finished. A brief "Predictions v5" tab was
 #       used on 2026-09-09 and abandoned: the version stamp already separates the
 #       generations, and every analysis filters on it rather than on tab name, so
 #       a second sheet bought nothing and split the history in two.
-MODEL_VERSION       = "v5"
+MODEL_VERSION       = "v6"
 
 SPREADSHEET_ID      = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
 PRED_SHEET          = "Predictions"
@@ -132,6 +153,21 @@ KALSHI_LATE_DELAY   = 60
 # unrelated later price -- which is what would otherwise happen to any row
 # stranded by a paused workflow or a change of sheet.
 RESOLVE_GRACE_MIN   = 45
+
+# Order flow: minutes of trade tape summarised per prediction.
+ORDERFLOW_LOOKBACK_MIN = 15
+
+# Kraken's futures venue publishes open interest and funding with no auth.
+# Symbols are resolved at runtime against the live ticker list rather than
+# hardcoded, since the naming differs by contract type and listing date.
+KRAKEN_FUTURES_BASE = "https://futures.kraken.com/derivatives/api/v3"
+FUTURES_CANDIDATES = {
+    "BTCUSDT":  ["PF_XBTUSD", "PI_XBTUSD"],
+    "ETHUSDT":  ["PF_ETHUSD", "PI_ETHUSD"],
+    "SOLUSDT":  ["PF_SOLUSD", "PI_SOLUSD"],
+    "XRPUSDT":  ["PF_XRPUSD", "PI_XRPUSD"],
+    "DOGEUSDT": ["PF_DOGEUSD", "PF_XDGUSD", "PI_XDGUSD"],
+}
 
 ALERT_MODE          = "off"
 ALERT_THRESHOLD     = 40.0
@@ -263,8 +299,15 @@ V3_HEADERS = [
 RULE_HEADERS = [h for r in PREREGISTERED_RULES
                 for h in (f"{r['name']} Call", f"{r['name']} Correct?")]
 
+# v6: inputs that are not derivable from the OHLC candles.
+V6_HEADERS = [
+    "OF Buy Vol", "OF Sell Vol", "OF CVD Ratio", "OF Trades",
+    "OF Mkt Frac", "OF Window Min",
+    "FUT Open Interest", "FUT Funding Rate", "FUT Symbol",
+]
+
 ALL_HEADERS = (PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS
-               + EMA_HEADERS + V3_HEADERS + RULE_HEADERS)
+               + EMA_HEADERS + V3_HEADERS + RULE_HEADERS + V6_HEADERS)
 
 # Kalshi 15-min up/down series tickers
 KALSHI_BASE   = "https://api.elections.kalshi.com/trade-api/v2"
@@ -587,6 +630,123 @@ def get_kalshi_odds(symbol, allow_recent=True, want_ticker=None):
     return None
 
 
+# --- ORDER FLOW / FUTURES (v6) ---
+
+_SHAPE_LOGGED = []
+
+
+def get_order_flow(symbol, since_dt):
+    """Summarise the public trade tape since since_dt.
+
+    Kraken returns each trade as
+        [price, volume, time, buy/sell, market/limit, misc, trade_id]
+    where the buy/sell flag is the *taker* side -- the side that crossed the
+    spread. Splitting volume by it separates aggressive buying from aggressive
+    selling, which is the part OHLC cannot express.
+    """
+    pair = KRAKEN_PAIRS.get(symbol)
+    if not pair:
+        return None
+    since_ns = int(since_dt.timestamp() * 1_000_000_000)
+    try:
+        r = requests.get(f"{KRAKEN_BASE}/Trades",
+                         params={"pair": pair, "since": since_ns}, timeout=15)
+        if not r.ok:
+            print(f"  [OrderFlow] {symbol}: HTTP {r.status_code}")
+            return None
+        data = r.json()
+        if data.get("error"):
+            print(f"  [OrderFlow] {symbol}: {data['error']}")
+            return None
+        result = data.get("result", {})
+        key = next((k for k in result if k != "last"), None)
+        if key is None:
+            print(f"  [OrderFlow] {symbol}: no trade array in response")
+            return None
+        trades = result[key]
+    except Exception as e:
+        print(f"  [OrderFlow] {symbol}: {e}")
+        return None
+
+    if not trades:
+        print(f"  [OrderFlow] {symbol}: 0 trades in window")
+        return None
+
+    if not _SHAPE_LOGGED:
+        _SHAPE_LOGGED.append(1)
+        print(f"  [OrderFlow] sample trade record: {trades[0]}")
+
+    buy = sell = 0.0
+    market = 0
+    first_t = last_t = None
+    for t in trades:
+        try:
+            vol = float(t[1]); ts = float(t[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        side = t[3] if len(t) > 3 else ""
+        typ  = t[4] if len(t) > 4 else ""
+        if side == "b":
+            buy += vol
+        elif side == "s":
+            sell += vol
+        if typ == "m":
+            market += 1
+        first_t = ts if first_t is None else min(first_t, ts)
+        last_t  = ts if last_t  is None else max(last_t, ts)
+
+    total = buy + sell
+    if total <= 0:
+        return None
+    window_min = round((last_t - first_t) / 60.0, 1) if first_t and last_t else ""
+    return {
+        "buy_vol":    round(buy, 6),
+        "sell_vol":   round(sell, 6),
+        # +1 = all aggressive buying, -1 = all aggressive selling.
+        "cvd_ratio":  round((buy - sell) / total, 4),
+        "trades":     len(trades),
+        "mkt_frac":   round(market / len(trades), 3),
+        "window_min": window_min,
+    }
+
+
+def get_futures_stats():
+    """One call returning every Kraken futures ticker, keyed by symbol."""
+    try:
+        r = requests.get(f"{KRAKEN_FUTURES_BASE}/tickers", timeout=15)
+        if not r.ok:
+            print(f"  [Futures] HTTP {r.status_code} -- {r.text[:120]}")
+            return {}
+        tickers = r.json().get("tickers", [])
+    except Exception as e:
+        print(f"  [Futures] {e}")
+        return {}
+    if not tickers:
+        print("  [Futures] empty ticker list")
+        return {}
+    by_symbol = {t.get("symbol"): t for t in tickers if t.get("symbol")}
+    wanted = {s for cands in FUTURES_CANDIDATES.values() for s in cands}
+    found = sorted(wanted & set(by_symbol))
+    print(f"  [Futures] {len(by_symbol)} tickers; matched {found or 'NONE'}")
+    if not found:
+        sample = sorted(s for s in by_symbol if s.startswith(("PF_", "PI_")))[:12]
+        print(f"  [Futures] no candidate matched. perp symbols seen: {sample}")
+    return by_symbol
+
+
+def pick_futures(symbol, by_symbol):
+    """First listed contract for symbol that the venue actually returned."""
+    for cand in FUTURES_CANDIDATES.get(symbol, []):
+        t = by_symbol.get(cand)
+        if t:
+            return {
+                "symbol":        cand,
+                "open_interest": t.get("openInterest", ""),
+                "funding_rate":  t.get("fundingRate", ""),
+            }
+    return None
+
+
 # --- INDICATORS ---
 
 def calc_rsi(closes, period=7):
@@ -886,6 +1046,8 @@ def run_predictions():
     client = _get_client()
     ws     = open_pred_sheet(client)
 
+    futures = get_futures_stats()
+
     btc_sig = None
     try:
         btc_sig = compute_signal("BTCUSDT", btc_composite=None)
@@ -939,6 +1101,21 @@ def run_predictions():
                 kalshi["ticker"]           if kalshi else "",
             ]
 
+            flow = get_order_flow(
+                symbol, boundary - timedelta(minutes=ORDERFLOW_LOOKBACK_MIN))
+            fut  = pick_futures(symbol, futures)
+            v6_row = [
+                flow["buy_vol"]    if flow else "",
+                flow["sell_vol"]   if flow else "",
+                flow["cvd_ratio"]  if flow else "",
+                flow["trades"]     if flow else "",
+                flow["mkt_frac"]   if flow else "",
+                flow["window_min"] if flow else "",
+                fut["open_interest"] if fut else "",
+                fut["funding_rate"]  if fut else "",
+                fut["symbol"]        if fut else "",
+            ]
+
             calls = evaluate_rules(sig, symbol, boundary)
             rule_row = []
             for r in PREREGISTERED_RULES:
@@ -951,9 +1128,13 @@ def run_predictions():
                 sig["composite"], eval_str, "", "", "",
             ] + kalshi_row + [""] * len(LEGACY_HEADERS) + [
                 sig["ema_only_call"], ema_entry, "", MODEL_VERSION,
-            ] + v3_row + rule_row
+            ] + v3_row + rule_row + v6_row
 
             ws.append_row(row, value_input_option="USER_ENTERED")
+
+            if flow:
+                print(f"    flow: CVD {flow['cvd_ratio']:+.3f} over "
+                      f"{flow['trades']} trades / {flow['window_min']}min")
 
             fired = [n for n, v in calls.items() if v]
             if fired:
@@ -1212,6 +1393,13 @@ def build_report(rows, version):
         # right-skewed, so a healthy indicator sits well below 1.0 at the median.
         R.append(["  Vol Spike mean", f"{mean:.2f}",
                   "OK" if 0.6 <= mean <= 1.8 else "CHECK -- expected ~1.0"])
+    ofc = sum(1 for r in S if cell(r, "OF CVD Ratio") not in ("", None))
+    R.append(["  Order flow captured", _pct(ofc, len(S)),
+              "OK" if ofc > 0.9 * len(S) else "INCOMPLETE"])
+    futc = sum(1 for r in S if cell(r, "FUT Open Interest") not in ("", None))
+    R.append(["  Futures OI captured", _pct(futc, len(S)),
+              "OK" if futc > 0.9 * len(S) else "INCOMPLETE"])
+
     kal = sum(1 for r in S if cell(r, "K Up%") not in ("", None))
     R.append(["  Kalshi priced", _pct(kal, len(S)),
               "OK" if kal > 0.9 * len(S) else "INCOMPLETE"])
