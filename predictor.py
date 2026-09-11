@@ -213,6 +213,47 @@ PREREGISTERED_RULES = [
 ]
 
 
+# --- CVD RULE, fixed 2026-09-11 --------------------------------------------
+#
+# The first input in this project to beat the Kalshi price. Over 426 v6 rows a
+# logistic fit of actual_up on price plus the new columns put the CVD term at
+# z=-2.45, likelihood-ratio p=0.007 against price alone. The composite managed
+# p=0.594; every earlier candidate was in that territory.
+#
+# Direction: fade the aggressive side. When impatient sellers dominate the tape,
+# price tends to rise afterwards, and vice versa -- short-term overreaction
+# followed by reversion.
+#
+#   CVD ratio         actually went up
+#   heavy selling     57.9%   (n=126)
+#   mild selling      50.0%   (n= 76)
+#   mild buying       39.3%   (n= 84)
+#   heavy buying      44.6%   (n=121)
+#
+# In-sample at this threshold: 250 fires, 56.8%, average entry 50.1c,
+# EV +$1.54 per $10 bet, 95% CI +$0.17 to +$2.92. Following the flow instead
+# returns 43.2% and -$302, which is the inversion a real signal should show.
+#
+# THRESHOLD AND SIDE ARE FROZEN. Both were chosen after looking at those 426
+# rows, so those rows cannot also judge the rule -- only fires logged after this
+# was deployed count. Retuning either number mid-collection would turn the
+# forward test back into a search, exactly as it did for R1-R5.
+CVD_THRESHOLD = 0.30
+
+
+def cvd_call(cvd_ratio):
+    """UP / DOWN / "" for a given CVD ratio. Fades the aggressive side."""
+    try:
+        v = float(cvd_ratio)
+    except (TypeError, ValueError):
+        return ""
+    if v <= -CVD_THRESHOLD:
+        return "UP"       # sellers were aggressive -> expect reversion up
+    if v >= CVD_THRESHOLD:
+        return "DOWN"     # buyers were aggressive  -> expect reversion down
+    return ""
+
+
 def _bin(value, edges):
     for i, e in enumerate(edges):
         if value < e:
@@ -304,6 +345,9 @@ V6_HEADERS = [
     "OF Buy Vol", "OF Sell Vol", "OF CVD Ratio", "OF Trades",
     "OF Mkt Frac", "OF Window Min",
     "FUT Open Interest", "FUT Funding Rate", "FUT Symbol",
+    # Blank on every row written before 2026-09-11, which is what marks the
+    # start of the forward test -- no separate cutoff needs to be remembered.
+    "CVD Call", "CVD Correct?",
 ]
 
 ALL_HEADERS = (PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS
@@ -1114,6 +1158,8 @@ def run_predictions():
                 fut["open_interest"] if fut else "",
                 fut["funding_rate"]  if fut else "",
                 fut["symbol"]        if fut else "",
+                cvd_call(flow["cvd_ratio"]) if flow else "",
+                "",
             ]
 
             calls = evaluate_rules(sig, symbol, boundary)
@@ -1133,8 +1179,10 @@ def run_predictions():
             ws.append_row(row, value_input_option="USER_ENTERED")
 
             if flow:
+                call = cvd_call(flow["cvd_ratio"])
                 print(f"    flow: CVD {flow['cvd_ratio']:+.3f} over "
-                      f"{flow['trades']} trades / {flow['window_min']}min")
+                      f"{flow['trades']} trades / {flow['window_min']}min"
+                      f"{'  -> CVD rule says ' + call if call else ''}")
 
             fired = [n for n, v in calls.items() if v]
             if fired:
@@ -1238,6 +1286,13 @@ def resolve_outcomes():
             updates.append(gspread.Cell(i, res_col + 1, actual_price))
             updates.append(gspread.Cell(i, chg_col + 1, change_pct))
             updates.append(gspread.Cell(i, cor_col + 1, correct))
+
+            cvd_i = ALL_HEADERS.index("CVD Call")
+            cvd_o = ALL_HEADERS.index("CVD Correct?")
+            cvd_c = row[cvd_i] if len(row) > cvd_i else ""
+            if cvd_c in ("UP", "DOWN"):
+                ok = (cvd_c == "UP" and change_pct > 0) or (cvd_c == "DOWN" and change_pct < 0)
+                updates.append(gspread.Cell(i, cvd_o + 1, "Yes" if ok else "No"))
 
             for r in PREREGISTERED_RULES:
                 ci = ALL_HEADERS.index(f"{r['name']} Call")
@@ -1488,6 +1543,35 @@ def build_report(rows, version):
                   f"claimed {rule['test']:.0f}% -> {acc:.1f}%"])
         if note:
             R.append(["", "", f"    {note}"])
+    R.append(["", "", ""])
+
+    # ---- CVD rule ----------------------------------------------------------
+    fired  = [r for r in S if cell(r, "CVD Call") in ("UP", "DOWN")]
+    graded = [r for r in fired if cell(r, "CVD Correct?") in ("Yes", "No")]
+    R.append([f"CVD RULE (|CVD| >= {CVD_THRESHOLD}, fades the flow)", "", ""])
+    if not graded:
+        R.append(["  status", f"{len(fired)} fired, 0 graded", "claimed 56.8%"])
+    else:
+        w = sum(1 for r in graded if cell(r, "CVD Correct?") == "Yes")
+        ent = []
+        for r in graded:
+            side = cell(r, "CVD Call")
+            e = num(r, "K Up%") if side == "UP" else num(r, "K Down%")
+            if e is not None:
+                ent.append((e, cell(r, "CVD Correct?") == "Yes"))
+        R.append(["  graded", _pct(w, len(graded)),
+                  f"claimed 56.8% -> {w / len(graded) * 100:.1f}%"])
+        if ent:
+            avg = sum(e for e, _ in ent) / len(ent)
+            pnl = sum(_kalshi_pnl(e, won) for e, won in ent)
+            R.append(["  economics", f"entry {avg:.1f}c",
+                      f"P&L ${pnl:+.2f}  EV ${pnl / len(ent):+.2f}/bet"])
+            if len(ent) < MIN_SAMPLE:
+                R.append(["  VERDICT", "TOO EARLY", f"{len(ent)}/{MIN_SAMPLE} fires"])
+            elif pnl > 0 and w / len(graded) * 100 >= avg + BREAKEVEN_MARGIN:
+                R.append(["  VERDICT", "HOLDING", "clears breakeven at prices paid"])
+            else:
+                R.append(["  VERDICT", "FAILED FORWARD", "did not survive"])
     R.append(["", "", ""])
 
     # ---- drill-down --------------------------------------------------------
