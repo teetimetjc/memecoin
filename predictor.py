@@ -404,8 +404,31 @@ def _get_client():
     return gspread.authorize(creds)
 
 
+# Tabs left over from the retired meme-coin scanner. Nothing in this file reads
+# them, and Sell Log alone held 6,449,700 of the workbook's 10,000,000 cells --
+# the reason appends started failing and collection stopped on 2026-09-11.
+# Deleting a tab that is already absent is a no-op, so this disables itself
+# after the first run. Irreversible: the owner's xlsx exports are the backup.
+OBSOLETE_TABS = ["Sell Log", "Dip Watch", "Sheet1"]
+
+
+def drop_obsolete_tabs(sh):
+    for title in OBSOLETE_TABS:
+        try:
+            ws = sh.worksheet(title)
+        except Exception:
+            continue                      # already gone
+        try:
+            cells = (ws.row_count or 0) * (ws.col_count or 0)
+            sh.del_worksheet(ws)
+            print(f"  Dropped obsolete tab {title!r} -- {cells:,} cells reclaimed.")
+        except Exception as e:
+            print(f"  Could not drop tab {title!r}: {e}")
+
+
 def open_pred_sheet(client):
     sh = client.open_by_key(SPREADSHEET_ID)
+    drop_obsolete_tabs(sh)
     try:
         ws = sh.worksheet(PRED_SHEET)
     except Exception:
