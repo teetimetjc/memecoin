@@ -410,6 +410,18 @@ def open_pred_sheet(client):
         ws = sh.worksheet(PRED_SHEET)
     except Exception:
         ws = sh.add_worksheet(title=PRED_SHEET, rows=5000, cols=len(ALL_HEADERS))
+
+    # Google caps a workbook at 10,000,000 cells across every tab, and empty
+    # columns count. This tab drifted to 605 columns for 65 columns of data --
+    # 2.9M cells, most of them blank -- and once the workbook hit the cap every
+    # append_row failed with a 400 and collection stopped silently for a day.
+    # Trim back to the header width so the allowance is spent on rows.
+    if ws.col_count > len(ALL_HEADERS):
+        freed = (ws.col_count - len(ALL_HEADERS)) * ws.row_count
+        print(f"  Trimming {PRED_SHEET}: {ws.col_count} -> {len(ALL_HEADERS)} "
+              f"columns, freeing ~{freed:,} cells.")
+        ws.resize(rows=ws.row_count, cols=len(ALL_HEADERS))
+
     existing = ws.row_values(1)
     if existing != ALL_HEADERS:
         if ws.col_count < len(ALL_HEADERS):
@@ -1227,7 +1239,12 @@ def run_predictions():
                     ),
                 )
         except Exception as e:
-            print(f"  {symbol}: ERROR -- {e}")
+            if "above the limit" in str(e) and "cells" in str(e):
+                print(f"  {symbol}: WORKBOOK FULL -- Google's 10,000,000-cell cap "
+                      f"is reached, so no row could be written. Collection is "
+                      f"stopped until a tab is trimmed or archived.")
+            else:
+                print(f"  {symbol}: ERROR -- {e}")
 
 
 # --- OUTCOME RESOLUTION ---
