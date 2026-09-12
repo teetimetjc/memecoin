@@ -101,7 +101,14 @@ def main():
             b = int(ts // 900) * 900
             buckets[b][0 if side == "b" else 1] += vol
 
-        fired = correct = 0
+        ck = sorted(closes)
+        print(f"  {symbol}: {len(trades)} trades, tape "
+              f"{datetime.fromtimestamp(min(t[0] for t in trades), timezone.utc):%m-%d %H:%M}"
+              f" -> {datetime.fromtimestamp(max(t[0] for t in trades), timezone.utc):%m-%d %H:%M}"
+              f" | {len(ck)} candles "
+              f"{datetime.fromtimestamp(ck[0], timezone.utc):%m-%d %H:%M}"
+              f" -> {datetime.fromtimestamp(ck[-1], timezone.utc):%m-%d %H:%M}")
+        fired = correct = skipped_flat = skipped_price = 0
         for b in sorted(buckets):
             buy, sell = buckets[b]
             total = buy + sell
@@ -109,12 +116,16 @@ def main():
                 continue
             cvd = (buy - sell) / total
             if abs(cvd) < CVD_THRESHOLD:
+                skipped_flat += 1
                 continue
             call = "UP" if cvd < 0 else "DOWN"     # fade the aggressive side
             # window b covers [b, b+900); the prediction is for the NEXT window
-            p0 = closes.get((b + 900) // 60)
-            p1 = closes.get((b + 1800) // 60)
+            # closes is keyed by epoch SECONDS at each minute boundary, and b is
+            # already a 15-minute boundary in seconds -- no unit conversion.
+            p0 = closes.get(b + 900)
+            p1 = closes.get(b + 1800)
             if p0 is None or p1 is None:
+                skipped_price += 1
                 continue
             went_up = p1 > p0
             fired += 1
@@ -122,8 +133,9 @@ def main():
                 correct += 1
         grand[symbol] = [correct, fired]
         pct = f"{correct / fired * 100:5.1f}%" if fired else "   n/a"
-        print(f"{symbol:9} {correct:3}/{fired:3} = {pct}   "
-              f"({calls} calls, tape from {covered:%m-%d %H:%M})")
+        print(f"  -> {symbol:9} {correct:3}/{fired:3} = {pct}   "
+              f"({len(buckets)} windows; {skipped_flat} below threshold, "
+              f"{skipped_price} missing a price)\n")
 
     tc = sum(v[0] for v in grand.values())
     tf = sum(v[1] for v in grand.values())
