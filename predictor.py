@@ -1103,6 +1103,7 @@ def run_predictions():
     ws     = open_pred_sheet(client)
 
     futures = get_futures_stats()
+    written = 0
 
     btc_sig = None
     try:
@@ -1189,6 +1190,7 @@ def run_predictions():
             ] + v3_row + rule_row + v6_row
 
             ws.append_row(row, value_input_option="USER_ENTERED")
+            written += 1
 
             if flow:
                 call = cvd_call(flow["cvd_ratio"])
@@ -1245,6 +1247,14 @@ def run_predictions():
                       f"stopped until a tab is trimmed or archived.")
             else:
                 print(f"  {symbol}: ERROR -- {e}")
+
+    if written == 0:
+        sys.exit(
+            f"FAILED: no rows written for any of {len(SYMBOLS)} symbols. "
+            f"Collection is stopped -- see the per-symbol errors above."
+        )
+    if written < len(SYMBOLS):
+        print(f"  WARNING: wrote {written}/{len(SYMBOLS)} symbols this run.")
 
 
 # --- OUTCOME RESOLUTION ---
