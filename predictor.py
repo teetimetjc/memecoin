@@ -1212,7 +1212,15 @@ def run_predictions():
                 sig["ema_only_call"], ema_entry, "", MODEL_VERSION,
             ] + v3_row + rule_row + v6_row
 
-            ws.append_row(row, value_input_option="USER_ENTERED")
+            # table_range pins the append to the table anchored at A1. Without
+            # it gspread lets the API infer the table, and once any cell exists
+            # to the right of the headers the inferred table starts there --
+            # so the row lands in columns past the header, Model Version is
+            # blank, the row counts as nothing, and the sheet grows wider every
+            # run. That is what widened this tab to 605 columns, stranded the
+            # 16:45 and 17:00 rows of 2026-09-11 in columns 66+, and finally
+            # exhausted the workbook's 10,000,000-cell budget.
+            ws.append_row(row, value_input_option="USER_ENTERED", table_range="A1")
             written += 1
 
             if flow:
