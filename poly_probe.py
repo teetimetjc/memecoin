@@ -42,6 +42,10 @@ def looks_short_dated(m):
             end = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
         except Exception:
             continue
+        # Gamma returns some dates without an offset; assume UTC for those
+        # rather than letting the comparison raise.
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
         mins = (end - datetime.now(timezone.utc)).total_seconds() / 60
         if -5 <= mins <= 120:
             return mins
@@ -61,7 +65,7 @@ def main():
 
     print("=" * 78)
     print("2. Are there short-dated crypto markets?")
-    found, seen = [], 0
+    found, seen, fees = [], 0, []
     # Page through active markets ordered by volume; short-dated ones churn fast.
     for offset in range(0, 2000, 500):
         page = get(f"{GAMMA}/markets", closed="false", limit=500, offset=offset,
@@ -70,6 +74,8 @@ def main():
             break
         seen += len(page)
         for m in page:
+            if m.get("takerBaseFee") is not None:
+                fees.append(m.get("takerBaseFee"))
             q = (m.get("question") or "").upper()
             slug = (m.get("slug") or "").upper()
             if not any(c in q or c in slug for c in COINS):
@@ -81,13 +87,19 @@ def main():
         if len(page) < 500:
             break
     print(f"   scanned {seen} open markets; {len(found)} crypto markets ending within 2h\n")
+    if fees:
+        from collections import Counter
+        print(f"   takerBaseFee values seen across all scanned markets: "
+              f"{dict(Counter(fees).most_common(6))}\n")
 
     found.sort(key=lambda x: x[0])
     for mins, m in found[:8]:
         print(f"   [{mins:+6.1f} min] {m.get('question')}")
         print(f"      slug        : {m.get('slug')}")
         for k in ("outcomes", "outcomePrices", "bestBid", "bestAsk", "spread",
-                  "lastTradePrice", "liquidityNum", "volumeNum", "clobTokenIds"):
+                  "lastTradePrice", "liquidityNum", "volumeNum",
+                  "takerBaseFee", "makerBaseFee", "feeType", "feesEnabled",
+                  "orderMinSize", "orderPriceMinTickSize", "clobTokenIds"):
             if m.get(k) not in (None, ""):
                 v = str(m.get(k))
                 print(f"      {k:12}: {v[:110]}")
