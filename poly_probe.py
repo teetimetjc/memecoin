@@ -65,54 +65,61 @@ def main():
 
     print("=" * 78)
     print("2. Are there short-dated crypto markets?")
+    # Gamma caps a page at 100 regardless of what limit says, and ordering by
+    # volume buries these: a 15-minute market lives 15 minutes and accumulates
+    # almost none. Filter on end date instead and page properly.
+    now = datetime.now(timezone.utc)
+    lo = (now - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    hi = (now + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     found, seen, fees = [], 0, []
-    # Page through active markets ordered by volume; short-dated ones churn fast.
-    for offset in range(0, 2000, 500):
-        page = get(f"{GAMMA}/markets", closed="false", limit=500, offset=offset,
-                   order="volumeNum", ascending="false")
-        if not page:
+    attempts = [
+        ("end_date filter", dict(closed="false", limit=100,
+                                 end_date_min=lo, end_date_max=hi)),
+        ("newest first",    dict(closed="false", limit=100,
+                                 order="startDate", ascending="false")),
+    ]
+    for label, base in attempts:
+        if found:
             break
-        seen += len(page)
-        for m in page:
-            if m.get("takerBaseFee") is not None:
-                fees.append(m.get("takerBaseFee"))
-            q = (m.get("question") or "").upper()
-            slug = (m.get("slug") or "").upper()
-            if not any(c in q or c in slug for c in COINS):
-                continue
-            mins = looks_short_dated(m)
-            if mins is None:
-                continue
-            found.append((mins, m))
-        if len(page) < 500:
-            break
-    print(f"   scanned {seen} open markets; {len(found)} crypto markets ending within 2h\n")
+        print(f"   trying: {label}")
+        for offset in range(0, 1000, 100):
+            page = get(f"{GAMMA}/markets", offset=offset, **base)
+            if not page:
+                break
+            seen += len(page)
+            for m in page:
+                if m.get("takerBaseFee") is not None:
+                    fees.append(m.get("takerBaseFee"))
+                text = ((m.get("question") or "") + " " + (m.get("slug") or "")).upper()
+                if not any(c in text for c in COINS):
+                    continue
+                mins = looks_short_dated(m)
+                if mins is not None:
+                    found.append((mins, m))
+            if len(page) < 100:
+                break
+        print(f"     scanned {seen} so far, {len(found)} matches")
+
+    print(f"\n   total scanned {seen}; {len(found)} crypto markets ending within 2h")
     if fees:
         from collections import Counter
-        print(f"   takerBaseFee values seen across all scanned markets: "
-              f"{dict(Counter(fees).most_common(6))}\n")
-
-    found.sort(key=lambda x: x[0])
-    for mins, m in found[:8]:
-        print(f"   [{mins:+6.1f} min] {m.get('question')}")
-        print(f"      slug        : {m.get('slug')}")
-        for k in ("outcomes", "outcomePrices", "bestBid", "bestAsk", "spread",
-                  "lastTradePrice", "liquidityNum", "volumeNum",
-                  "takerBaseFee", "makerBaseFee", "feeType", "feesEnabled",
-                  "orderMinSize", "orderPriceMinTickSize", "clobTokenIds"):
-            if m.get(k) not in (None, ""):
-                v = str(m.get(k))
-                print(f"      {k:12}: {v[:110]}")
-        print()
+        print(f"   takerBaseFee values: {dict(Counter(fees).most_common(6))}")
+    print()
 
     if not found:
-        print("   none found. Trying the events endpoint by slug pattern instead.")
-        for pat in ("bitcoin-up-or-down", "btc-up-or-down", "ethereum-up-or-down"):
-            ev = get(f"{GAMMA}/events", slug=pat)
-            if ev:
-                print(f"   events?slug={pat} -> {json.dumps(ev)[:400]}")
+        print("   Still none. Searching by keyword instead:")
+        for q in ("bitcoin up or down", "btc 15", "ethereum up or down", "bitcoin hourly"):
+            res = get(f"{GAMMA}/public-search", q=q, limit_per_type=4) or \
+                  get(f"{GAMMA}/markets", slug=q.replace(" ", "-"))
+            if res:
+                txt = json.dumps(res)[:500]
+                print(f"     {q!r} -> {txt}")
+            else:
+                print(f"     {q!r} -> nothing")
         return
 
+    found.sort(key=lambda x: x[0])
     print("=" * 78)
     print("3. Live order book for the nearest one (CLOB midpoint / spread)")
     mins, m = found[0]
