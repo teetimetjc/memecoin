@@ -120,6 +120,47 @@ def main():
         return
 
     found.sort(key=lambda x: x[0])
+
+    # The decisive comparison is spread, not fee. Kalshi's 15-min crypto books
+    # have run a 1.0c median for days; a wider book here would hand back the
+    # fee advantage and then some, since crossing half the spread is a real
+    # cost that no fee table shows.
+    print("   nearest markets, with live CLOB spread:")
+    print("   mins   price  spread   question")
+    spreads = []
+    for mins, m in found[:14]:
+        raw = m.get("clobTokenIds")
+        try:
+            tokens = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception:
+            tokens = []
+        mid = spr = None
+        if tokens:
+            r1 = get(f"{CLOB}/midpoint", token_id=tokens[0])
+            r2 = get(f"{CLOB}/spread", token_id=tokens[0])
+            mid = (r1 or {}).get("mid")
+            spr = (r2 or {}).get("spread")
+        try:
+            midc = float(mid) * 100
+            sprc = float(spr) * 100
+            # Only mid-priced books are comparable to where the CVD rule fires.
+            if 25 <= midc <= 75:
+                spreads.append(sprc)
+        except (TypeError, ValueError):
+            midc = sprc = float("nan")
+        print(f"   {mins:+6.1f} {midc:6.1f}c {sprc:6.1f}c   {(m.get('question') or '')[:58]}")
+    if spreads:
+        spreads.sort()
+        med = spreads[len(spreads) // 2]
+        print()
+        print(f"   Polymarket spread on {len(spreads)} books priced 25-75c: "
+              f"median {med:.1f}c  (min {min(spreads):.1f}c  max {max(spreads):.1f}c)")
+        print(f"   Kalshi's logged median on the same instrument: 1.0c")
+        extra = (med - 1.0) / 2 / 100 * (10 / 0.51)
+        print(f"   crossing half the extra spread on a \$10 bet at 51c: \${extra:.2f}")
+        print(f"   fee saved by moving off Kalshi:                     \$0.33")
+        print(f"   -> net {'WORSE on Polymarket' if extra > 0.33 else 'better on Polymarket'}")
+    print()
     print("=" * 78)
     print("3. Live order book for the nearest one (CLOB midpoint / spread)")
     mins, m = found[0]
