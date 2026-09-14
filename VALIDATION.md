@@ -287,3 +287,28 @@ running 70% against a 54% champion over 400 paired rows reached z=+2.09 and was
 - Promotion requires beating the **champion**, not beating zero.
 - Count the challengers. Adding a fourth raises the bar for all of them.
 - Losers stay logged. Their continued failure is evidence.
+
+
+### Correction, 2026-09-14 (second)
+
+Two bugs, found by checking the first real export rather than trusting the code.
+
+**The comparison pool spanned time the challengers did not exist.** A row logged
+before a challenger was deployed has blank challenger columns -- on the sheet,
+indistinguishable from a row where it declined to fire. So "passed on" swept in
+395 champion bets from the three days before challengers existed, against 32
+genuine ones. C1's z=+0.59 was comparing eleven hours to three days: a
+comparison of time periods, not of rules. Every challenger figure is now
+restricted to rows timestamped at or after that challenger's freeze time, and
+`frozen` carries a full timestamp rather than a date so the cut is exact.
+
+**C2 could never fire.** Its threshold required a market-order fraction >= 0.5.
+Measured over 1,330 rows that fraction runs median 0.088, p75 0.134, and only 3
+rows ever reached 0.5. I chose 0.5 by assuming what the number meant instead of
+looking at it. C2 is retired at 0 fires, kept in the list so the error stays on
+the record, and replaced by **C4** at >= 0.15 -- just above the measured p75,
+chosen only so the rule fires often enough to test. No outcome was consulted in
+setting it. Retired challengers no longer consume Bonferroni alpha.
+
+The lesson is the same one R1-R5 taught, in a new place: a threshold picked from
+an assumption about the data is as untested as a rule picked from a search.

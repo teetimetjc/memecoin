@@ -278,7 +278,7 @@ def cvd_call(cvd_ratio):
 #   - Losers stay logged. Their continued failure is evidence.
 CHALLENGERS = [
     {
-        "name": "C1", "frozen": "2026-09-14",
+        "name": "C1", "frozen": "2026-09-14 01:30 UTC",
         "why": "A tight book means the market is confident in its price, so a "
                "flow spike against it is more likely genuine overreaction than "
                "the book simply being uncertain.",
@@ -286,19 +286,40 @@ CHALLENGERS = [
                            and x["spread"] is not None and x["spread"] <= 1.0),
     },
     {
-        "name": "C2", "frozen": "2026-09-14",
-        "why": "Market orders are the impatient ones. A window where most "
-               "trades crossed the spread is urgency; one filled by resting "
-               "limits is drift, and drift should not revert.",
+        # RETIRED 2026-09-14, 0 fires in 231 live rows. The mechanism may be
+        # fine; the threshold was not. I set 0.5 assuming "most trades crossed
+        # the spread" described a common window. Measured over 1,330 rows the
+        # market-order fraction runs median 0.088, p75 0.134, and only 3 rows
+        # ever reached 0.5. It could not have fired. Kept here rather than
+        # deleted so the mistake stays on the record, and replaced by C4 rather
+        # than edited -- editing a live challenger restarts its clock while
+        # pretending it did not.
+        "name": "C2", "frozen": "2026-09-14 01:30 UTC", "retired": True,
+        "why": "Market orders are the impatient ones -- but the threshold was "
+               "set far above anything this market produces.",
         "test": lambda x: (x["cvd"] is not None and abs(x["cvd"]) >= CVD_THRESHOLD
                            and x["mkt_frac"] is not None and x["mkt_frac"] >= 0.5),
     },
     {
-        "name": "C3", "frozen": "2026-09-14",
+        "name": "C3", "frozen": "2026-09-14 01:30 UTC",
         "why": "If overreaction drives the edge, more extreme one-sidedness "
                "should revert harder. Tests whether the effect is monotone in "
                "CVD rather than an artifact of one threshold.",
         "test": lambda x: x["cvd"] is not None and abs(x["cvd"]) >= 0.50,
+    },
+    {
+        # C2's mechanism at a threshold this market actually reaches. 0.15 sits
+        # just above the measured p75 of 0.134, picked ONLY so the rule fires
+        # on roughly a fifth of rows -- often enough to test. No outcome was
+        # consulted in choosing it: I looked at how often each level occurs,
+        # never at whether those rows won. Picking the level that maximised hit
+        # rate is exactly how R1-R5 were built.
+        "name": "C4", "frozen": "2026-09-14 13:30 UTC",
+        "why": "Market orders are the impatient ones. A window with an unusual "
+               "share of them is urgency; one filled by resting limits is "
+               "drift, and drift should not revert.",
+        "test": lambda x: (x["cvd"] is not None and abs(x["cvd"]) >= CVD_THRESHOLD
+                           and x["mkt_frac"] is not None and x["mkt_frac"] >= 0.15),
     },
 ]
 
@@ -1765,21 +1786,32 @@ def build_report(rows, version):
     # luck, so the bar rises with the count. At 1.96 each, one of three clears
     # it about 7% of the time under a pure null -- which is how R1-R5 happened.
     import statistics
-    zcrit = statistics.NormalDist().inv_cdf(1 - 0.05 / (2 * max(1, len(CHALLENGERS))))
+    n_live = max(1, sum(1 for c in CHALLENGERS if not c.get("retired")))
+    zcrit = statistics.NormalDist().inv_cdf(1 - 0.05 / (2 * n_live))
 
-    R.append([f"CHALLENGERS vs champion ({len(CHALLENGERS)} live, "
+    R.append([f"CHALLENGERS vs champion ({n_live} live, "
               f"promotion needs |z| >= {zcrit:.2f})", "", ""])
     for ch in CHALLENGERS:
         nm = ch["name"]
+        if ch.get("retired"):
+            R.append([f"  {nm}", "RETIRED", ch["why"]])
+            continue
         # Fired and graded are different things, and conflating them hides a
         # real failure: a challenger whose call never gets written looks exactly
         # like one that is merely waiting on resolution. Report both.
-        fired = sum(1 for r in S if cell(r, f"{nm} Call") in ("UP", "DOWN"))
-        graded = [(k, r) for k, r in enumerate(S)
+        # Only rows logged after this challenger went live can count. A row
+        # from before it existed has blank challenger columns -- identical on
+        # the sheet to a row where it declined to fire. Counting those as
+        # "passed on" compares the challenger's few live hours against days of
+        # champion history, which is a comparison of time periods, not rules.
+        live = [(k, r) for k, r in enumerate(S)
+                if cell(r, "Timestamp") >= ch["frozen"]]
+        fired = sum(1 for _, r in live if cell(r, f"{nm} Call") in ("UP", "DOWN"))
+        graded = [(k, r) for k, r in live
                   if cell(r, f"{nm} Correct?") in ("Yes", "No")]
         if not graded:
             R.append([f"  {nm}", f"{fired} fired, 0 graded",
-                      f"frozen {ch['frozen']}"
+                      f"frozen {ch['frozen']}, {len(live)} live rows"
                       + ("" if fired else " -- nothing logged yet")])
             continue
         w = sum(1 for _, r in graded if cell(r, f"{nm} Correct?") == "Yes")
@@ -1795,7 +1827,7 @@ def build_report(rows, version):
             note += f"  EV ${pnl / len(ent):+.2f}/bet"
         # Fire rate sets the pace: a challenger that fires on a tenth of rows
         # needs ten times as long to reach a verdict as one that fires on all.
-        note += f"  ({fired} fired, {fired / len(S) * 100:.0f}% of rows)"
+        note += f"  ({fired} fired, {fired / len(live) * 100:.0f}% of live rows)"
         R.append([f"  {nm}", _pct(w, len(graded)), note])
 
         # Every challenger here is a FILTER: same side as the champion, on a
@@ -1812,7 +1844,7 @@ def build_report(rows, version):
             e = num(r, "K Up%") if side == "UP" else num(r, "K Down%")
             if e is not None:
                 kept.append(_kalshi_pnl(e, cell(r, f"{nm} Correct?") == "Yes"))
-        for k, r in enumerate(S):
+        for k, r in live:
             if k in champ and cell(r, f"{nm} Call") not in ("UP", "DOWN"):
                 side = cell(r, "CVD Call")
                 e = num(r, "K Up%") if side == "UP" else num(r, "K Down%")
