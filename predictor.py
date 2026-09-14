@@ -254,6 +254,78 @@ def cvd_call(cvd_ratio):
     return ""
 
 
+# --- CHALLENGERS -----------------------------------------------------------
+#
+# Champion/challenger. The CVD rule above is the champion: frozen, logged, never
+# edited. Challengers are variations logged in parallel on the SAME rows, so
+# each can be compared against the champion under identical market conditions.
+# That pairing is the point -- a good hour helps both, so the difference between
+# them isolates the improvement and needs far less data than judging each
+# against zero separately.
+#
+# Every challenger here comes from a mechanism, not from a search. That
+# distinction is the whole lesson of R1-R5: those five were the survivors of
+# 1,567 screened combinations, claimed 66-73%, and delivered 44/97 = 45.4%.
+# A rule with a reason behind it has at least a chance of being real.
+#
+# RULES OF THE LOOP
+#   - Freeze the definition and the date before any data exists for it.
+#   - Never edit a live challenger. Editing resets its clock to zero.
+#   - Promotion requires beating the CHAMPION, not beating zero.
+#   - Count the challengers. Three tested at once means a higher bar than one;
+#     test ten and one wins by luck.
+#   - Losers stay logged. Their continued failure is evidence.
+CHALLENGERS = [
+    {
+        "name": "C1", "frozen": "2026-09-14",
+        "why": "A tight book means the market is confident in its price, so a "
+               "flow spike against it is more likely genuine overreaction than "
+               "the book simply being uncertain.",
+        "test": lambda x: (x["cvd"] is not None and abs(x["cvd"]) >= CVD_THRESHOLD
+                           and x["spread"] is not None and x["spread"] <= 1.0),
+    },
+    {
+        "name": "C2", "frozen": "2026-09-14",
+        "why": "Market orders are the impatient ones. A window where most "
+               "trades crossed the spread is urgency; one filled by resting "
+               "limits is drift, and drift should not revert.",
+        "test": lambda x: (x["cvd"] is not None and abs(x["cvd"]) >= CVD_THRESHOLD
+                           and x["mkt_frac"] is not None and x["mkt_frac"] >= 0.5),
+    },
+    {
+        "name": "C3", "frozen": "2026-09-14",
+        "why": "If overreaction drives the edge, more extreme one-sidedness "
+               "should revert harder. Tests whether the effect is monotone in "
+               "CVD rather than an artifact of one threshold.",
+        "test": lambda x: x["cvd"] is not None and abs(x["cvd"]) >= 0.50,
+    },
+]
+
+
+def challenger_calls(flow, kalshi):
+    """{name: UP/DOWN/""} for every challenger. Blank where it does not fire."""
+    ctx = {
+        "cvd": None if not flow else flow.get("cvd_ratio"),
+        "mkt_frac": None if not flow else flow.get("mkt_frac"),
+        "trades": None if not flow else flow.get("trades"),
+        "spread": None,
+    }
+    if kalshi:
+        try:
+            ctx["spread"] = float(kalshi.get("spread_cents"))
+        except (TypeError, ValueError):
+            ctx["spread"] = None
+    out = {}
+    for ch in CHALLENGERS:
+        try:
+            fires = ch["test"](ctx)
+        except Exception:
+            fires = False
+        # Side always follows the champion's logic: fade the aggressive flow.
+        out[ch["name"]] = cvd_call(ctx["cvd"]) if fires else ""
+    return out
+
+
 def _bin(value, edges):
     for i, e in enumerate(edges):
         if value < e:
@@ -350,8 +422,13 @@ V6_HEADERS = [
     "CVD Call", "CVD Correct?",
 ]
 
+# Two columns per challenger, appended so existing column positions never move.
+CHALLENGER_HEADERS = [h for ch in CHALLENGERS
+                      for h in (f"{ch['name']} Call", f"{ch['name']} Correct?")]
+
 ALL_HEADERS = (PRED_HEADERS + KALSHI_HEADERS + LEGACY_HEADERS
-               + EMA_HEADERS + V3_HEADERS + RULE_HEADERS + V6_HEADERS)
+               + EMA_HEADERS + V3_HEADERS + RULE_HEADERS + V6_HEADERS
+               + CHALLENGER_HEADERS)
 
 # Kalshi 15-min up/down series tickers
 KALSHI_BASE   = "https://api.elections.kalshi.com/trade-api/v2"
@@ -1198,6 +1275,11 @@ def run_predictions():
                 "",
             ]
 
+            ch_calls = challenger_calls(flow, kalshi)
+            ch_row = []
+            for ch in CHALLENGERS:
+                ch_row += [ch_calls[ch["name"]], ""]
+
             calls = evaluate_rules(sig, symbol, boundary)
             rule_row = []
             for r in PREREGISTERED_RULES:
@@ -1210,7 +1292,7 @@ def run_predictions():
                 sig["composite"], eval_str, "", "", "",
             ] + kalshi_row + [""] * len(LEGACY_HEADERS) + [
                 sig["ema_only_call"], ema_entry, "", MODEL_VERSION,
-            ] + v3_row + rule_row + v6_row
+            ] + v3_row + rule_row + v6_row + ch_row
 
             # table_range pins the append to the table anchored at A1. Without
             # it gspread lets the API infer the table, and once any cell exists
@@ -1344,6 +1426,14 @@ def resolve_outcomes():
             updates.append(gspread.Cell(i, res_col + 1, actual_price))
             updates.append(gspread.Cell(i, chg_col + 1, change_pct))
             updates.append(gspread.Cell(i, cor_col + 1, correct))
+
+            for ch in CHALLENGERS:
+                ci = ALL_HEADERS.index(f"{ch['name']} Call")
+                oi = ALL_HEADERS.index(f"{ch['name']} Correct?")
+                call = row[ci] if len(row) > ci else ""
+                if call in ("UP", "DOWN"):
+                    ok = (call == "UP" and change_pct > 0) or (call == "DOWN" and change_pct < 0)
+                    updates.append(gspread.Cell(i, oi + 1, "Yes" if ok else "No"))
 
             cvd_i = ALL_HEADERS.index("CVD Call")
             cvd_o = ALL_HEADERS.index("CVD Correct?")
@@ -1659,6 +1749,60 @@ def build_report(rows, version):
                       f"P&L ${pnl:+.2f}  EV ${pnl / len(ent):+.2f}/bet"])
             verdict, note = _ev_verdict([_kalshi_pnl(e, won) for e, won in ent])
             R.append(["  VERDICT", verdict, note])
+    R.append(["", "", ""])
+
+    # ---- challengers -------------------------------------------------------
+    # Judged against the champion on rows where BOTH fired, not against zero.
+    # McNemar on the disagreements: market regime cancels, so the comparison
+    # needs far less data than two independent tests would.
+    champ = {}
+    for k, r in enumerate(S):
+        if cell(r, "CVD Correct?") in ("Yes", "No"):
+            champ[k] = cell(r, "CVD Correct?") == "Yes"
+
+    # Bonferroni: three challengers running at once get three chances to win by
+    # luck, so the bar rises with the count. At 1.96 each, one of three clears
+    # it about 7% of the time under a pure null -- which is how R1-R5 happened.
+    import statistics
+    zcrit = statistics.NormalDist().inv_cdf(1 - 0.05 / (2 * max(1, len(CHALLENGERS))))
+
+    R.append([f"CHALLENGERS vs champion ({len(CHALLENGERS)} live, "
+              f"promotion needs |z| >= {zcrit:.2f})", "", ""])
+    for ch in CHALLENGERS:
+        nm = ch["name"]
+        graded = [(k, r) for k, r in enumerate(S)
+                  if cell(r, f"{nm} Correct?") in ("Yes", "No")]
+        if not graded:
+            R.append([f"  {nm}", "0 fires", f"frozen {ch['frozen']}"])
+            continue
+        w = sum(1 for _, r in graded if cell(r, f"{nm} Correct?") == "Yes")
+        ent = []
+        for _, r in graded:
+            side = cell(r, f"{nm} Call")
+            e = num(r, "K Up%") if side == "UP" else num(r, "K Down%")
+            if e is not None:
+                ent.append((e, cell(r, f"{nm} Correct?") == "Yes"))
+        pnl = sum(_kalshi_pnl(e, won) for e, won in ent) if ent else 0.0
+        R.append([f"  {nm}", _pct(w, len(graded)),
+                  f"P&L ${pnl:+.2f}" + (f"  EV ${pnl / len(ent):+.2f}/bet" if ent else "")])
+
+        # paired: rows where both this challenger and the champion fired
+        both = [(k, r) for k, r in graded if k in champ]
+        a = sum(1 for k, r in both
+                if (cell(r, f"{nm} Correct?") == "Yes") and not champ[k])
+        b = sum(1 for k, r in both
+                if champ[k] and (cell(r, f"{nm} Correct?") == "No"))
+        if a + b:
+            z = (a - b) / ((a + b) ** 0.5)
+            if abs(z) < zcrit:
+                call = "no better than champion"
+            else:
+                call = "BEATS champion" if z > 0 else "worse than champion"
+            R.append(["", f"paired on {len(both)}",
+                       f"{nm} right/champ wrong {a}, reverse {b}, "
+                       f"z={z:+.2f} vs {zcrit:.2f} -- {call}"])
+        else:
+            R.append(["", f"paired on {len(both)}", "no disagreements yet"])
     R.append(["", "", ""])
 
     # ---- drill-down --------------------------------------------------------

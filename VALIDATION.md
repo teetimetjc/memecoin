@@ -218,3 +218,57 @@ the same test that killed the composite has been run on them:
 If the order flow term lands at z~0 like every previous input, that is a clean
 answer and this line of attack is finished. Nothing gets a strategy built on it
 before that test runs.
+
+---
+
+## Champion / challenger (added 2026-09-14)
+
+v6's CVD rule is the **champion**: frozen, logged, never edited. Improving on it
+is not a matter of editing it -- an edited rule has no history, and its forward
+test restarts at zero fires.
+
+Instead, **challengers** are logged in parallel on the same rows. C1, C2 and C3
+are frozen as of 2026-09-14:
+
+| | fires when | mechanism |
+|---|---|---|
+| **C1** | CVD rule fires **and** Kalshi spread <= 1.0c | a tight book means the market is confident in its price, so flow against it is more likely genuine overreaction than book uncertainty |
+| **C2** | CVD rule fires **and** market-order fraction >= 0.5 | market orders are the impatient ones; a window filled by resting limits is drift, and drift should not revert |
+| **C3** | \|CVD\| >= 0.50 | if overreaction drives the edge, more extreme one-sidedness should revert harder -- tests whether the effect is monotone rather than an artifact of one threshold |
+
+Every one comes from a mechanism, not from a search. That is the whole lesson of
+R1-R5: those five were the survivors of 1,567 screened combinations, claimed
+66-73%, and delivered 44/97 = 45.4%.
+
+### Why the same tab
+
+Champion and challenger fire on the **same row**, under the same market
+conditions. A good hour helps both, so the difference between them isolates the
+improvement. Split across tabs and that pairing is lost, and each rule is back
+to being judged against zero -- which takes roughly three times the data.
+
+### How promotion is decided
+
+McNemar on the disagreements: count the rows where the challenger was right and
+the champion wrong (*a*), and the reverse (*b*). Rows where they agree carry no
+information about which is better and are discarded.
+
+    z = (a - b) / sqrt(a + b)
+
+Promotion requires |z| >= the **Bonferroni** critical value for the number of
+live challengers -- 2.39 at three, not 1.96. Three challengers get three chances
+to win by luck; at 1.96 each, one of three clears under a pure null about 7% of
+the time. Verified by simulation: 300 null runs of 400 paired rows produce 1
+spurious "BEATS champion" (0.3%) with the correction, against ~7% without.
+
+That bar is deliberately expensive. In the same simulation a challenger genuinely
+running 70% against a 54% champion over 400 paired rows reached z=+2.09 and was
+**not** promoted. Waiting is the cost of not repeating R1-R5.
+
+### Rules of the loop
+
+- Freeze the definition and the date before any data exists for it.
+- Never edit a live challenger. Editing resets its clock to zero.
+- Promotion requires beating the **champion**, not beating zero.
+- Count the challengers. Adding a fourth raises the bar for all of them.
+- Losers stay logged. Their continued failure is evidence.
