@@ -249,11 +249,26 @@ to being judged against zero -- which takes roughly three times the data.
 
 ### How promotion is decided
 
-McNemar on the disagreements: count the rows where the challenger was right and
-the champion wrong (*a*), and the reverse (*b*). Rows where they agree carry no
-information about which is better and are discarded.
+**Corrected 2026-09-14.** The first version used McNemar on the disagreements.
+That was wrong for these challengers and could never have returned an answer:
+C1, C2 and C3 are *filters* -- same side as the champion, on a subset of its
+rows -- so wherever both fire they agree by construction. McNemar counts
+disagreements, and there are none. It would have printed "no disagreements yet"
+forever. 224 logged rows confirmed it: zero side disagreements, zero outcome
+disagreements.
 
-    z = (a - b) / sqrt(a + b)
+The answerable question for a filter is selection, not disagreement: of the rows
+the champion bet, did the filter keep the better ones? So the rows it kept are
+compared against the rows it passed on, by EV per bet, with a two-sample
+(Welch) z:
+
+    z = (EV_kept - EV_passed) / sqrt(var_kept/n_kept + var_passed/n_passed)
+
+Both sides need at least 30 bets before it reports. Note this is **not** paired,
+so market regime no longer cancels and it needs more data than a paired test
+would -- that advantage only exists for challengers that can actually disagree
+with the champion, such as one that takes a different side. A future challenger
+of that kind should be scored with McNemar instead.
 
 Promotion requires |z| >= the **Bonferroni** critical value for the number of
 live challengers -- 2.39 at three, not 1.96. Three challengers get three chances

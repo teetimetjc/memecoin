@@ -1798,23 +1798,45 @@ def build_report(rows, version):
         note += f"  ({fired} fired, {fired / len(S) * 100:.0f}% of rows)"
         R.append([f"  {nm}", _pct(w, len(graded)), note])
 
-        # paired: rows where both this challenger and the champion fired
-        both = [(k, r) for k, r in graded if k in champ]
-        a = sum(1 for k, r in both
-                if (cell(r, f"{nm} Correct?") == "Yes") and not champ[k])
-        b = sum(1 for k, r in both
-                if champ[k] and (cell(r, f"{nm} Correct?") == "No"))
-        if a + b:
-            z = (a - b) / ((a + b) ** 0.5)
+        # Every challenger here is a FILTER: same side as the champion, on a
+        # subset of the champion's rows. So on any row where both fire they
+        # agree by construction, and McNemar -- which counts disagreements --
+        # has nothing to count. It would print "no disagreements yet" forever.
+        #
+        # The answerable question for a filter is selection, not disagreement:
+        # of the rows the champion bet, did the filter pick the better ones?
+        # Compare the rows it kept against the rows it threw away.
+        kept, tossed = [], []
+        for k, r in graded:
+            side = cell(r, f"{nm} Call")
+            e = num(r, "K Up%") if side == "UP" else num(r, "K Down%")
+            if e is not None:
+                kept.append(_kalshi_pnl(e, cell(r, f"{nm} Correct?") == "Yes"))
+        for k, r in enumerate(S):
+            if k in champ and cell(r, f"{nm} Call") not in ("UP", "DOWN"):
+                side = cell(r, "CVD Call")
+                e = num(r, "K Up%") if side == "UP" else num(r, "K Down%")
+                if e is not None:
+                    tossed.append(_kalshi_pnl(e, champ[k]))
+
+        if len(kept) < 30 or len(tossed) < 30:
+            R.append(["", f"kept {len(kept)} / passed on {len(tossed)}",
+                      "too early to compare -- need 30 of each"])
+        else:
+            mk = sum(kept) / len(kept)
+            mt = sum(tossed) / len(tossed)
+            vk = sum((x - mk) ** 2 for x in kept) / (len(kept) - 1)
+            vt = sum((x - mt) ** 2 for x in tossed) / (len(tossed) - 1)
+            se = (vk / len(kept) + vt / len(tossed)) ** 0.5
+            z = (mk - mt) / se if se else 0.0
             if abs(z) < zcrit:
                 call = "no better than champion"
+            elif z > 0:
+                call = "BEATS champion"
             else:
-                call = "BEATS champion" if z > 0 else "worse than champion"
-            R.append(["", f"paired on {len(both)}",
-                       f"{nm} right/champ wrong {a}, reverse {b}, "
-                       f"z={z:+.2f} vs {zcrit:.2f} -- {call}"])
-        else:
-            R.append(["", f"paired on {len(both)}", "no disagreements yet"])
+                call = "worse than champion"
+            R.append(["", f"kept {len(kept)} / passed on {len(tossed)}",
+                      f"EV ${mk:+.2f} vs ${mt:+.2f}/bet, z={z:+.2f} vs {zcrit:.2f} -- {call}"])
     R.append(["", "", ""])
 
     # ---- drill-down --------------------------------------------------------
