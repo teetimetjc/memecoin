@@ -327,6 +327,34 @@ CHALLENGERS = [
         "test": lambda x: (x["cvd"] is not None and abs(x["cvd"]) >= CVD_THRESHOLD
                            and x["mkt_frac"] is not None and x["mkt_frac"] >= 0.15),
     },
+    {
+        # PROVENANCE WARNING -- read before trusting anything this one reports.
+        #
+        # C1-C4 came from a mechanism first and were frozen before their data
+        # existed. C5 did not. It came from slicing 565 settled bets by entry
+        # price AFTER seeing the result, and keeping the slice that paid:
+        #
+        #     <40c   92 bets  44.6%  breakeven 32.4%  $+347.26   114% of P&L
+        #     40-50c 180      46.7%            45.2%  $  +5.43
+        #     50-60c 195      61.0%            54.0%  $+178.73
+        #     >=60c   98      52.0%            65.8%  $-226.05
+        #
+        # Strip the longshots and the other 473 bets run at -$0.09/bet. The
+        # split tests z=+2.13 -- past 1.96, short of the 2.50 that four live
+        # challengers require, and found by looking at four buckets, which is
+        # four chances to find one that looks good.
+        #
+        # That is the exact shape of R1-R5: retrospective slices that claimed
+        # 66-73% and delivered 45.4%. So this is logged, not believed. The
+        # mechanism it would need -- that the market misprices tail moves the
+        # order flow anticipates -- is plausible but was written down AFTER the
+        # number, which is backwards and worth remembering when reading it.
+        "name": "C5", "frozen": "2026-09-14 22:45 UTC",
+        "why": "Entry under 40c. Found by slicing settled results, not from a "
+               "mechanism -- treat its forward number as the only real evidence.",
+        "test": lambda x: (x["cvd"] is not None and abs(x["cvd"]) >= CVD_THRESHOLD
+                           and x["entry"] is not None and x["entry"] < 40.0),
+    },
 ]
 
 
@@ -338,11 +366,22 @@ def challenger_calls(flow, kalshi):
         "trades": None if not flow else flow.get("trades"),
         "spread": None,
     }
+    ctx["entry"] = None
     if kalshi:
         try:
             ctx["spread"] = float(kalshi.get("spread_cents"))
         except (TypeError, ValueError):
             ctx["spread"] = None
+        # Entry is the price of the side the champion would buy, so a rule can
+        # condition on what the bet actually costs.
+        side = cvd_call(ctx["cvd"])
+        try:
+            if side == "UP":
+                ctx["entry"] = float(kalshi.get("up_cents"))
+            elif side == "DOWN":
+                ctx["entry"] = float(kalshi.get("down_cents"))
+        except (TypeError, ValueError):
+            ctx["entry"] = None
     out = {}
     for ch in CHALLENGERS:
         try:

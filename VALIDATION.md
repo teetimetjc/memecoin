@@ -312,3 +312,28 @@ setting it. Retired challengers no longer consume Bonferroni alpha.
 
 The lesson is the same one R1-R5 taught, in a new place: a threshold picked from
 an assumption about the data is as untested as a rule picked from a search.
+
+### C5, added 2026-09-14 22:45 -- and why it is different
+
+C1-C4 were frozen from a mechanism before their data existed. **C5 was not.**
+It came from slicing 565 settled bets by entry price after seeing the result:
+
+| entry | bets | hit % | breakeven | net | share of P&L |
+|---|---|---|---|---|---|
+| <40c | 92 | 44.6% | 32.4% | **+$347.26** | **114%** |
+| 40-50c | 180 | 46.7% | 45.2% | +$5.43 | 2% |
+| 50-60c | 195 | 61.0% | 54.0% | +$178.73 | 59% |
+| >=60c | 98 | 52.0% | 65.8% | -$226.05 | -74% |
+
+Remove the longshots and the other 473 bets run at -$0.09/bet. The split tests
+z=+2.13 -- past 1.96, short of the 2.50 that four live challengers require, and
+found by examining four buckets, which is four chances at a good-looking one.
+
+This is the shape of R1-R5: retrospective slices claiming 66-73% that delivered
+45.4%. C5 is therefore **logged, not believed**. A mechanism can be told for it
+-- the market misprices tail moves that order flow anticipates -- but it was
+written after the number, which is backwards.
+
+Adding a fourth live challenger raises the Bonferroni bar for all of them, from
+z >= 2.39 to z >= 2.50. That cost is real and is the reason not to add
+challengers freely: each one makes every other one harder to promote.
