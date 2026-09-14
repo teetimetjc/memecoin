@@ -240,6 +240,12 @@ PREREGISTERED_RULES = [
 # was deployed count. Retuning either number mid-collection would turn the
 # forward test back into a search, exactly as it did for R1-R5.
 CVD_THRESHOLD = 0.30
+# The moment the rule went live and started writing calls. Rows before this
+# have order flow logged but no call, because there was no rule yet -- and they
+# are the rows that CHOSE the threshold and the direction, so scoring them
+# would be grading the rule on its own homework. In-sample they run 57.3%;
+# forward they run 52.2%. Same number, two very different claims.
+CVD_FROZEN = "2026-09-11 14:45 UTC"
 
 
 def cvd_call(cvd_ratio):
@@ -1751,7 +1757,8 @@ def build_report(rows, version):
     # ---- CVD rule ----------------------------------------------------------
     fired  = [r for r in S if cell(r, "CVD Call") in ("UP", "DOWN")]
     graded = [r for r in fired if cell(r, "CVD Correct?") in ("Yes", "No")]
-    R.append([f"CVD RULE (|CVD| >= {CVD_THRESHOLD}, fades the flow)", "", ""])
+    R.append([f"CVD RULE (|CVD| >= {CVD_THRESHOLD}, fades the flow)",
+              f"live since {CVD_FROZEN}", ""])
     if not graded:
         R.append(["  status", f"{len(fired)} fired, 0 graded", "claimed 56.8%"])
     else:
@@ -1771,6 +1778,23 @@ def build_report(rows, version):
                       f"P&L ${pnl:+.2f}  EV ${pnl / len(ent):+.2f}/bet"])
             verdict, note = _ev_verdict([_kalshi_pnl(e, won) for e, won in ent])
             R.append(["  VERDICT", verdict, note])
+    R.append(["", "", ""])
+
+    # ---- what was live when ------------------------------------------------
+    # Model Version tracks the COLUMNS -- v6 means order-flow columns exist. It
+    # does not track the rules, which were added at different times on top of
+    # the same schema. Bumping the version for each rule would restart the
+    # champion's forward test, so each rule carries its own freeze time instead
+    # and this timeline makes them visible rather than buried in code comments.
+    R.append(["TIMELINE -- when each rule started writing calls", "", ""])
+    first_v6 = min((cell(r, "Timestamp") for r in S if cell(r, "Timestamp")),
+                   default="")
+    R.append([f"  {MODEL_VERSION} columns (order flow logged)", first_v6,
+              f"{len(S)} rows -- no rule yet, collection only"])
+    R.append(["  CVD rule (champion)", CVD_FROZEN, "signals start here"])
+    for ch in CHALLENGERS:
+        R.append([f"  {ch['name']}" + (" (retired)" if ch.get("retired") else ""),
+                  ch["frozen"], ""])
     R.append(["", "", ""])
 
     # ---- challengers -------------------------------------------------------
