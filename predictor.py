@@ -109,6 +109,7 @@ MODEL_VERSION       = "v6"
 SPREADSHEET_ID      = "1PjtaTxSW1AKZ4rAUeIoHSfrV8Imh6WV_XM9uErXunQc"
 PRED_SHEET          = "Predictions"
 REPORT_SHEET        = "Report"
+CHALLENGER_SHEET    = "Challengers"
 SYMBOLS             = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
 KRAKEN_PAIRS        = {"BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
                        "XRPUSDT": "XRPUSD", "DOGEUSDT": "XDGUSD"}
@@ -1851,6 +1852,62 @@ def _write_report_tab(client, rows):
     print(f"  Report tab updated ({len(padded)} rows).")
 
 
+def _write_challengers_tab(client, rows, version):
+    """A narrow, readable view of champion vs challengers, one row per fire.
+
+    Derived, not logged. It is rebuilt from Predictions on every report refresh
+    and nothing writes to it during collection. That distinction matters: a
+    second write path during collection could succeed on one tab and fail on
+    the other, leaving a champion row with no challenger row beside it. Those
+    orphans would be invisible and would quietly bias the paired comparison.
+    Deriving the view instead means it cannot disagree with the source.
+    """
+    idx  = {h: i for i, h in enumerate(ALL_HEADERS)}
+    def cell(r, name):
+        i = idx.get(name, -1)
+        return r[i] if 0 <= i < len(r) else ""
+
+    header = ["Time", "Coin", "Entry c", "v6 Call", "v6 OK?"]
+    for ch in CHALLENGERS:
+        header += [f"{ch['name']} Call", f"{ch['name']} OK?"]
+    out = [header]
+
+    for r in rows[1:]:
+        if cell(r, "Model Version") != version:
+            continue
+        calls = [cell(r, "CVD Call")] + [cell(r, f"{c['name']} Call")
+                                         for c in CHALLENGERS]
+        if not any(c in ("UP", "DOWN") for c in calls):
+            continue                      # nothing fired -- not worth a row
+        side = cell(r, "CVD Call")
+        # Only show an entry price when the champion actually bet. Defaulting to
+        # the DOWN quote on a row it sat out would read as a bet it never placed.
+        entry = ("" if side not in ("UP", "DOWN")
+                 else cell(r, "K Up%") if side == "UP" else cell(r, "K Down%"))
+        line = [cell(r, "Timestamp"), cell(r, "Symbol"), entry,
+                side, cell(r, "CVD Correct?")]
+        for ch in CHALLENGERS:
+            line += [cell(r, f"{ch['name']} Call"),
+                     cell(r, f"{ch['name']} Correct?")]
+        out.append(line)
+
+    body = out[1:]
+    body.reverse()                        # newest first, no scrolling on a phone
+    out = [out[0]] + body
+
+    sh = client.open_by_key(SPREADSHEET_ID)
+    try:
+        ws = sh.worksheet(CHALLENGER_SHEET)
+        ws.clear()
+        if ws.col_count != len(header):
+            ws.resize(rows=max(len(out) + 50, 100), cols=len(header))
+    except Exception:
+        ws = sh.add_worksheet(title=CHALLENGER_SHEET,
+                              rows=max(len(out) + 50, 100), cols=len(header))
+    ws.update([[str(c) for c in r] for r in out], "A1")
+    print(f"  {CHALLENGER_SHEET} tab updated ({len(out) - 1} fires).")
+
+
 def report(version=None, to_sheet=False):
     """Score the logged predictions for one model version against fixed thresholds."""
     version = version or MODEL_VERSION
@@ -1871,6 +1928,7 @@ def report(version=None, to_sheet=False):
 
     if to_sheet:
         _write_report_tab(client, R)
+        _write_challengers_tab(client, rows, version)
 
 
 # --- ENTRYPOINT ---
