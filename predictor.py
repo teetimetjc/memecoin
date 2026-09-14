@@ -1771,10 +1771,16 @@ def build_report(rows, version):
               f"promotion needs |z| >= {zcrit:.2f})", "", ""])
     for ch in CHALLENGERS:
         nm = ch["name"]
+        # Fired and graded are different things, and conflating them hides a
+        # real failure: a challenger whose call never gets written looks exactly
+        # like one that is merely waiting on resolution. Report both.
+        fired = sum(1 for r in S if cell(r, f"{nm} Call") in ("UP", "DOWN"))
         graded = [(k, r) for k, r in enumerate(S)
                   if cell(r, f"{nm} Correct?") in ("Yes", "No")]
         if not graded:
-            R.append([f"  {nm}", "0 fires", f"frozen {ch['frozen']}"])
+            R.append([f"  {nm}", f"{fired} fired, 0 graded",
+                      f"frozen {ch['frozen']}"
+                      + ("" if fired else " -- nothing logged yet")])
             continue
         w = sum(1 for _, r in graded if cell(r, f"{nm} Correct?") == "Yes")
         ent = []
@@ -1784,8 +1790,13 @@ def build_report(rows, version):
             if e is not None:
                 ent.append((e, cell(r, f"{nm} Correct?") == "Yes"))
         pnl = sum(_kalshi_pnl(e, won) for e, won in ent) if ent else 0.0
-        R.append([f"  {nm}", _pct(w, len(graded)),
-                  f"P&L ${pnl:+.2f}" + (f"  EV ${pnl / len(ent):+.2f}/bet" if ent else "")])
+        note = f"P&L ${pnl:+.2f}"
+        if ent:
+            note += f"  EV ${pnl / len(ent):+.2f}/bet"
+        # Fire rate sets the pace: a challenger that fires on a tenth of rows
+        # needs ten times as long to reach a verdict as one that fires on all.
+        note += f"  ({fired} fired, {fired / len(S) * 100:.0f}% of rows)"
+        R.append([f"  {nm}", _pct(w, len(graded)), note])
 
         # paired: rows where both this challenger and the champion fired
         both = [(k, r) for k, r in graded if k in champ]
