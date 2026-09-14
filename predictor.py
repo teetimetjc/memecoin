@@ -1427,6 +1427,43 @@ def _kalshi_pnl(entry_cents, won, stake=10.0):
     return (contracts - stake - fee) if won else (-stake - fee)
 
 
+def _ev_verdict(pnls, n_needed=None):
+    """Classify a run of per-bet P&L.
+
+    A positive total is not evidence of an edge: 381 fair coin flips land at
+    53.8% heads often enough that the point estimate alone proves nothing. The
+    verdict therefore needs the 95% interval on EV per bet to clear zero, not
+    just the mean. Without that a promising-but-unproven result reads as
+    confirmed, which is the label someone would act on.
+
+    Returns (verdict, note).
+    """
+    n = len(pnls)
+    if n == 0:
+        return "NO DATA", ""
+    need = n_needed or MIN_SAMPLE
+    mean = sum(pnls) / n
+    if n < 2:
+        return "TOO EARLY", f"{n}/{need} fires"
+    var = sum((x - mean) ** 2 for x in pnls) / (n - 1)
+    sem = (var / n) ** 0.5
+    lo, hi = mean - 1.96 * sem, mean + 1.96 * sem
+    ci = f"EV ${mean:+.2f}/bet, 95% CI ${lo:+.2f} to ${hi:+.2f}"
+
+    if n < need:
+        return "TOO EARLY", f"{n}/{need} fires -- {ci}"
+    if lo > 0:
+        return "HOLDING", f"edge confirmed -- {ci}"
+    if hi < 0:
+        return "FAILED FORWARD", f"losing -- {ci}"
+    if mean > 0:
+        # The honest middle: pointing the right way, not yet separable from luck.
+        extra = int((1.96 * (var ** 0.5) / mean) ** 2) - n if mean > 0 else 0
+        return "PROMISING", (f"positive but still consistent with luck -- {ci}"
+                             + (f"; ~{extra:,} more fires to settle" if extra > 0 else ""))
+    return "NO EDGE", f"not distinguishable from zero -- {ci}"
+
+
 def _pct(a, b):
     return f"{a}/{b} ({a / b * 100:.1f}%)" if b else "--"
 
@@ -1459,12 +1496,8 @@ def _score_rows(name, rows, call_of, entry_of):
     out.append(["  bar to beat", f"{avg + BREAKEVEN_MARGIN:.1f}%",
                 f"entry-implied {avg:.1f}% + {BREAKEVEN_MARGIN:.1f}pp"])
 
-    if len(priced) < MIN_SAMPLE:
-        out.append(["  VERDICT", "TOO EARLY", f"{len(priced)}/{MIN_SAMPLE} priced rows"])
-    elif pacc >= avg + BREAKEVEN_MARGIN and pnl > 0:
-        out.append(["  VERDICT", "PASS", "clears entry-implied breakeven"])
-    else:
-        out.append(["  VERDICT", "FAIL", "does not clear breakeven at prices paid"])
+    verdict, note = _ev_verdict([_kalshi_pnl(e, call_of(r) == "Yes") for r, e in priced])
+    out.append(["  VERDICT", verdict, note])
     return out
 
 
@@ -1624,12 +1657,8 @@ def build_report(rows, version):
             pnl = sum(_kalshi_pnl(e, won) for e, won in ent)
             R.append(["  economics", f"entry {avg:.1f}c",
                       f"P&L ${pnl:+.2f}  EV ${pnl / len(ent):+.2f}/bet"])
-            if len(ent) < MIN_SAMPLE:
-                R.append(["  VERDICT", "TOO EARLY", f"{len(ent)}/{MIN_SAMPLE} fires"])
-            elif pnl > 0 and w / len(graded) * 100 >= avg + BREAKEVEN_MARGIN:
-                R.append(["  VERDICT", "HOLDING", "clears breakeven at prices paid"])
-            else:
-                R.append(["  VERDICT", "FAILED FORWARD", "did not survive"])
+            verdict, note = _ev_verdict([_kalshi_pnl(e, won) for e, won in ent])
+            R.append(["  VERDICT", verdict, note])
     R.append(["", "", ""])
 
     # ---- drill-down --------------------------------------------------------
