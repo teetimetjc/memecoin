@@ -337,3 +337,29 @@ written after the number, which is backwards.
 Adding a fourth live challenger raises the Bonferroni bar for all of them, from
 z >= 2.39 to z >= 2.50. That cost is real and is the reason not to add
 challengers freely: each one makes every other one harder to promote.
+
+### Clustering, 2026-09-15 -- every interval in this report was too narrow
+
+Five coins bet in the same 15-minute window are not five independent bets.
+Crypto moves together, the rule reads the same market-wide flow on each tape,
+and 31 of 85 multi-coin windows put every coin on the SAME side. Over 771 bets,
+windows where all five lost happened 10 times against 2.1 expected under
+independence; implied average correlation ~0.58. Every big losing streak --
+12 in a row, then 10 -- spans all five coins at once.
+
+Treating bets as independent understated the spread by about 2x:
+
+| | bet-level | clustered by window |
+|---|---|---|
+| champion EV interval | -$0.15 to +$1.46 | **-$1.05 to +$2.36** |
+| effective sample | 771 bets | ~171 |
+| more data needed | ~370 fires (~2 days) | ~4,450 bets (~3 weeks) |
+
+**This changed a promotion.** C5 printed `z=+3.15 vs 2.50 -- BEATS champion` on
+2026-09-15. Clustered, it is z=+2.17 and does not clear the bar. A promotion is
+the one output here someone would act on, so it now gets the conservative
+interval, as does every verdict.
+
+Diversification across the five coins is therefore much weaker than the bet
+count suggests: spreading the same stake over five coins cuts per-window risk
+only 1.22x, against the 2.24x independence would give.

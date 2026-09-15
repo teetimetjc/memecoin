@@ -1584,6 +1584,38 @@ def _kalshi_pnl(entry_cents, won, stake=10.0):
     return (contracts - stake - fee) if won else (-stake - fee)
 
 
+def _cluster_stats(pairs):
+    """Mean per-bet P&L and its standard error, clustering by 15-min window.
+
+    Five coins bet in the same window are not five independent bets. Crypto
+    moves together, the rule reads the same market-wide flow on each tape, and
+    31 of 85 multi-coin windows put every coin on the SAME side -- so a bad
+    window loses five at once. Measured over 771 bets, windows where all five
+    lost occurred 10 times against 2.1 expected under independence, and the
+    implied average correlation is about 0.58.
+
+    Treating each bet as independent therefore understates the spread by
+    roughly 2x: the champion's interval goes from -$0.15..+$1.46 (bet-level)
+    to -$1.05..+$2.36 (clustered), and a challenger comparison that looked
+    like z=+3.15 is really z=+2.17. That is the difference between promoting
+    a rule and not, so every interval in this report clusters.
+
+    `pairs` is [(window_key, pnl), ...]. Returns (mean, sem, n_windows, n_bets).
+    """
+    if not pairs:
+        return 0.0, 0.0, 0, 0
+    groups = {}
+    for key, v in pairs:
+        groups.setdefault(key, []).append(v)
+    cl = [(sum(v), len(v)) for v in groups.values()]
+    n_bets = sum(c[1] for c in cl)
+    mean = sum(c[0] for c in cl) / n_bets
+    if len(cl) < 2:
+        return mean, 0.0, len(cl), n_bets
+    var = sum(c[1] * ((c[0] / c[1]) - mean) ** 2 for c in cl) / (len(cl) - 1)
+    return mean, (var / len(cl)) ** 0.5, len(cl), n_bets
+
+
 def _ev_verdict(pnls, n_needed=None):
     """Classify a run of per-bet P&L.
 
@@ -1595,17 +1627,15 @@ def _ev_verdict(pnls, n_needed=None):
 
     Returns (verdict, note).
     """
-    n = len(pnls)
+    mean, sem, n_win, n = _cluster_stats(pnls)
     if n == 0:
         return "NO DATA", ""
     need = n_needed or MIN_SAMPLE
-    mean = sum(pnls) / n
-    if n < 2:
+    if n_win < 2:
         return "TOO EARLY", f"{n}/{need} fires"
-    var = sum((x - mean) ** 2 for x in pnls) / (n - 1)
-    sem = (var / n) ** 0.5
     lo, hi = mean - 1.96 * sem, mean + 1.96 * sem
-    ci = f"EV ${mean:+.2f}/bet, 95% CI ${lo:+.2f} to ${hi:+.2f}"
+    ci = (f"EV ${mean:+.2f}/bet, 95% CI ${lo:+.2f} to ${hi:+.2f} "
+          f"({n_win} independent windows)")
 
     if n < need:
         return "TOO EARLY", f"{n}/{need} fires -- {ci}"
@@ -1615,7 +1645,8 @@ def _ev_verdict(pnls, n_needed=None):
         return "FAILED FORWARD", f"losing -- {ci}"
     if mean > 0:
         # The honest middle: pointing the right way, not yet separable from luck.
-        extra = int((1.96 * (var ** 0.5) / mean) ** 2) - n if mean > 0 else 0
+        sd_w = sem * (n_win ** 0.5)
+        extra = int(((1.96 * sd_w / mean) ** 2 - n_win) * (n / n_win)) if mean > 0 else 0
         return "PROMISING", (f"positive but still consistent with luck -- {ci}"
                              + (f"; ~{extra:,} more fires to settle" if extra > 0 else ""))
     return "NO EDGE", f"not distinguishable from zero -- {ci}"
@@ -1653,7 +1684,10 @@ def _score_rows(name, rows, call_of, entry_of):
     out.append(["  bar to beat", f"{avg + BREAKEVEN_MARGIN:.1f}%",
                 f"entry-implied {avg:.1f}% + {BREAKEVEN_MARGIN:.1f}pp"])
 
-    verdict, note = _ev_verdict([_kalshi_pnl(e, call_of(r) == "Yes") for r, e in priced])
+    ts_i = ALL_HEADERS.index("Timestamp")
+    verdict, note = _ev_verdict(
+        [(r[ts_i] if len(r) > ts_i else "",
+          _kalshi_pnl(e, call_of(r) == "Yes")) for r, e in priced])
     out.append(["  VERDICT", verdict, note])
     return out
 
@@ -1807,15 +1841,15 @@ def build_report(rows, version):
             side = cell(r, "CVD Call")
             e = num(r, "K Up%") if side == "UP" else num(r, "K Down%")
             if e is not None:
-                ent.append((e, cell(r, "CVD Correct?") == "Yes"))
+                ent.append((e, cell(r, "CVD Correct?") == "Yes", cell(r, "Timestamp")))
         R.append(["  graded", _pct(w, len(graded)),
                   f"claimed 56.8% -> {w / len(graded) * 100:.1f}%"])
         if ent:
-            avg = sum(e for e, _ in ent) / len(ent)
-            pnl = sum(_kalshi_pnl(e, won) for e, won in ent)
+            avg = sum(e for e, _, _ in ent) / len(ent)
+            pnl = sum(_kalshi_pnl(e, won) for e, won, _ in ent)
             R.append(["  economics", f"entry {avg:.1f}c",
                       f"P&L ${pnl:+.2f}  EV ${pnl / len(ent):+.2f}/bet"])
-            verdict, note = _ev_verdict([_kalshi_pnl(e, won) for e, won in ent])
+            verdict, note = _ev_verdict([(ts, _kalshi_pnl(e, won)) for e, won, ts in ent])
             R.append(["  VERDICT", verdict, note])
     R.append(["", "", ""])
 
@@ -1906,23 +1940,26 @@ def build_report(rows, version):
             side = cell(r, f"{nm} Call")
             e = num(r, "K Up%") if side == "UP" else num(r, "K Down%")
             if e is not None:
-                kept.append(_kalshi_pnl(e, cell(r, f"{nm} Correct?") == "Yes"))
+                kept.append((cell(r, "Timestamp"),
+                             _kalshi_pnl(e, cell(r, f"{nm} Correct?") == "Yes")))
         for k, r in live:
             if k in champ and cell(r, f"{nm} Call") not in ("UP", "DOWN"):
                 side = cell(r, "CVD Call")
                 e = num(r, "K Up%") if side == "UP" else num(r, "K Down%")
                 if e is not None:
-                    tossed.append(_kalshi_pnl(e, champ[k]))
+                    tossed.append((cell(r, "Timestamp"), _kalshi_pnl(e, champ[k])))
 
         if len(kept) < 30 or len(tossed) < 30:
             R.append(["", f"kept {len(kept)} / passed on {len(tossed)}",
                       "too early to compare -- need 30 of each"])
         else:
-            mk = sum(kept) / len(kept)
-            mt = sum(tossed) / len(tossed)
-            vk = sum((x - mk) ** 2 for x in kept) / (len(kept) - 1)
-            vt = sum((x - mt) ** 2 for x in tossed) / (len(tossed) - 1)
-            se = (vk / len(kept) + vt / len(tossed)) ** 0.5
+            # Clustered, for the reason spelled out on _cluster_stats: bet-level
+            # variance made C5 look like z=+3.15 against a 2.50 bar when the
+            # honest figure was +2.17. A promotion is the one output here that
+            # someone would act on, so it gets the conservative interval.
+            mk, sek, wk, _ = _cluster_stats(kept)
+            mt, set_, wt, _ = _cluster_stats(tossed)
+            se = (sek ** 2 + set_ ** 2) ** 0.5
             z = (mk - mt) / se if se else 0.0
             if abs(z) < zcrit:
                 call = "no better than champion"
@@ -1931,7 +1968,8 @@ def build_report(rows, version):
             else:
                 call = "worse than champion"
             R.append(["", f"kept {len(kept)} / passed on {len(tossed)}",
-                      f"EV ${mk:+.2f} vs ${mt:+.2f}/bet, z={z:+.2f} vs {zcrit:.2f} -- {call}"])
+                      f"EV ${mk:+.2f} vs ${mt:+.2f}/bet, z={z:+.2f} vs {zcrit:.2f} "
+                      f"({wk}/{wt} independent windows) -- {call}"])
     R.append(["", "", ""])
 
     # ---- drill-down --------------------------------------------------------
