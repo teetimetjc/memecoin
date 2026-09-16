@@ -161,10 +161,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   <div class="viewbar" style="flex-direction:column; align-items:stretch; gap:12px">
     <div class="viewrow">
       <span class="lbl">Price</span>
-      <div class="seg" role="group" aria-label="Which signals to include">
-        <button id="viewAll" aria-pressed="true">All signals</button>
-        <button id="viewCheap" aria-pressed="false">Only under 60&cent;</button>
-      </div>
+      <div class="seg" id="priceSeg" role="group" aria-label="Which signals to include"></div>
     </div>
     <div class="viewrow">
       <span class="lbl">Coin</span>
@@ -323,7 +320,16 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   // ---------------------------------------------------------------------
   const ALL = D.q.length;
   const MAXP = 60;                       // the price cut the evidence supports
-  let mode = "all";                      // "all" | "cheap"
+  // The price filter is a ceiling on the entry price, in cents. Infinity keeps
+  // everything; 60 is the cut the out-of-sample test supports; 50 is tighter
+  // still, and closer to the ~52% the rule actually hits. MAXP stays fixed at
+  // 60 because the split-curve and the price-band tiles are about that line
+  // specifically -- it is the claim being made, not the view being chosen.
+  let cap = Infinity;
+  const CAPS = [{v:Infinity, label:"All signals"},
+                {v:60, label:"Under 60¢"},
+                {v:50, label:"Under 50¢"}];
+  const isAll = () => cap === Infinity;
   let coin = "ALL";                      // "ALL" or a single symbol
   let stake = 10;                        // dollars per bet
   const STAKES = [5, 10, 20];
@@ -353,7 +359,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     const ix = [];
     const bit = rule==="V6" ? -1 : ruleBit(rule);
     for(let i=0;i<ALL;i++){
-      if(mode!=="all" && D.e[i] >= MAXP) continue;
+      if(D.e[i] >= cap) continue;
       if(coin!=="ALL" && D.s[i] !== coin) continue;
       // A challenger is a strict subset of the champion: same side, same
       // window, same outcome. Selecting one keeps only the rows where it
@@ -487,7 +493,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       ["Peak", fmt0(V.peak), "highest running total", ""],
       ["Worst drawdown", fmt0(V.maxDD), "largest fall from a peak", "neg"],
     ];
-    if(mode==="all"){
+    if(isAll()){
       tiles.push(
         ["Paid under 40¢", fmt0(band(0,40)[0]),
           `${band(0,40)[1]} bets · the only slice proven to win`, band(0,40)[0]>=0?"pos":"neg"],
@@ -503,11 +509,11 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       let skipped = 0, skippedNet = 0;
       for(let i=0;i<ALL;i++){
         if(coin!=="ALL" && D.s[i] !== coin) continue;
-        if(D.e[i] < MAXP) continue;
+        if(D.e[i] < cap) continue;
         skipped++; skippedNet += netAt(i, stake);
       }
       tiles.push(["Skipped", `${skipped} bets`,
-        `${coin==="ALL"?"":coin+" "}entries at 60¢+ · they would have returned ${fmt0(skippedNet)}`,
+        `${coin==="ALL"?"":coin+" "}entries at ${cap}¢+ · they would have returned ${fmt0(skippedNet)}`,
         skippedNet>=0?"pos":"neg"]);
     }
     document.getElementById("stats").innerHTML = tiles.map(([k,v,n,c])=>
@@ -526,7 +532,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       cheapSer.push(a); dearSer.push(b);
     }
     let lo=Math.min(0,...V.q), hi=Math.max(0,...V.q);
-    if(showSplit && mode==="all"){
+    if(showSplit && isAll()){
       lo=Math.min(lo,...dearSer,...cheapSer); hi=Math.max(hi,...cheapSer,...dearSer);
     }
     if(showBand){ const e=env(V.n-1); lo=Math.min(lo,-e); hi=Math.max(hi,e); }
@@ -558,7 +564,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     });
     s+=`<line x1="${M.l}" y1="${Y(0).toFixed(1)}" x2="${W-M.r}" y2="${Y(0).toFixed(1)}"
          stroke="var(--muted)" stroke-width="1.25" opacity=".55"/>`;
-    if(showSplit && mode==="all"){
+    if(showSplit && isAll()){
       [[cheapSer,"var(--gain)"],[dearSer,"var(--loss)"]].forEach(([ser,col])=>{
         let pts="";
         for(let i=0;i<V.n;i++) pts+=`${X(i).toFixed(1)},${Y(ser[i]).toFixed(1)} `;
@@ -787,8 +793,20 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   }
 
   // ---- wiring ----------------------------------------------------------
-  const bAll=document.getElementById("viewAll"), bChp=document.getElementById("viewCheap"),
-        vNote=document.getElementById("viewNote"), splitBtn=document.getElementById("splitBtn");
+  const vNote=document.getElementById("viewNote"),
+        splitBtn=document.getElementById("splitBtn");
+  function drawPriceSeg(){
+    const seg=document.getElementById("priceSeg");
+    if(!seg) return;
+    seg.innerHTML = CAPS.map(c=>
+      `<button data-cap="${c.v}" aria-pressed="${String(cap===c.v)}">${c.label}</button>`).join("");
+    [...seg.querySelectorAll("button")].forEach(b=>{
+      b.addEventListener("click",()=>{
+        const v=+b.getAttribute("data-cap");   // "Infinity" parses to Infinity
+        if(cap!==v){ cap=v; renderAll(); }
+      });
+    });
+  }
   function drawCoinSeg(){
     const seg=document.getElementById("coinSeg");
     seg.innerHTML = ["ALL",...COINS].map(c=>
@@ -842,16 +860,14 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
 
   function renderAll(){
     V=buildView();
-    drawSubline(); drawCoinSeg(); drawStakeSeg(); drawRuleSeg();
+    drawSubline(); drawPriceSeg(); drawCoinSeg(); drawStakeSeg(); drawRuleSeg();
     const eb=document.getElementById("eyebrow");
     if(eb) eb.textContent = `Kalshi · 15-minute crypto · $${stake} flat`;
     const dn=document.getElementById("dayNote");
     if(dn) dn.textContent = `$${stake} flat on every signal`;
     const fn=document.getElementById("footNote");
     if(fn) fn.hidden = (stake===10);
-    bAll.setAttribute("aria-pressed", String(mode==="all"));
-    bChp.setAttribute("aria-pressed", String(mode!=="all"));
-    const priceTxt = mode==="all" ? "every price" : "entries under 60¢";
+    const priceTxt = isAll() ? "every price" : `entries under ${cap}¢`;
     const coinTxt  = coin==="ALL" ? "all five coins" : coin + " only";
     const stakeTxt = ` · $${stake} a bet`;
     if(rule==="V6"){
@@ -865,14 +881,12 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
         : `${rule} (${def.why}) · frozen ${ctStamp(def.f)} — nothing logged yet`;
     }
     if(splitBtn){
-      splitBtn.hidden = (mode!=="all");
-      if(mode!=="all") showSplit=false;
+      splitBtn.hidden = !isAll();
+      if(!isAll()) showSplit=false;
       splitBtn.setAttribute("aria-pressed", String(showSplit));
     }
     drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawClock();
   }
-  bAll.addEventListener("click",()=>{ if(mode!=="all"){ mode="all"; renderAll(); } });
-  bChp.addEventListener("click",()=>{ if(mode!=="cheap"){ mode="cheap"; renderAll(); } });
   const bandBtn=document.getElementById("bandBtn");
   bandBtn.addEventListener("click",()=>{
     showBand=!showBand; bandBtn.setAttribute("aria-pressed",String(showBand)); drawEq();
