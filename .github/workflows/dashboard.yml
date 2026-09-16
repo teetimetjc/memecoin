@@ -7,12 +7,19 @@ name: Dashboard Data
 # minutes and must not be at risk from anything here: a failure in this job
 # leaves a stale data file and nothing else.
 #
-# Hourly at :05, after the :00 predictor run has written and resolved its rows.
+# TRIGGERED BY THE "Refresh v6 dashboard" Routine, not by cron.
+#
+# GitHub's scheduler does not fire for this repo -- predictor.yml carries no
+# cron either and every one of its runs is a workflow_dispatch from outside.
+# The schedule below was added on that assumption and never ran; it is kept
+# only as a fallback in case scheduling is ever enabled here. Do not rely on
+# it. The Routine dispatches this workflow, waits for it to finish, then
+# republishes the artifact.
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "5 * * * *"
+    - cron: "5 * * * *"        # inert on this repo -- see above
 
 permissions:
   contents: write
