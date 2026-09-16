@@ -133,12 +133,78 @@ def _short(ch):
     return (why.split(".")[0].strip() or ch["name"])[:40]
 
 
+def build_dry(rows):
+    """Summarise the Dry Run tab: what an order would actually have cost.
+
+    The bets on the chart are priced at the mid quote captured when the signal
+    fired. A real order crosses the spread, so the honest question is how far
+    the fill sits from that mid. This reduces the tab to the few numbers that
+    answer it; the per-order detail stays in the sheet.
+    """
+    if not rows or len(rows) < 2:
+        return None
+    idx = {h: i for i, h in enumerate(rows[0])}
+
+    def cell(r, name):
+        i = idx.get(name, -1)
+        return r[i] if 0 <= i < len(r) else ""
+
+    slips, fills, partial, failed, by_coin = [], 0, 0, 0, {}
+    for r in rows[1:]:
+        state = cell(r, "Fillable?")
+        if state == "YES":
+            fills += 1
+        elif state == "PARTIAL":
+            partial += 1
+        else:
+            failed += 1
+            continue
+        try:
+            s = float(cell(r, "Slippage ¢"))
+        except (TypeError, ValueError):
+            continue
+        slips.append(s)
+        by_coin.setdefault(cell(r, "Symbol").replace("USDT", ""), []).append(s)
+
+    if not slips:
+        return {"n": 0, "fills": fills, "partial": partial, "failed": failed}
+
+    slips.sort()
+    mid = slips[len(slips) // 2]
+    # Cost of slippage as a share of the stake: paying x cents more per
+    # contract on a fixed $10 stake costs roughly stake * x / entry.
+    return {
+        "n": len(slips),
+        "fills": fills, "partial": partial, "failed": failed,
+        "mean": round(sum(slips) / len(slips), 3),
+        "median": round(mid, 3),
+        "p90": round(slips[min(len(slips) - 1, int(len(slips) * 0.9))], 3),
+        "worst": round(slips[-1], 3),
+        "coins": {k: round(sum(v) / len(v), 3) for k, v in sorted(by_coin.items())},
+    }
+
+
+def _read_dry(client):
+    """Dry Run tab if it exists. Absent before step 2 starts logging."""
+    try:
+        sh = client.open_by_key(P.SPREADSHEET_ID)
+        return sh.worksheet("Dry Run").get_all_values()
+    except Exception:
+        return None
+
+
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else OUT_DEFAULT
     client = P._get_client()
     ws = P.open_pred_sheet(client)
     rows = ws.get_all_values()
     data = build(rows)
+    # Never let the dry-run summary break the chart it rides along with.
+    try:
+        data["dry"] = build_dry(_read_dry(client))
+    except Exception as e:
+        print(f"  (dry-run summary skipped: {e})")
+        data["dry"] = None
     import pathlib
     p = pathlib.Path(out)
     p.parent.mkdir(parents=True, exist_ok=True)

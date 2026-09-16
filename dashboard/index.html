@@ -236,6 +236,20 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     </table></div>
   </section>
 
+  <div class="divider" id="dryDiv" hidden>
+    <h2>Could we actually get this price?</h2>
+    <span class="d" id="dryNote"></span>
+  </div>
+
+  <section class="panel" id="dryPanel" hidden>
+    <div class="phead">
+      <h2>Dry run: intended orders</h2>
+      <span class="note">the order each signal would send, priced against the live book — nothing is placed</span>
+    </div>
+    <div class="stats" id="dryStats" style="border:0;border-radius:0"></div>
+    <div class="legend" id="dryFoot"></div>
+  </section>
+
   <div class="divider">
     <h2>When they fire</h2>
     <span class="d" id="clockNote">the same signals, placed on your clock</span>
@@ -848,6 +862,63 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     });
   }
 
+  // ---- dry run ---------------------------------------------------------
+  // Deliberately OUTSIDE the filtered view. This measures the execution cost
+  // of the rule as it actually fires, so it must not move when the reader
+  // picks a coin, a price cut or a stake -- the slippage on a bet is a
+  // property of the book at that moment, not of how we later slice results.
+  function drawDry(){
+    const R = D.dry, div = document.getElementById("dryDiv"),
+          panel = document.getElementById("dryPanel");
+    if(!div || !panel) return;
+    if(!R){ div.hidden = panel.hidden = true; return; }
+    div.hidden = panel.hidden = false;
+
+    const note = document.getElementById("dryNote");
+    if(!R.n){
+      note.textContent = "logging started — no fillable orders recorded yet";
+      document.getElementById("dryStats").innerHTML =
+        `<div class="stat" style="grid-column:1/-1"><span class="k">Waiting</span>`
+        + `<span class="v">—</span><span class="n">${R.failed||0} could not be priced, `
+        + `${R.partial||0} partially fillable. The first fills appear here.</span></div>`;
+      document.getElementById("dryFoot").innerHTML = "";
+      return;
+    }
+    note.textContent = `${R.n} intended orders priced against the real book`;
+
+    // What the average slippage costs as a share of a $10 stake, at the
+    // rule's average entry price. This is the number that matters: the edge
+    // is currently about $0.46 a bet.
+    const avgEntry = D.e.reduce((a,b)=>a+b,0)/D.e.length;
+    const costPerBet = 10 * (R.mean/avgEntry);
+    const tot = R.fills + R.partial + R.failed;
+    const fillPct = tot ? (R.fills/tot*100) : 0;
+
+    const tile = (k,v,n,c) =>
+      `<div class="stat"><span class="k">${k}</span><span class="v ${c||""}">${v}</span>`
+      + `<span class="n">${n}</span></div>`;
+    document.getElementById("dryStats").innerHTML =
+      tile("Average slippage", `${R.mean>=0?"+":""}${R.mean.toFixed(2)}¢`,
+           `per contract vs the price we scored`, R.mean>0?"neg":"pos")
+    + tile("Costs per bet", `-$${Math.abs(costPerBet).toFixed(2)}`,
+           `on a $10 stake at ${avgEntry.toFixed(1)}¢ average entry`, "neg")
+    + tile("Median", `${R.median>=0?"+":""}${R.median.toFixed(2)}¢`,
+           `worst 10% reach ${R.p90>=0?"+":""}${R.p90.toFixed(2)}¢`, "")
+    + tile("Fully fillable", `${fillPct.toFixed(0)}%`,
+           `${R.fills} of ${tot} · ${R.partial} partial, ${R.failed} unpriceable`,
+           fillPct>=95?"pos":"neg");
+
+    // The comparison that decides whether any of this is worth doing.
+    const edge = D.n.reduce((a,b)=>a+b,0)/D.n.length;
+    const net = edge - costPerBet;
+    document.getElementById("dryFoot").innerHTML =
+      `<span>Champion edge <b>${edge>=0?"+":"-"}$${Math.abs(edge).toFixed(2)}</b>/bet `
+      + `minus execution <b>-$${Math.abs(costPerBet).toFixed(2)}</b> leaves `
+      + `<b class="${net>=0?"pos":"neg"}">${net>=0?"+":"-"}$${Math.abs(net).toFixed(2)}</b>/bet. `
+      + `Slippage is measured on every signal, not only the ones a filter keeps, `
+      + `so this panel does not follow the buttons above.</span>`;
+  }
+
   function drawSubline(){
     const el=document.getElementById("subline"); if(!el) return;
     const first=ctStamp(D.t[0]), last=ctStamp(D.t[ALL-1]);
@@ -885,7 +956,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       if(!isAll()) showSplit=false;
       splitBtn.setAttribute("aria-pressed", String(showSplit));
     }
-    drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawClock();
+    drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawDry(); drawClock();
   }
   const bandBtn=document.getElementById("bandBtn");
   bandBtn.addEventListener("click",()=>{

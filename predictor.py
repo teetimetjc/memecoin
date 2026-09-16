@@ -12,6 +12,8 @@ Usage:
 """
 
 import os, sys, json, math, time, argparse, requests
+
+import dryrun
 from datetime import datetime, timedelta, timezone
 
 # --- CONFIG ---
@@ -1314,6 +1316,7 @@ def run_predictions():
 
     futures = get_futures_stats()
     written = 0
+    dry_rows = []                 # planned orders, written once after the loop
 
     btc_sig = None
     try:
@@ -1415,6 +1418,22 @@ def run_predictions():
             ws.append_row(row, value_input_option="USER_ENTERED", table_range="A1")
             written += 1
 
+            # Dry-run order logging (step 2). Opt-in via DRY_RUN_ORDERS, places
+            # nothing, and is wrapped so that a failure here -- a slow book, a
+            # changed payload shape, anything -- cannot stop the row above from
+            # having been written or the loop from continuing. Collection is
+            # the asset; this is an observer bolted beside it.
+            if flow and dryrun.enabled():
+                try:
+                    side = cvd_call(flow["cvd_ratio"])
+                    if side:
+                        entry = (kalshi.get("up_cents") if side == "UP"
+                                 else kalshi.get("down_cents")) if kalshi else None
+                        dry_rows.append(
+                            dryrun.plan_order(ts_str, symbol, side, kalshi, entry))
+                except Exception as e:
+                    print(f"    [dry run] skipped {symbol}: {e}")
+
             if flow:
                 call = cvd_call(flow["cvd_ratio"])
                 print(f"    flow: CVD {flow['cvd_ratio']:+.3f} over "
@@ -1470,6 +1489,14 @@ def run_predictions():
                       f"stopped until a tab is trimmed or archived.")
             else:
                 print(f"  {symbol}: ERROR -- {e}")
+
+    # Write the planned orders last and defensively: the signal rows are
+    # already safely appended by this point, so nothing here can cost data.
+    if dry_rows:
+        try:
+            dryrun.append(client, dry_rows)
+        except Exception as e:
+            print(f"  [dry run] could not write tab: {e}")
 
     if written == 0:
         sys.exit(
