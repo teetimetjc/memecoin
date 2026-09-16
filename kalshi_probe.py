@@ -43,11 +43,53 @@ import predictor as P
 TIMEOUT = 20
 
 
+def _sign(method, path, scheme):
+    """Signed headers using an explicit padding scheme.
+
+    predictor.py signs with PKCS#1 v1.5. Kalshi's documented scheme is RSA-PSS
+    (MGF1-SHA256, salt length = digest length). Both produce a valid-looking
+    base64 signature, and both are accepted without complaint by the PUBLIC
+    market endpoints the predictor uses -- which is why a wrong scheme could
+    sit here undetected for weeks. Only an authenticated endpoint tells them
+    apart, so this probe signs each way and reports which one the server takes.
+    """
+    import base64
+    from datetime import datetime, timezone
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    pem = os.environ.get("KALSHI_API_KEY", "").strip()
+    if "\\n" in pem and "\n" not in pem:
+        pem = pem.replace("\\n", "\n")
+    key = serialization.load_pem_private_key(pem.encode(), password=None)
+
+    ts = str(int(datetime.now(timezone.utc).timestamp() * 1000))
+    msg = (ts + method.upper() + path).encode()
+    if scheme == "pss":
+        pad = padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                          salt_length=hashes.SHA256().digest_size)
+    else:
+        pad = padding.PKCS1v15()
+    sig = key.sign(msg, pad, hashes.SHA256())
+    return {
+        "KALSHI-ACCESS-KEY":       os.environ.get("KALSHI_KEY_ID", "").strip(),
+        "KALSHI-ACCESS-TIMESTAMP": ts,
+        "KALSHI-ACCESS-SIGNATURE": base64.b64encode(sig).decode(),
+    }
+
+
+# Which padding the live key actually needs. Set by _pick_scheme().
+SCHEME = "pkcs1v15"
+
+
 def _get(path, params=None):
     """Signed GET. Returns (status_code, parsed_body_or_text, error_or_None)."""
-    hdrs = P._kalshi_headers("GET", "/trade-api/v2" + path)
-    if not hdrs:
-        return None, None, "could not build signed headers (missing or invalid key)"
+    try:
+        hdrs = _sign("GET", "/trade-api/v2" + path, SCHEME)
+    except Exception as e:
+        return None, None, f"could not sign: {e}"
+    if not hdrs.get("KALSHI-ACCESS-KEY"):
+        return None, None, "KALSHI_KEY_ID is empty"
     try:
         r = requests.get(P.KALSHI_BASE + path, params=params,
                          headers=hdrs, timeout=TIMEOUT)
@@ -92,6 +134,36 @@ def main():
         return 1
 
     print(f"  host         : {P.KALSHI_BASE}")
+    print("-" * 62)
+
+    # Establish WHICH signature scheme this key needs, before anything else.
+    # /portfolio/balance is the cheapest authenticated endpoint to ask with.
+    global SCHEME
+    print("SIGNATURE SCHEME")
+    winner = None
+    for scheme in ("pss", "pkcs1v15"):
+        SCHEME = scheme
+        code, body, err = _get("/portfolio/balance")
+        if err:
+            print(f"  {scheme:<10}: FAILED -- {err}")
+            continue
+        detail = ""
+        if code != 200 and isinstance(body, dict):
+            detail = " -- " + str(body.get("error", {}).get("details", ""))[:60]
+        print(f"  {scheme:<10}: {_verdict(code)}{detail}")
+        if code == 200 and winner is None:
+            winner = scheme
+    if not winner:
+        print("  Neither scheme authenticated. This is a key problem, not a")
+        print("  code problem: re-issue the key in the Kalshi dashboard and")
+        print("  copy BOTH the key id and the full PEM into the secrets.")
+        return 1
+    SCHEME = winner
+    print(f"  -> using {winner}")
+    if winner != "pkcs1v15":
+        print(f"  NOTE: predictor.py signs with PKCS#1 v1.5, not {winner}.")
+        print("  Its market-data calls work anyway because those endpoints are")
+        print("  public, but it must be changed before any authenticated call.")
     print("-" * 62)
 
     results = {}
