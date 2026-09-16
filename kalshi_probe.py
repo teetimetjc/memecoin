@@ -244,6 +244,30 @@ def main():
         print(f"  Inconclusive (status {orders_code}). Re-run; if it persists,")
         print("  the endpoint shape may have changed.")
 
+    # 4. ORDER BOOK ------------------------------------------------------
+    # The dry run needs this endpoint, and its first three attempts all came
+    # back unpriceable. Find out whether the endpoint answers at all and what
+    # shape it returns, rather than guessing from the "failed" count.
+    print("-" * 62)
+    print("ORDER BOOK (what the dry run reads)")
+    mcode, mbody, merr = _get("/markets", params={"series_ticker": "KXBTC15M",
+                                                  "limit": 5, "status": "open"})
+    tick = ""
+    if mcode == 200 and isinstance(mbody, dict):
+        ms = mbody.get("markets") or []
+        if ms:
+            tick = ms[0].get("ticker", "")
+    if not tick:
+        print("  could not find an open BTC 15m market to test with")
+    else:
+        print(f"  ticker: {tick}")
+        ocode, obody, oerr = _get(f"/markets/{tick}/orderbook", params={"depth": 5})
+        if oerr:
+            print(f"  FAILED -- {oerr}")
+        else:
+            print(f"  status: {_verdict(ocode)}")
+            print(f"  raw   : {json.dumps(obody)[:400]}")
+
     print("=" * 62)
     ok = results.get("balance") == 200
     print("RESULT:", "credentials work for reading the account."
