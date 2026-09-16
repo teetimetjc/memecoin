@@ -110,9 +110,28 @@ def main():
         else:
             print(f"               unexpected shape: {json.dumps(body)[:160]}")
     elif code in (401, 403):
-        print("               The signature was rejected. Either the key id and")
-        print("               private key are from different key pairs, or the")
-        print("               key has been revoked in the Kalshi dashboard.")
+        # Kalshi names the reason in the body, and the reasons need different
+        # fixes -- a bad signature is a key problem, "not found" is a routing
+        # problem. Printing only "DENIED" threw that away.
+        print(f"               response: {json.dumps(body)[:300]}")
+        print("-" * 62)
+        print("DIAGNOSIS")
+        # Does the SAME signature work on the endpoint the predictor uses? If
+        # yes, signing is fine and this is a scope or account problem. If no,
+        # the key itself never worked and the predictor has been getting by on
+        # the fact that /markets does not require auth at all.
+        mcode, mbody, merr = _get("/markets", params={"limit": 1})
+        print(f"  same key on /markets : {_verdict(mcode) if not merr else merr}")
+        if mcode == 200:
+            print("  Signing works -- /markets accepted this exact signature.")
+            print("  But /markets is a PUBLIC endpoint: it answers whether or")
+            print("  not the signature is valid, so this does not prove much.")
+        print("  Most likely causes, in order:")
+        print("   1. The key id and the private key are from different key")
+        print("      pairs. Re-copy BOTH from one freshly created key.")
+        print("   2. The key was created on the demo environment but this is")
+        print("      the live host (or the reverse).")
+        print("   3. The key was revoked in the Kalshi dashboard.")
         return 1
 
     # 2. POSITIONS + RESTING ORDERS (counts only) -------------------------
