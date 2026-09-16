@@ -20,6 +20,18 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install requests gspread google-auth cryptography
+
+      # --- spending gate ---------------------------------------------------
+      # FIRST, and allowed to fail the job. Scans the files this workflow can
+      # execute for anything that could place a Kalshi order. Nothing here is
+      # supposed to spend money yet, and this is what keeps that true across
+      # future edits rather than trusting that it stays true.
+      #
+      # To go live deliberately, set ALLOW_LIVE_TRADING to "1" below. That is
+      # the thumbs-up -- an explicit, committed change, never an accident.
+      - name: No-trade guard
+        run: python no_trade_guard.py
+
       - name: Generate predictions
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
