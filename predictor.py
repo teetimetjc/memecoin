@@ -680,7 +680,20 @@ def get_price(symbol):
 # --- KALSHI ---
 
 def _kalshi_headers(method, path):
-    """Build RSA-signed headers for Kalshi API v2."""
+    """Build RSA-signed headers for Kalshi API v2.
+
+    Kalshi requires RSA-PSS (MGF1-SHA256, salt length = digest length). This
+    signed with PKCS#1 v1.5 until 2026-09-16, which the server rejects with
+    INCORRECT_API_KEY_SIGNATURE -- confirmed by kalshi_probe.py, which signed
+    the same request both ways against /portfolio/balance and got OK for PSS
+    and DENIED for v1.5.
+
+    It went unnoticed because every call this file makes is to /markets, a
+    PUBLIC endpoint that returns data whether the signature is valid, invalid
+    or absent. So the market data was never affected and is not affected by
+    this change; what was broken was any authenticated request, and the first
+    one of those would have been an order.
+    """
     key_id      = os.environ.get("KALSHI_KEY_ID", "").strip()
     private_pem = os.environ.get("KALSHI_API_KEY", "").strip()
     if not key_id or not private_pem:
@@ -694,7 +707,11 @@ def _kalshi_headers(method, path):
         ts = str(int(datetime.now(timezone.utc).timestamp() * 1000))
         msg = (ts + method.upper() + path).encode()
         private_key = serialization.load_pem_private_key(private_pem.encode(), password=None)
-        sig = private_key.sign(msg, padding.PKCS1v15(), hashes.SHA256())
+        sig = private_key.sign(
+            msg,
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                        salt_length=hashes.SHA256().digest_size),
+            hashes.SHA256())
         sig_b64 = base64.b64encode(sig).decode()
         return {
             "KALSHI-ACCESS-KEY":       key_id,
