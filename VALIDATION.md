@@ -363,3 +363,33 @@ interval, as does every verdict.
 Diversification across the five coins is therefore much weaker than the bet
 count suggests: spreading the same stake over five coins cuts per-window risk
 only 1.22x, against the 2.24x independence would give.
+
+### C6, added 2026-09-16 13:45 -- the one with a mechanism stated in advance
+
+**Rule: CVD fires and entry < 60c.**
+
+A rule that is right about 51% of the time cannot profitably buy a contract
+priced above 51%. At 65c you pay for a 64% chance and deliver 51%. That
+shortfall is arithmetic, not a pattern, and it was knowable before looking at
+any outcome. This is what separates C6 from C5, which is the same family of
+idea with its 40c threshold chosen BECAUSE it paid.
+
+Supporting evidence, held loosely because it came from slicing -- over 1,013
+bets:
+
+| entry | bets | net | EV/bet | 95% CI (clustered) |
+|---|---|---|---|---|
+| >= 60c | 188 | -$418 | -$2.35 | **-$3.96 to -$0.75** |
+| < 60c | 825 | +$963 | +$1.17 | -$0.52 to +$2.85 |
+
+The >=60c slice is the only one in this project whose interval clears zero after
+clustering. Skipping it improves **all five coins** -- a spurious pattern helps
+two or three tapes, not every one.
+
+**Expect C6 to look good immediately.** That evidence is already in the logged
+data. Only rows timestamped after the freeze are the test, which is exactly what
+the framework measures. C5 looked strong at 26 bets (z=+2.17) and has since
+faded to +1.60 as its sample grew; read C6's first days with the same suspicion.
+
+Five live challengers raises the promotion bar from z >= 2.50 to **z >= 2.58**
+for all of them.

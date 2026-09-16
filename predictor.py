@@ -355,6 +355,32 @@ CHALLENGERS = [
         "test": lambda x: (x["cvd"] is not None and abs(x["cvd"]) >= CVD_THRESHOLD
                            and x["entry"] is not None and x["entry"] < 40.0),
     },
+    {
+        # The one challenger whose mechanism can be stated without looking at a
+        # result: a rule that is right about 51% of the time cannot profitably
+        # buy a contract priced above 51%. At 65c you are paying for a 64%
+        # chance and delivering 51%; the shortfall is structural, not variance.
+        #
+        # C5 is the same family of idea with the opposite provenance -- its 40c
+        # threshold was chosen BECAUSE it paid. 60c here is not fitted: it is
+        # roughly where the entry price passes the rule's own accuracy, which
+        # was knowable in advance.
+        #
+        # Supporting evidence, held loosely because it came from slicing:
+        # over 1,013 bets, entries at 60c+ ran 188 bets for -$418, EV -$2.35,
+        # 95% CI -$3.96..-$0.75 clustered -- the only slice in this project
+        # whose interval clears zero. Skipping them improves ALL FIVE coins,
+        # which is the part that persuades: a spurious pattern helps two or
+        # three tapes, not every one.
+        #
+        # Expect it to look good immediately, because that evidence is already
+        # in the logged data. Only rows after the freeze below are the test.
+        "name": "C6", "frozen": "2026-09-16 13:45 UTC",
+        "why": "Entry under 60c. A ~51%-accurate rule cannot profitably buy "
+               "contracts priced above ~51%; this is arithmetic, not a pattern.",
+        "test": lambda x: (x["cvd"] is not None and abs(x["cvd"]) >= CVD_THRESHOLD
+                           and x["entry"] is not None and x["entry"] < 60.0),
+    },
 ]
 
 
