@@ -154,9 +154,8 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   <header>
     <p class="eyebrow">Kalshi · 15-minute crypto · $10 flat</p>
     <h1>Every v6 signal, one bet at a time</h1>
-    <p class="sub">1,013 bets from <strong>11 Sep 14:45</strong> to <strong>16 Sep 12:45 UTC</strong> — every
-      fire of the CVD rule since it went live. Earlier rows are excluded: they chose the rule's
-      threshold and direction, so they can't also grade it.</p>
+    <p class="sub" id="subline">Every fire of the CVD rule since it went live. Earlier rows are
+      excluded: they chose the rule's threshold and direction, so they can't also grade it.</p>
   </header>
 
   <div class="viewbar" style="flex-direction:column; align-items:stretch; gap:12px">
@@ -390,14 +389,30 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   function days(){
     const out=[]; let cur=null;
     for(let k=0;k<V.n;k++){
-      const key=V.t[k].slice(0,10);
+      const key=ctDate(V.t[k]);
       if(!cur || cur.k!==key){ cur={k:key,start:k,end:k,n:0,w:0,net:0}; out.push(cur); }
       cur.end=k; cur.n++; cur.w+=V.w[k]; cur.net+=V.net[k];
     }
     return out;
   }
+  // Everything the reader sees is Central. The payload stays UTC because that
+  // is what the sheet logs and what sorts correctly; conversion happens only at
+  // display time, via America/Chicago so CDT/CST switches itself in November.
+  const TZ = "America/Chicago";
   const CT = new Intl.DateTimeFormat("en-US",
-    {timeZone:"America/Chicago", hour:"numeric", hour12:false});
+    {timeZone:TZ, hour:"numeric", hour12:false});
+  const asDate = ts => new Date(ts.replace(" ","T")+":00Z");
+  const CT_PARTS = new Intl.DateTimeFormat("en-CA",
+    {timeZone:TZ, year:"numeric", month:"2-digit", day:"2-digit"});
+  const CT_STAMP = new Intl.DateTimeFormat("en-US",
+    {timeZone:TZ, month:"short", day:"numeric", hour:"numeric", minute:"2-digit",
+     hour12:true, timeZoneName:"short"});
+  const CT_DAY = new Intl.DateTimeFormat("en-US",
+    {timeZone:TZ, month:"short", day:"numeric"});
+  // Central calendar date for a UTC stamp -- days must break at midnight CT,
+  // not at 00:00 UTC, or "by day" is somebody else's day.
+  const ctDate = ts => CT_PARTS.format(asDate(ts));
+  const ctStamp = ts => CT_STAMP.format(asDate(ts));
   function hours(){
     const HR = Array.from({length:24},(_,h)=>({h,n:0,w:0,net:0,lon:0,lonet:0}));
     for(let k=0;k<V.n;k++){
@@ -409,8 +424,9 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   }
   const hlab = h => `${(h%12)||12}${h<12?"am":"pm"}`;
   const isNight = h => (h>=23 || h<7);
-  const dayLabel = k => new Date(k+"T00:00:00Z")
-    .toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:"UTC"});
+  // k is already a Central calendar date (YYYY-MM-DD); render it as itself,
+  // anchored at noon so no timezone shift can roll it to the previous day.
+  const dayLabel = k => CT_DAY.format(new Date(k+"T12:00:00Z"));
 
   // ---- stat strip ------------------------------------------------------
   function drawStats(){
@@ -423,7 +439,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
            <span class="k">No bets in this view</span>
            <span class="v">—</span>
            <span class="n">${def
-             ? `${rule} was frozen ${def.f} and has not written a call in this export yet. `
+             ? `${rule} was frozen ${ctStamp(def.f)} and has not written a call yet. `
                + `Its first fires will appear in the next one.`
              : "No signals match the current filters."}</span>
          </div>`;
@@ -640,7 +656,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       xc.setAttribute("cx",X(i)); xc.setAttribute("cy",svgEq._Y(V.q[i]));
       ro.classList.remove("idle");
       document.getElementById("r-i").textContent=(i+1)+" / "+V.n;
-      document.getElementById("r-t").textContent=V.t[i]+" UTC";
+      document.getElementById("r-t").textContent=ctStamp(V.t[i]);
       document.getElementById("r-s").textContent=V.s[i];
       document.getElementById("r-d").textContent=V.d[i];
       document.getElementById("r-e").textContent=V.e[i].toFixed(1)+"¢";
@@ -777,9 +793,19 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     });
   }
 
+  function drawSubline(){
+    const el=document.getElementById("subline"); if(!el) return;
+    const first=ctStamp(D.t[0]), last=ctStamp(D.t[ALL-1]);
+    const built = D.built ? ` Data refreshed ${ctStamp(D.built.replace(" UTC",""))}.` : "";
+    el.innerHTML = `<strong>${ALL.toLocaleString()}</strong> bets from <strong>${first}</strong> `
+      + `to <strong>${last}</strong> — every fire of the CVD rule since it went live. `
+      + `Earlier rows are excluded: they chose the rule's threshold and direction, so they `
+      + `can't also grade it.${built} All times Central.`;
+  }
+
   function renderAll(){
     V=buildView();
-    drawCoinSeg(); drawRuleSeg();
+    drawSubline(); drawCoinSeg(); drawRuleSeg();
     bAll.setAttribute("aria-pressed", String(mode==="all"));
     bChp.setAttribute("aria-pressed", String(mode!=="all"));
     const priceTxt = mode==="all" ? "every price" : "entries under 60¢";
@@ -790,9 +816,9 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     } else {
       const def=ruleDef(rule);
       vNote.textContent = V.n
-        ? `${rule} (${def.why}) · frozen ${def.f} · ${coinTxt} at ${priceTxt} — `
+        ? `${rule} (${def.why}) · frozen ${ctStamp(def.f)} · ${coinTxt} at ${priceTxt} — `
           + `${V.n} bets, ${V.windows} independent window${V.windows===1?"":"s"}`
-        : `${rule} (${def.why}) · frozen ${def.f} — nothing logged yet in this export`;
+        : `${rule} (${def.why}) · frozen ${ctStamp(def.f)} — nothing logged yet`;
     }
     if(splitBtn){
       splitBtn.hidden = (mode!=="all");

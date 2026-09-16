@@ -78,11 +78,15 @@ def build(rows):
     T, S, Dd, E, W, N, Q, R = [], [], [], [], [], [], [], []
     eq = 0.0
     for ts, sym, side, entry, won, mask in sig:
-        net = _pnl(entry, won)
-        eq += net
+        # Accumulate the ROUNDED per-bet net, not the raw one. The page recomputes
+        # the running total from these same rounded values when it filters, so a
+        # cumulative built from unrounded nets disagrees with its own day table --
+        # 16 cents over 1,030 bets, and two numbers for one thing is a bug.
+        net = round(_pnl(entry, won), 2)
+        eq = round(eq + net, 2)
         T.append(ts[:16]); S.append(sym); Dd.append(side)
         E.append(round(entry, 1)); W.append(1 if won else 0)
-        N.append(round(net, 2)); Q.append(round(eq, 2)); R.append(mask)
+        N.append(net); Q.append(eq); R.append(mask)
 
     # Clustered spread: five coins bet in one window are one market event, so a
     # per-bet standard deviation understates how far a worthless rule can drift.
