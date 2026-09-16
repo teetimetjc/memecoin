@@ -1,0 +1,815 @@
+<title>v6 Forward Test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">
+<style>
+:root{
+  --paper:#FAF8F3; --surface:#FFFFFF; --ink:#1A1D23; --muted:#646C7A;
+  --rule:#E4E0D6; --grid:#EDEAE1;
+  --accent:#2D4A7C; --accent-soft:#2D4A7C1F;
+  --gain:#2F7A5A; --loss:#A8443B;
+  --band:#8C93A3; --band-fill:#8C93A314;
+  --night:#2D4A7C0E; --night-line:#2D4A7C33;
+  --shadow:0 1px 2px #1a1d2310, 0 8px 24px #1a1d230a;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#14161A; --surface:#1B1E24; --ink:#E9E6E0; --muted:#9AA2B0;
+    --rule:#2A2E36; --grid:#23272E;
+    --accent:#88ABE0; --accent-soft:#88ABE026;
+    --gain:#5FB98D; --loss:#D97A6E;
+    --band:#7A8394; --band-fill:#7A839420;
+    --night:#88ABE012; --night-line:#88ABE033;
+    --shadow:0 1px 2px #00000040, 0 8px 24px #00000030;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#14161A; --surface:#1B1E24; --ink:#E9E6E0; --muted:#9AA2B0;
+  --rule:#2A2E36; --grid:#23272E;
+  --accent:#88ABE0; --accent-soft:#88ABE026;
+  --gain:#5FB98D; --loss:#D97A6E;
+  --band:#7A8394; --band-fill:#7A839420;
+  --night:#88ABE012; --night-line:#88ABE033;
+  --shadow:0 1px 2px #00000040, 0 8px 24px #00000030;
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+  line-height:1.55; padding-inline:20px; padding-block:40px 64px;
+}
+.wrap{max-width:1080px; margin-inline:auto; display:flex; flex-direction:column; gap:34px}
+
+.eyebrow{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:.7rem; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--muted); margin:0 0 10px;
+}
+h1{
+  font-family:"IBM Plex Serif",Georgia,serif; font-weight:600;
+  font-size:clamp(1.8rem,4.4vw,2.6rem); line-height:1.15;
+  margin:0 0 12px; text-wrap:balance; letter-spacing:-.01em;
+}
+.sub{margin:0; max-width:62ch; color:var(--muted); font-size:.98rem}
+.sub strong{color:var(--ink); font-weight:600}
+
+/* ---- stat strip ---------------------------------------------------- */
+.stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:1px;
+  background:var(--rule); border:1px solid var(--rule); border-radius:10px; overflow:hidden}
+.stat{background:var(--surface); padding:16px 18px; display:flex; flex-direction:column; gap:5px}
+.stat .k{font-family:"IBM Plex Mono",monospace; font-size:.66rem; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--muted)}
+.stat .v{font-family:"IBM Plex Mono",monospace; font-size:1.42rem; font-weight:600;
+  font-variant-numeric:tabular-nums; letter-spacing:-.02em}
+.stat .n{font-size:.76rem; color:var(--muted)}
+.pos{color:var(--gain)} .neg{color:var(--loss)}
+
+/* ---- chart --------------------------------------------------------- */
+.panel{background:var(--surface); border:1px solid var(--rule); border-radius:10px;
+  box-shadow:var(--shadow); overflow:hidden}
+.phead{display:flex; flex-wrap:wrap; align-items:baseline; gap:12px 18px;
+  padding:16px 20px 12px; border-bottom:1px solid var(--rule)}
+.phead h2{font-family:"IBM Plex Serif",Georgia,serif; font-size:1.02rem; font-weight:600; margin:0}
+.phead .note{font-size:.8rem; color:var(--muted); margin-right:auto}
+button.toggle{
+  font-family:"IBM Plex Mono",monospace; font-size:.72rem; letter-spacing:.05em;
+  color:var(--ink); background:transparent; border:1px solid var(--rule);
+  border-radius:999px; padding:5px 13px; cursor:pointer;
+}
+button.toggle[aria-pressed="true"]{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
+button.toggle:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.plot{position:relative; padding:6px 4px 0}
+svg{display:block; width:100%; height:auto; overflow:visible}
+.axis{font-family:"IBM Plex Mono",monospace; font-size:11px; fill:var(--muted)}
+.daylab{font-family:"IBM Plex Mono",monospace; font-size:10.5px; fill:var(--muted); letter-spacing:.04em}
+
+.legend{display:flex; flex-wrap:wrap; gap:8px 20px; padding:10px 20px 16px;
+  font-size:.78rem; color:var(--muted); border-top:1px solid var(--rule)}
+.legend span{display:inline-flex; align-items:center; gap:7px}
+.swatch{width:16px; height:3px; border-radius:2px; flex:none}
+
+/* ---- readout ------------------------------------------------------- */
+.readout{
+  display:flex; flex-wrap:wrap; gap:6px 22px; padding:11px 20px;
+  border-top:1px solid var(--rule); font-family:"IBM Plex Mono",monospace;
+  font-size:.78rem; font-variant-numeric:tabular-nums; min-height:42px; align-items:center;
+}
+.readout .lab{color:var(--muted); margin-right:5px}
+.readout.idle .live{display:none}
+.readout .hint{color:var(--muted)}
+.readout:not(.idle) .hint{display:none}
+
+/* ---- table --------------------------------------------------------- */
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums}
+th,td{padding:10px 18px; text-align:right; white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{font-family:"IBM Plex Mono",monospace; font-size:.66rem; letter-spacing:.11em;
+  text-transform:uppercase; color:var(--muted); font-weight:500; border-bottom:1px solid var(--rule)}
+tbody td{font-family:"IBM Plex Mono",monospace; font-size:.85rem; border-bottom:1px solid var(--grid)}
+tbody tr:last-child td{border-bottom:none}
+tbody td:first-child{font-family:"IBM Plex Sans",sans-serif}
+
+.foot{font-size:.86rem; color:var(--muted); max-width:70ch}
+.foot p{margin:0 0 10px}
+.foot strong{color:var(--ink); font-weight:600}
+/* --- view filter --- */
+.viewbar{display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px}
+.seg{display:inline-flex; background:var(--surface); border:1px solid var(--rule);
+  border-radius:999px; padding:3px; gap:2px}
+.seg button{font-family:"IBM Plex Mono",monospace; font-size:.76rem; letter-spacing:.03em;
+  color:var(--muted); background:transparent; border:0; border-radius:999px;
+  padding:7px 15px; cursor:pointer; white-space:nowrap}
+.seg button[aria-pressed="true"]{background:var(--accent); color:var(--paper); font-weight:600}
+.seg button:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.viewnote{font-size:.83rem; color:var(--muted)}
+.viewrow{display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px}
+.viewrow .lbl{font-family:"IBM Plex Mono",monospace; font-size:.66rem; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--muted); min-width:86px}
+tbody tr.sel td{background:var(--accent-soft)}
+tbody tr.sel td:first-child{font-weight:600; color:var(--ink)}
+tbody tr.pick{cursor:pointer}
+tbody tr.pick:hover td{background:var(--accent-soft)}
+/* --- clock section --- */
+.divider{display:flex; align-items:baseline; gap:14px; margin-top:8px}
+.divider h2{font-family:"IBM Plex Serif",Georgia,serif; font-size:1.3rem; font-weight:600;
+  margin:0; letter-spacing:-.01em}
+.divider .d{font-size:.85rem; color:var(--muted)}
+.divider::after{content:""; flex:1; height:1px; background:var(--rule)}
+.verdict{display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1px;
+  background:var(--rule); border:1px solid var(--rule); border-radius:10px; overflow:hidden}
+.v{background:var(--surface); padding:18px 20px; display:flex; flex-direction:column; gap:4px}
+.v .k{font-family:"IBM Plex Mono",monospace; font-size:.66rem; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--muted)}
+.v .n{font-family:"IBM Plex Mono",monospace; font-size:1.7rem; font-weight:600;
+  font-variant-numeric:tabular-nums; letter-spacing:-.02em}
+.v .d{font-size:.8rem; color:var(--muted)}
+.hourlab{font-family:"IBM Plex Mono",monospace; font-size:10px; fill:var(--muted)}
+tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-size:.75rem}
+@media (prefers-reduced-motion:reduce){*{transition:none!important; animation:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Kalshi · 15-minute crypto · $10 flat</p>
+    <h1>Every v6 signal, one bet at a time</h1>
+    <p class="sub">1,013 bets from <strong>11 Sep 14:45</strong> to <strong>16 Sep 12:45 UTC</strong> — every
+      fire of the CVD rule since it went live. Earlier rows are excluded: they chose the rule's
+      threshold and direction, so they can't also grade it.</p>
+  </header>
+
+  <div class="viewbar" style="flex-direction:column; align-items:stretch; gap:12px">
+    <div class="viewrow">
+      <span class="lbl">Price</span>
+      <div class="seg" role="group" aria-label="Which signals to include">
+        <button id="viewAll" aria-pressed="true">All signals</button>
+        <button id="viewCheap" aria-pressed="false">Only under 60&cent;</button>
+      </div>
+    </div>
+    <div class="viewrow">
+      <span class="lbl">Coin</span>
+      <div class="seg" id="coinSeg" role="group" aria-label="Which coin to include"></div>
+    </div>
+    <div class="viewrow">
+      <span class="lbl">Rule</span>
+      <div class="seg" id="ruleSeg" role="group" aria-label="Which rule to score"></div>
+    </div>
+    <span class="viewnote" id="viewNote"></span>
+  </div>
+
+  <section class="stats" id="stats"></section>
+
+  <section class="panel">
+    <div class="phead">
+      <h2>Cumulative profit</h2>
+      <span class="note">running total after each settled bet</span>
+      <button class="toggle" id="splitBtn" aria-pressed="false">split by entry price</button>
+      <button class="toggle" id="bandBtn" aria-pressed="true">no-edge envelope</button>
+    </div>
+    <div class="plot">
+      <svg id="eq" viewBox="0 0 1000 400" role="img" aria-label="Cumulative profit across 565 bets"></svg>
+    </div>
+    <div class="readout idle" id="readout">
+      <span class="hint">Hover or drag across the chart to inspect any single bet.</span>
+      <span class="live"><span class="lab">bet</span><b id="r-i"></b></span>
+      <span class="live"><span class="lab">time</span><b id="r-t"></b></span>
+      <span class="live"><span class="lab">coin</span><b id="r-s"></b></span>
+      <span class="live"><span class="lab">call</span><b id="r-d"></b></span>
+      <span class="live"><span class="lab">entry</span><b id="r-e"></b></span>
+      <span class="live"><span class="lab">result</span><b id="r-w"></b></span>
+      <span class="live"><span class="lab">running</span><b id="r-q"></b></span>
+    </div>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--accent)"></i>cumulative profit</span>
+      <span><i class="swatch" style="background:var(--band); opacity:.5"></i>range a rule with <em>no edge</em> would plausibly reach (95%, corrected for correlated coins)</span>
+      <span><i class="swatch" style="background:var(--gain)"></i>bets under 60&cent; only</span>
+      <span><i class="swatch" style="background:var(--loss)"></i>bets at 60&cent; and above only</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="phead">
+      <h2>Drawdown</h2>
+      <span class="note">how far below the previous high-water mark, same x-axis</span>
+    </div>
+    <div class="plot">
+      <svg id="dd" viewBox="0 0 1000 150" role="img" aria-label="Drawdown from peak"></svg>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="phead"><h2>By coin</h2>
+      <span class="note" id="coinNote"></span></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Coin</th><th>Bets</th><th>Hit&nbsp;%</th><th>Avg entry</th>
+        <th>P&amp;L</th><th>ROI</th><th>EV/bet</th></tr></thead>
+      <tbody id="coinbody"></tbody>
+    </table></div>
+  </section>
+
+  <section class="panel">
+    <div class="phead"><h2>By day</h2><span class="note">$10 flat on every signal</span></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Day</th><th>Bets</th><th>Hit&nbsp;%</th><th>Day P&amp;L</th><th>Running</th></tr></thead>
+      <tbody id="daybody"></tbody>
+    </table></div>
+  </section>
+
+  <div class="divider">
+    <h2>When they fire</h2>
+    <span class="d" id="clockNote">the same signals, placed on your clock</span>
+  </div>
+
+  <section class="verdict" id="verdict"></section>
+
+  <section class="panel">
+    <div class="phead">
+      <h2>Signals per hour</h2>
+      <span class="note">US Central · shaded band is 11pm–7am</span>
+    </div>
+    <div class="plot"><svg id="counts" viewBox="0 0 1000 300" role="img"
+      aria-label="Number of signals by hour of day, Central Time"></svg></div>
+  </section>
+
+  <section class="panel">
+    <div class="phead">
+      <h2>Profit per hour</h2>
+      <span class="note">above the line made money, below lost it</span>
+    </div>
+    <div class="plot"><svg id="pnl" viewBox="0 0 1000 260" role="img"
+      aria-label="Profit and loss by hour of day, Central Time"></svg></div>
+  </section>
+
+  <section class="panel">
+    <div class="phead"><h2>Hour by hour</h2><span class="note">◓ marks overnight hours</span></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Hour (CT)</th><th>Signals</th><th>Share</th><th>Hit&nbsp;%</th>
+        <th>P&amp;L</th><th>Under 50&cent;</th></tr></thead>
+      <tbody id="hourbody"></tbody>
+    </table></div>
+  </section>
+
+  <section class="foot">
+    <p><strong>The firing rate is close to flat.</strong> Every hour gets between 17 and 40 of the
+      signals — no hour carries more than about 5%. That’s expected: crypto trades continuously
+      and the rule keys off order flow, not a US schedule. Which means the hourly profit swings
+      are <strong>sample size, not skill</strong>. Twenty-four hours is twenty-four chances to
+      find a dramatic-looking one; don’t schedule around them.</p>
+    <p><strong>The grey band is the point, and it just got wider.</strong> These 853 bets are
+      really only <strong>298 independent windows</strong>: the rule reads the same market-wide
+      flow on five tapes that move together, so it often bets all five coins the same way and
+      they win or lose as one. Correcting for that, a rule with no edge could plausibly land
+      anywhere within <strong>±$1,431</strong> — not the ±$665 the raw bet count implies. The
+      blue line at +$521 sits well inside.</p>
+    <p><strong>Why a losing hit rate can still profit.</strong> On 14 Sep the rule hit 49.0% and
+      made +$191. Bets are not all the same size of swing: $10 at 33¢ buys 30 contracts and
+      returns about $20 if it lands, while $10 at 67¢ buys 15 and returns about $5. Across all
+      853 bets the average win pays <strong>+$10.86</strong> and the average loss costs
+      <strong>−$10.36</strong>, so the true breakeven is about <strong>48.8%</strong> — not the
+      49.6¢ average entry price. Comparing hit rate to the average price is the wrong test;
+      P&amp;L is the test.</p>
+    <p>That said, the EV interval is still −$1.06 to +$2.29 per bet. Losing money remains
+      inside the range.</p>
+    <p><strong>What splits the curve.</strong> The rule hits about 52% no matter what it pays, so
+      it earns wherever the market charges less than that and loses wherever it charges more.
+      Skipping entries at 60¢ or more lifts the total from <em>+$546</em> to <em>+$963</em>
+      while staking $1,880 less, and it improves <strong>every one of the five coins</strong> —
+      BTC flips from a loss to a gain. That consistency is the stronger argument: a real effect
+      should show up on every tape, and it does. At 65¢ you are paying for a 64% chance from a
+      rule that delivers about 51%. Nothing here is a recommendation to bet.</p>
+    <p><strong>One trap the coin buttons make easy.</strong> Whichever coin looks best will look
+      convincing. Pooling all 825 under-60¢ bets and dealing them at random into five fake
+      “coins”, the best of the five averages <strong>24% ROI</strong> by luck alone — and beats
+      the real leader in more than 40% of runs. Best-of-five is not evidence. Use the buttons to
+      check that the price effect holds everywhere, not to pick a coin.</p>
+  </section>
+</div>
+
+<script src="equity_data.js"></script>
+<script>
+(function(){
+  // ---------------------------------------------------------------------
+  // One filtered VIEW drives every panel. Switching the filter recomputes
+  // the equity path, drawdown, day table and hour buckets from scratch --
+  // it is not a chart overlay. "Only under 60c" is therefore the equity
+  // curve you would actually have had, fees and all, not the full curve
+  // with a line drawn on it.
+  // ---------------------------------------------------------------------
+  const ALL = D.q.length;
+  const MAXP = 60;                       // the price cut the evidence supports
+  let mode = "all";                      // "all" | "cheap"
+  let coin = "ALL";                      // "ALL" or a single symbol
+  let rule = "V6";                       // "V6" (champion) or a challenger name
+  const COINS = [...new Set(D.s)].sort();
+  const RULES = D.rules || [];
+  const ruleBit = nm => RULES.findIndex(r=>r.n===nm);
+  const ruleDef = nm => RULES.find(r=>r.n===nm);
+
+  const fmt  = v => (v<0?"-":"+") + "$" + Math.abs(v).toFixed(2);
+  const fmt0 = v => (v<0?"-":"+") + "$" + Math.abs(v).toFixed(0);
+
+  function buildView(){
+    const ix = [];
+    const bit = rule==="V6" ? -1 : ruleBit(rule);
+    for(let i=0;i<ALL;i++){
+      if(mode!=="all" && D.e[i] >= MAXP) continue;
+      if(coin!=="ALL" && D.s[i] !== coin) continue;
+      // A challenger is a strict subset of the champion: same side, same
+      // window, same outcome. Selecting one keeps only the rows where it
+      // actually wrote a call, so its curve starts at its own freeze date.
+      if(bit >= 0 && !((D.r[i] >> bit) & 1)) continue;
+      ix.push(i);
+    }
+    const v = {ix, n:ix.length, t:[], s:[], d:[], e:[], w:[], net:[], q:[], dd:[]};
+    let eq=0, peak=0;
+    for(const i of ix){
+      v.t.push(D.t[i]); v.s.push(D.s[i]); v.d.push(D.d[i]);
+      v.e.push(D.e[i]); v.w.push(D.w[i]); v.net.push(D.n[i]);
+      eq += D.n[i]; peak = Math.max(peak, eq);
+      v.q.push(eq); v.dd.push(eq - peak);
+    }
+    v.wins  = v.w.reduce((a,b)=>a+b,0);
+    v.total = v.q.length ? v.q[v.q.length-1] : 0;
+    v.peak  = v.q.length ? Math.max(...v.q, 0) : 0;
+    v.maxDD = v.dd.length ? Math.min(...v.dd) : 0;
+    // Clustered spread: bets sharing a timestamp are one market event, so the
+    // no-edge envelope must widen for them. Recomputed per view because
+    // filtering changes how many coins remain in each window.
+    const g = new Map();
+    for(let k=0;k<v.n;k++){
+      if(!g.has(v.t[k])) g.set(v.t[k], []);
+      g.get(v.t[k]).push(v.net[k]);
+    }
+    const cl=[...g.values()].map(a=>[a.reduce((x,y)=>x+y,0), a.length]);
+    v.windows = cl.length;
+    if(cl.length > 1){
+      const nb = cl.reduce((a,c)=>a+c[1],0);
+      const m  = cl.reduce((a,c)=>a+c[0],0)/nb;
+      const va = cl.reduce((a,c)=>a + c[1]*Math.pow(c[0]/c[1]-m,2),0)/(cl.length-1);
+      v.sdc = Math.sqrt(va/cl.length) * Math.sqrt(nb);
+    } else v.sdc = D.sdc || D.sd;
+    return v;
+  }
+
+  let V = buildView();
+  const W=1000, M={t:16,r:56,b:30,l:56};
+  const iw = W-M.l-M.r, ih = 400-M.t-M.b;
+  const X = i => M.l + (V.n<2 ? 0 : (i/(V.n-1))*iw);
+  const env = i => 1.96 * V.sdc * Math.sqrt(i+1);
+  let showBand = true, showSplit = false;
+
+  function niceTicks(lo,hi,count){
+    const span=hi-lo, raw=span/count, mag=Math.pow(10,Math.floor(Math.log10(Math.abs(raw)||1)));
+    const step=[1,2,2.5,5,10].map(m=>m*mag).find(s=>s>=raw)||10*mag;
+    const out=[]; for(let x=Math.ceil(lo/step)*step; x<=hi+1e-9; x+=step) out.push(x);
+    return out;
+  }
+
+  // ---- day + hour groupings, rebuilt per view -------------------------
+  function days(){
+    const out=[]; let cur=null;
+    for(let k=0;k<V.n;k++){
+      const key=V.t[k].slice(0,10);
+      if(!cur || cur.k!==key){ cur={k:key,start:k,end:k,n:0,w:0,net:0}; out.push(cur); }
+      cur.end=k; cur.n++; cur.w+=V.w[k]; cur.net+=V.net[k];
+    }
+    return out;
+  }
+  const CT = new Intl.DateTimeFormat("en-US",
+    {timeZone:"America/Chicago", hour:"numeric", hour12:false});
+  function hours(){
+    const HR = Array.from({length:24},(_,h)=>({h,n:0,w:0,net:0,lon:0,lonet:0}));
+    for(let k=0;k<V.n;k++){
+      const h=(+CT.format(new Date(V.t[k].replace(" ","T")+":00Z")))%24;
+      const r=HR[h]; r.n++; r.w+=V.w[k]; r.net+=V.net[k];
+      if(V.e[k]<50){ r.lon++; r.lonet+=V.net[k]; }
+    }
+    return HR;
+  }
+  const hlab = h => `${(h%12)||12}${h<12?"am":"pm"}`;
+  const isNight = h => (h>=23 || h<7);
+  const dayLabel = k => new Date(k+"T00:00:00Z")
+    .toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:"UTC"});
+
+  // ---- stat strip ------------------------------------------------------
+  function drawStats(){
+    if(!V.n){
+      // Zeros in every tile read as "this rule made nothing", which is wrong --
+      // it has not been asked a question yet. Say that instead.
+      const def = rule!=="V6" ? ruleDef(rule) : null;
+      document.getElementById("stats").innerHTML =
+        `<div class="stat" style="grid-column:1/-1">
+           <span class="k">No bets in this view</span>
+           <span class="v">—</span>
+           <span class="n">${def
+             ? `${rule} was frozen ${def.f} and has not written a call in this export yet. `
+               + `Its first fires will appear in the next one.`
+             : "No signals match the current filters."}</span>
+         </div>`;
+      return;
+    }
+    const staked=10*V.n;
+    const winNets=[], lossNets=[];
+    for(let k=0;k<V.n;k++) (V.w[k]?winNets:lossNets).push(V.net[k]);
+    const avgWin  = winNets.reduce((a,b)=>a+b,0)/(winNets.length||1);
+    const avgLoss = lossNets.reduce((a,b)=>a+b,0)/(lossNets.length||1);
+    const beHit   = (avgWin-avgLoss) ? (-avgLoss)/(avgWin-avgLoss) : 0.5;
+    const band=(lo,hi)=>{ let t=0,c=0;
+      for(let k=0;k<V.n;k++) if(V.e[k]>=lo && V.e[k]<hi){ t+=V.net[k]; c++; }
+      return [t,c]; };
+    const tiles=[
+      ["Net profit", fmt(V.total),
+        `on $${staked.toLocaleString()} staked · ${staked?(V.total/staked*100).toFixed(2):"0.00"}% ROI`,
+        V.total>=0?"pos":"neg"],
+      ["Hit rate", V.n?(V.wins/V.n*100).toFixed(1)+"%":"—",
+        `${V.wins} of ${V.n} · breakeven ${(beHit*100).toFixed(1)}% at these payouts`,
+        V.n && V.wins/V.n>=beHit?"pos":"neg"],
+      ["Peak", fmt0(V.peak), "highest running total", ""],
+      ["Worst drawdown", fmt0(V.maxDD), "largest fall from a peak", "neg"],
+    ];
+    if(mode==="all"){
+      tiles.push(
+        ["Paid under 40¢", fmt0(band(0,40)[0]),
+          `${band(0,40)[1]} bets · the only slice proven to win`, band(0,40)[0]>=0?"pos":"neg"],
+        ["Paid 40–60¢", fmt0(band(40,60)[0]),
+          `${band(40,60)[1]} bets · roughly a coin flip`, band(40,60)[0]>=0?"pos":"neg"],
+        ["Paid 60¢ or more", fmt0(band(60,999)[0]),
+          `${band(60,999)[1]} bets · proven to lose — must hit 64%, hits 51%`,
+          band(60,999)[0]>=0?"pos":"neg"]);
+    } else {
+      // Count only what the PRICE filter dropped, within the selected coin.
+      // Using ALL - V.n counted the other four coins as skipped-for-price,
+      // which read as 772 bets when XRP alone had skipped 39.
+      let skipped = 0, skippedNet = 0;
+      for(let i=0;i<ALL;i++){
+        if(coin!=="ALL" && D.s[i] !== coin) continue;
+        if(D.e[i] < MAXP) continue;
+        skipped++; skippedNet += D.n[i];
+      }
+      tiles.push(["Skipped", `${skipped} bets`,
+        `${coin==="ALL"?"":coin+" "}entries at 60¢+ · they would have returned ${fmt0(skippedNet)}`,
+        skippedNet>=0?"pos":"neg"]);
+    }
+    document.getElementById("stats").innerHTML = tiles.map(([k,v,n,c])=>
+      `<div class="stat"><span class="k">${k}</span><span class="v ${c}">${v}</span>`
+      + `<span class="n">${n}</span></div>`).join("");
+  }
+
+  // ---- equity ----------------------------------------------------------
+  const svgEq = document.getElementById("eq");
+  let cheapSer=[], dearSer=[];
+  function drawEq(){
+    if(!V.n){ svgEq.innerHTML=""; return; }
+    let a=0,b=0; cheapSer=[]; dearSer=[];
+    for(let k=0;k<V.n;k++){
+      if(V.e[k] < MAXP) a+=V.net[k]; else b+=V.net[k];
+      cheapSer.push(a); dearSer.push(b);
+    }
+    let lo=Math.min(0,...V.q), hi=Math.max(0,...V.q);
+    if(showSplit && mode==="all"){
+      lo=Math.min(lo,...dearSer,...cheapSer); hi=Math.max(hi,...cheapSer,...dearSer);
+    }
+    if(showBand){ const e=env(V.n-1); lo=Math.min(lo,-e); hi=Math.max(hi,e); }
+    const pad=(hi-lo)*0.08||10; lo-=pad; hi+=pad;
+    const Y = v => M.t + (hi-v)/(hi-lo)*ih;
+    let s="";
+    niceTicks(lo,hi,5).forEach(v=>{
+      s+=`<line x1="${M.l}" y1="${Y(v).toFixed(1)}" x2="${W-M.r}" y2="${Y(v).toFixed(1)}"
+           stroke="var(--grid)" stroke-width="1"/>`;
+      s+=`<text class="axis" x="${M.l-9}" y="${(Y(v)+3.6).toFixed(1)}" text-anchor="end">${fmt0(v)}</text>`;
+    });
+    if(showBand){
+      let up="",dn="";
+      for(let i=0;i<V.n;i+=2) up+=`${X(i).toFixed(1)},${Y(env(i)).toFixed(1)} `;
+      for(let i=V.n-1;i>=0;i-=2) dn+=`${X(i).toFixed(1)},${Y(-env(i)).toFixed(1)} `;
+      s+=`<polygon points="${up}${dn}" fill="var(--band-fill)"/>`;
+      s+=`<polyline points="${up}" fill="none" stroke="var(--band)" stroke-width="1"
+           stroke-dasharray="3 4" opacity=".75"/>`;
+      s+=`<polyline points="${dn}" fill="none" stroke="var(--band)" stroke-width="1"
+           stroke-dasharray="3 4" opacity=".75"/>`;
+    }
+    const DS=days();
+    DS.forEach((d,k)=>{ if(!k) return;
+      s+=`<line x1="${X(d.start).toFixed(1)}" y1="${M.t}" x2="${X(d.start).toFixed(1)}"
+           y2="${M.t+ih}" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 4"/>`; });
+    DS.forEach(d=>{
+      const mid=(X(d.start)+X(d.end))/2;
+      s+=`<text class="daylab" x="${mid.toFixed(1)}" y="390" text-anchor="middle">${dayLabel(d.k)}</text>`;
+    });
+    s+=`<line x1="${M.l}" y1="${Y(0).toFixed(1)}" x2="${W-M.r}" y2="${Y(0).toFixed(1)}"
+         stroke="var(--muted)" stroke-width="1.25" opacity=".55"/>`;
+    if(showSplit && mode==="all"){
+      [[cheapSer,"var(--gain)"],[dearSer,"var(--loss)"]].forEach(([ser,col])=>{
+        let pts="";
+        for(let i=0;i<V.n;i++) pts+=`${X(i).toFixed(1)},${Y(ser[i]).toFixed(1)} `;
+        s+=`<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.6"
+             stroke-linejoin="round" opacity=".92"/>`;
+        s+=`<text class="axis" x="${(X(V.n-1)+9).toFixed(1)}" y="${(Y(ser[V.n-1])+4).toFixed(1)}"
+             fill="${col}" font-weight="600">${fmt0(ser[V.n-1])}</text>`;
+      });
+    }
+    let pts="";
+    for(let i=0;i<V.n;i++) pts+=`${X(i).toFixed(1)},${Y(V.q[i]).toFixed(1)} `;
+    s+=`<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2"
+         stroke-linejoin="round" stroke-linecap="round"/>`;
+    const ex=X(V.n-1), ey=Y(V.q[V.n-1]);
+    s+=`<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="4" fill="var(--accent)"/>`;
+    s+=`<text class="axis" x="${(ex+9).toFixed(1)}" y="${(ey+4).toFixed(1)}"
+         fill="var(--accent)" font-weight="600">${fmt0(V.q[V.n-1])}</text>`;
+    s+=`<g id="xh" style="display:none">
+          <line id="xh-l" y1="${M.t}" y2="${M.t+ih}" stroke="var(--ink)" stroke-width="1" opacity=".35"/>
+          <circle id="xh-c" r="4" fill="var(--surface)" stroke="var(--accent)" stroke-width="2"/>
+        </g>`;
+    s+=`<rect id="hit" x="${M.l}" y="${M.t}" width="${iw}" height="${ih}" fill="transparent"/>`;
+    svgEq.innerHTML=s; svgEq._Y=Y; wireHover();
+  }
+
+  // ---- drawdown --------------------------------------------------------
+  function drawDD(){
+    const svg=document.getElementById("dd");
+    if(!V.n){ svg.innerHTML=""; return; }
+    const h=150, m={t:12,r:56,b:26,l:56}, ih2=h-m.t-m.b;
+    const lo=Math.min(...V.dd,-1), Y=v=>m.t+(0-v)/(0-lo||1)*ih2;
+    let s="";
+    niceTicks(lo,0,3).forEach(v=>{
+      s+=`<line x1="${m.l}" y1="${Y(v).toFixed(1)}" x2="${W-m.r}" y2="${Y(v).toFixed(1)}"
+           stroke="var(--grid)" stroke-width="1"/>`;
+      s+=`<text class="axis" x="${m.l-9}" y="${(Y(v)+3.6).toFixed(1)}" text-anchor="end">${fmt0(v)}</text>`;
+    });
+    let area=`${X(0).toFixed(1)},${Y(0).toFixed(1)} `, ln="";
+    for(let i=0;i<V.n;i++){
+      area+=`${X(i).toFixed(1)},${Y(V.dd[i]).toFixed(1)} `;
+      ln  +=`${X(i).toFixed(1)},${Y(V.dd[i]).toFixed(1)} `;
+    }
+    area+=`${X(V.n-1).toFixed(1)},${Y(0).toFixed(1)}`;
+    s+=`<polygon points="${area}" fill="var(--loss)" opacity=".16"/>`;
+    s+=`<polyline points="${ln}" fill="none" stroke="var(--loss)" stroke-width="1.6"/>`;
+    const wi=V.dd.indexOf(V.maxDD);
+    const anchor = X(wi) > W*0.72 ? "end" : "start", off = anchor==="end" ? -9 : 9;
+    s+=`<circle cx="${X(wi).toFixed(1)}" cy="${Y(V.maxDD).toFixed(1)}" r="3.5" fill="var(--loss)"/>`;
+    s+=`<text class="axis" x="${(X(wi)+off).toFixed(1)}" y="${(Y(V.maxDD)+4).toFixed(1)}"
+         text-anchor="${anchor}" fill="var(--loss)" font-weight="600">worst ${fmt0(V.maxDD)}</text>`;
+    const DS=days();
+    DS.forEach((d,k)=>{ if(!k) return;
+      s+=`<line x1="${X(d.start).toFixed(1)}" y1="${m.t}" x2="${X(d.start).toFixed(1)}"
+           y2="${m.t+ih2}" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 4"/>`; });
+    DS.forEach(d=>{
+      const mid=(X(d.start)+X(d.end))/2;
+      s+=`<text class="daylab" x="${mid.toFixed(1)}" y="${h-8}" text-anchor="middle">${dayLabel(d.k)}</text>`;
+    });
+    svg.innerHTML=s;
+  }
+
+  // ---- coin table ------------------------------------------------------
+  // Differences between coins have never been statistically distinguishable
+  // (best vs worst ran z=+1.14 over 771 bets), so this is here to check the
+  // filter behaves consistently, not to pick a coin. If skipping 60c+ entries
+  // reflects something real it should help every tape, not one or two.
+  function drawCoins(){
+    // Follows both filters, like every other panel: pick a coin at the top and
+    // the whole page -- this table included -- shows that coin alone. With
+    // "All coins" selected it lists all five and each row doubles as a picker.
+    const g=new Map();
+    for(let k=0;k<V.n;k++){
+      if(!g.has(V.s[k])) g.set(V.s[k], {n:0,w:0,net:0,e:0});
+      const r=g.get(V.s[k]); r.n++; r.w+=V.w[k]; r.net+=V.net[k]; r.e+=V.e[k];
+    }
+    const rows=[...g.entries()].sort((a,b)=>b[1].net-a[1].net);
+    const cn=document.getElementById("coinNote");
+    if(cn) cn.textContent = coin==="ALL"
+      ? "same rule on each tape · tap a row to isolate it"
+      : `showing ${coin} only · tap the row or “All coins” above to go back`;
+    document.getElementById("coinbody").innerHTML = rows.map(([sym,r])=>
+      `<tr class="pick${coin===sym?" sel":""}" data-coin="${sym}">`
+      + `<td>${sym}</td><td>${r.n}</td><td>${(r.w/r.n*100).toFixed(1)}%</td>`
+      + `<td>${(r.e/r.n).toFixed(1)}\u00A2</td>`
+      + `<td class="${r.net>=0?"pos":"neg"}">${fmt(r.net)}</td>`
+      + `<td class="${r.net>=0?"pos":"neg"}">${(r.net/(10*r.n)*100).toFixed(2)}%</td>`
+      + `<td class="${r.net>=0?"pos":"neg"}">${fmt(r.net/r.n)}</td></tr>`).join("");
+    // rows double as a picker
+    [...document.getElementById("coinbody").querySelectorAll("tr.pick")].forEach(tr=>{
+      tr.addEventListener("click", ()=>{
+        const c = tr.getAttribute("data-coin");
+        coin = (coin===c) ? "ALL" : c;
+        renderAll();
+      });
+    });
+  }
+
+  // ---- day table -------------------------------------------------------
+  function drawDays(){
+    document.getElementById("daybody").innerHTML = days().map(d=>
+      `<tr><td>${dayLabel(d.k)}</td><td>${d.n}</td><td>${(d.w/d.n*100).toFixed(1)}%</td>`
+      + `<td class="${d.net>=0?"pos":"neg"}">${fmt(d.net)}</td>`
+      + `<td>${fmt(V.q[d.end])}</td></tr>`).join("");
+  }
+
+  // ---- hover readout ---------------------------------------------------
+  const ro=document.getElementById("readout");
+  function wireHover(){
+    const hit=svgEq.querySelector("#hit"); if(!hit) return;
+    const xh=svgEq.querySelector("#xh"), xl=svgEq.querySelector("#xh-l"),
+          xc=svgEq.querySelector("#xh-c");
+    function at(evt){
+      const r=svgEq.getBoundingClientRect();
+      const px=(evt.clientX-r.left)/r.width*W;
+      let i=Math.round((px-M.l)/iw*(V.n-1));
+      i=Math.max(0,Math.min(V.n-1,i));
+      xh.style.display=""; xl.setAttribute("x1",X(i)); xl.setAttribute("x2",X(i));
+      xc.setAttribute("cx",X(i)); xc.setAttribute("cy",svgEq._Y(V.q[i]));
+      ro.classList.remove("idle");
+      document.getElementById("r-i").textContent=(i+1)+" / "+V.n;
+      document.getElementById("r-t").textContent=V.t[i]+" UTC";
+      document.getElementById("r-s").textContent=V.s[i];
+      document.getElementById("r-d").textContent=V.d[i];
+      document.getElementById("r-e").textContent=V.e[i].toFixed(1)+"¢";
+      const wEl=document.getElementById("r-w");
+      wEl.textContent=(V.w[i]?"won ":"lost ")+fmt(V.net[i]);
+      wEl.className=V.w[i]?"pos":"neg";
+      const qEl=document.getElementById("r-q");
+      qEl.textContent=fmt(V.q[i]); qEl.className=V.q[i]>=0?"pos":"neg";
+    }
+    hit.addEventListener("pointermove",at);
+    hit.addEventListener("pointerdown",at);
+    hit.addEventListener("pointerleave",()=>{ xh.style.display="none"; ro.classList.add("idle"); });
+  }
+
+  // ---- clock -----------------------------------------------------------
+  const HM={t:18,r:20,b:34,l:48};
+  function nightBands(y0,y1){
+    let s="";
+    [[23,24],[0,7]].forEach(([a,b])=>{
+      const x0=HM.l+(a/24)*(W-HM.l-HM.r), x1=HM.l+(b/24)*(W-HM.l-HM.r);
+      s+=`<rect x="${x0.toFixed(1)}" y="${y0}" width="${(x1-x0).toFixed(1)}" height="${y1-y0}"
+           fill="var(--night)"/>`;
+      [x0,x1].forEach(x=>{ s+=`<line x1="${x.toFixed(1)}" y1="${y0}" x2="${x.toFixed(1)}"
+           y2="${y1}" stroke="var(--night-line)" stroke-width="1"/>`; });
+    });
+    return s;
+  }
+  function hourLabels(HR,y){
+    return HR.filter(r=>r.h%3===0).map(r=>{
+      const x=HM.l+((r.h+0.5)/24)*(W-HM.l-HM.r);
+      return `<text class="hourlab" x="${x.toFixed(1)}" y="${y}" text-anchor="middle">${hlab(r.h)}</text>`;
+    }).join("");
+  }
+  function drawClock(){
+    const HR=hours(), TOT=V.n||1;
+    const aw=HR.filter(r=>!isNight(r.h)), sl=HR.filter(r=>isNight(r.h));
+    const sm=(a,k)=>a.reduce((x,y)=>x+y[k],0);
+    const busiest=HR.reduce((a,b)=>b.n>a.n?b:a);
+    const money=v=>`<span class="${v>=0?"pos":"neg"}">${fmt0(v)}</span>`;
+    const tile=(k,v,d)=>`<div class="v"><span class="k">${k}</span><span class="n">${v}</span>`
+      + `<span class="d">${d}</span></div>`;
+    document.getElementById("verdict").innerHTML =
+      tile("While you're up", `${(sm(aw,"n")/TOT*100).toFixed(0)}%`,
+           `7am–11pm · ${sm(aw,"n")} signals · ${money(sm(aw,"net"))}`)
+    + tile("While you're asleep", `${(sm(sl,"n")/TOT*100).toFixed(0)}%`,
+           `11pm–7am · ${sm(sl,"n")} signals · ${money(sm(sl,"net"))}`)
+    + tile("Busiest hour", hlab(busiest.h),
+           `${busiest.n} signals — ${(busiest.n/TOT*100).toFixed(1)}% of the total`);
+    const note=document.getElementById("clockNote");
+    if(note) note.textContent=`the same ${V.n} signals, placed on your clock`;
+
+    // counts
+    (function(){
+      const Hh=300, ih3=Hh-HM.t-HM.b, iw3=W-HM.l-HM.r;
+      const max=Math.ceil(Math.max(...HR.map(r=>r.n),1)/10)*10||10;
+      const Y=v=>HM.t+(1-v/max)*ih3;
+      let s=nightBands(HM.t,HM.t+ih3);
+      for(let v=0;v<=max;v+=10){
+        s+=`<line x1="${HM.l}" y1="${Y(v).toFixed(1)}" x2="${W-HM.r}" y2="${Y(v).toFixed(1)}"
+             stroke="var(--grid)" stroke-width="1"/>`;
+        s+=`<text class="axis" x="${HM.l-9}" y="${(Y(v)+3.6).toFixed(1)}" text-anchor="end">${v}</text>`;
+      }
+      const bw=iw3/24*0.7;
+      HR.forEach(r=>{
+        const x=HM.l+((r.h+0.5)/24)*iw3-bw/2, y=Y(r.n);
+        s+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}"
+             height="${(HM.t+ih3-y).toFixed(1)}" rx="2" fill="var(--accent)" opacity=".85"/>`;
+        s+=`<text class="hourlab" x="${(x+bw/2).toFixed(1)}" y="${(y-5).toFixed(1)}"
+             text-anchor="middle">${r.n}</text>`;
+      });
+      document.getElementById("counts").innerHTML=s+hourLabels(HR,Hh-10);
+    })();
+
+    // hourly pnl
+    (function(){
+      const Hh=260, ih3=Hh-HM.t-HM.b, iw3=W-HM.l-HM.r;
+      const lo=Math.min(0,...HR.map(r=>r.net)), hi=Math.max(0,...HR.map(r=>r.net));
+      const pad=(hi-lo)*.12||10, L=lo-pad, U=hi+pad;
+      const Y=v=>HM.t+(U-v)/(U-L)*ih3;
+      let s=nightBands(HM.t,HM.t+ih3);
+      niceTicks(L,U,4).forEach(v=>{
+        s+=`<line x1="${HM.l}" y1="${Y(v).toFixed(1)}" x2="${W-HM.r}" y2="${Y(v).toFixed(1)}"
+             stroke="var(--grid)" stroke-width="1"/>`;
+        s+=`<text class="axis" x="${HM.l-9}" y="${(Y(v)+3.6).toFixed(1)}" text-anchor="end">${fmt0(v)}</text>`;
+      });
+      s+=`<line x1="${HM.l}" y1="${Y(0).toFixed(1)}" x2="${W-HM.r}" y2="${Y(0).toFixed(1)}"
+           stroke="var(--muted)" stroke-width="1.25" opacity=".55"/>`;
+      const bw=iw3/24*0.7;
+      HR.forEach(r=>{
+        const x=HM.l+((r.h+0.5)/24)*iw3-bw/2, y0=Y(0), y1=Y(r.net);
+        s+=`<rect x="${x.toFixed(1)}" y="${Math.min(y0,y1).toFixed(1)}" width="${bw.toFixed(1)}"
+             height="${Math.max(1,Math.abs(y1-y0)).toFixed(1)}" rx="2"
+             fill="${r.net>=0?"var(--gain)":"var(--loss)"}" opacity=".85"/>`;
+      });
+      document.getElementById("pnl").innerHTML=s+hourLabels(HR,Hh-10);
+    })();
+
+    document.getElementById("hourbody").innerHTML=HR.map(r=>
+      `<tr class="${isNight(r.h)?"night":""}">
+         <td>${hlab(r.h)}</td><td>${r.n}</td><td>${(r.n/TOT*100).toFixed(1)}%</td>
+         <td>${r.n?(r.w/r.n*100).toFixed(1)+"%":"—"}</td>
+         <td class="${r.net>=0?"pos":"neg"}">${fmt0(r.net)}</td>
+         <td>${r.lon} · <span class="${r.lonet>=0?"pos":"neg"}">${fmt0(r.lonet)}</span></td>
+       </tr>`).join("");
+  }
+
+  // ---- wiring ----------------------------------------------------------
+  const bAll=document.getElementById("viewAll"), bChp=document.getElementById("viewCheap"),
+        vNote=document.getElementById("viewNote"), splitBtn=document.getElementById("splitBtn");
+  function drawCoinSeg(){
+    const seg=document.getElementById("coinSeg");
+    seg.innerHTML = ["ALL",...COINS].map(c=>
+      `<button data-coin="${c}" aria-pressed="${String(coin===c)}">`
+      + `${c==="ALL"?"All coins":c}</button>`).join("");
+    [...seg.querySelectorAll("button")].forEach(b=>{
+      b.addEventListener("click",()=>{
+        const c=b.getAttribute("data-coin");
+        if(coin!==c){ coin=c; renderAll(); }
+      });
+    });
+  }
+
+  function drawRuleSeg(){
+    const seg=document.getElementById("ruleSeg");
+    if(!seg) return;
+    seg.innerHTML = [{n:"V6",label:"Champion v6"},
+      ...RULES.map(r=>({n:r.n,label:r.n}))].map(r=>
+      `<button data-rule="${r.n}" aria-pressed="${String(rule===r.n)}">${r.label}</button>`).join("");
+    [...seg.querySelectorAll("button")].forEach(b=>{
+      b.addEventListener("click",()=>{
+        const r=b.getAttribute("data-rule");
+        if(rule!==r){ rule=r; renderAll(); }
+      });
+    });
+  }
+
+  function renderAll(){
+    V=buildView();
+    drawCoinSeg(); drawRuleSeg();
+    bAll.setAttribute("aria-pressed", String(mode==="all"));
+    bChp.setAttribute("aria-pressed", String(mode!=="all"));
+    const priceTxt = mode==="all" ? "every price" : "entries under 60¢";
+    const coinTxt  = coin==="ALL" ? "all five coins" : coin + " only";
+    if(rule==="V6"){
+      vNote.textContent = `Champion v6 · ${coinTxt} at ${priceTxt} — ${V.n} of ${ALL} signals, `
+        + `${V.windows} independent window${V.windows===1?"":"s"}`;
+    } else {
+      const def=ruleDef(rule);
+      vNote.textContent = V.n
+        ? `${rule} (${def.why}) · frozen ${def.f} · ${coinTxt} at ${priceTxt} — `
+          + `${V.n} bets, ${V.windows} independent window${V.windows===1?"":"s"}`
+        : `${rule} (${def.why}) · frozen ${def.f} — nothing logged yet in this export`;
+    }
+    if(splitBtn){
+      splitBtn.hidden = (mode!=="all");
+      if(mode!=="all") showSplit=false;
+      splitBtn.setAttribute("aria-pressed", String(showSplit));
+    }
+    drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawClock();
+  }
+  bAll.addEventListener("click",()=>{ if(mode!=="all"){ mode="all"; renderAll(); } });
+  bChp.addEventListener("click",()=>{ if(mode!=="cheap"){ mode="cheap"; renderAll(); } });
+  const bandBtn=document.getElementById("bandBtn");
+  bandBtn.addEventListener("click",()=>{
+    showBand=!showBand; bandBtn.setAttribute("aria-pressed",String(showBand)); drawEq();
+  });
+  if(splitBtn) splitBtn.addEventListener("click",()=>{
+    showSplit=!showSplit; splitBtn.setAttribute("aria-pressed",String(showSplit)); drawEq();
+  });
+  renderAll();
+})();
+</script>
