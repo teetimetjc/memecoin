@@ -1,0 +1,34 @@
+name: Kalshi Probe
+
+# Step 1 of the path to automated order placement: confirm the API key works
+# against the authenticated portfolio endpoints and find out whether it carries
+# trade scope or only read scope.
+#
+# MANUAL ONLY. There is deliberately no schedule. It runs when a human presses
+# the button and never on its own.
+#
+# The script it runs issues GETs exclusively -- it cannot place, cancel or
+# modify an order, and cannot move money. See kalshi_probe.py's header.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Probe credentials
+        env:
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          KALSHI_KEY_ID:  ${{ secrets.KALSHI_KEY_ID }}
+        run: python kalshi_probe.py
