@@ -152,7 +152,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
 
 <div class="wrap">
   <header>
-    <p class="eyebrow">Kalshi · 15-minute crypto · $10 flat</p>
+    <p class="eyebrow" id="eyebrow">Kalshi · 15-minute crypto · $10 flat</p>
     <h1>Every v6 signal, one bet at a time</h1>
     <p class="sub" id="subline">Every fire of the CVD rule since it went live. Earlier rows are
       excluded: they chose the rule's threshold and direction, so they can't also grade it.</p>
@@ -169,6 +169,10 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     <div class="viewrow">
       <span class="lbl">Coin</span>
       <div class="seg" id="coinSeg" role="group" aria-label="Which coin to include"></div>
+    </div>
+    <div class="viewrow">
+      <span class="lbl">Stake</span>
+      <div class="seg" id="stakeSeg" role="group" aria-label="Dollars staked per bet"></div>
     </div>
     <div class="viewrow">
       <span class="lbl">Rule</span>
@@ -228,7 +232,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   </section>
 
   <section class="panel">
-    <div class="phead"><h2>By day</h2><span class="note">$10 flat on every signal</span></div>
+    <div class="phead"><h2>By day</h2><span class="note" id="dayNote">$10 flat on every signal</span></div>
     <div class="tablewrap"><table>
       <thead><tr><th>Day</th><th>Bets</th><th>Hit&nbsp;%</th><th>Day P&amp;L</th><th>Running</th></tr></thead>
       <tbody id="daybody"></tbody>
@@ -270,6 +274,8 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   </section>
 
   <section class="foot">
+    <p id="footNote" hidden><strong>The dollar figures in these notes are written for
+      $10 flat.</strong> The panels above follow the stake you picked; this commentary does not.</p>
     <p><strong>The firing rate is close to flat.</strong> Every hour gets between 17 and 40 of the
       signals — no hour carries more than about 5%. That’s expected: crypto trades continuously
       and the rule keys off order flow, not a US schedule. Which means the hourly profit swings
@@ -319,11 +325,26 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   const MAXP = 60;                       // the price cut the evidence supports
   let mode = "all";                      // "all" | "cheap"
   let coin = "ALL";                      // "ALL" or a single symbol
+  let stake = 10;                        // dollars per bet
+  const STAKES = [5, 10, 20];
   let rule = "V6";                       // "V6" (champion) or a challenger name
   const COINS = [...new Set(D.s)].sort();
   const RULES = D.rules || [];
   const ruleBit = nm => RULES.findIndex(r=>r.n===nm);
   const ruleDef = nm => RULES.find(r=>r.n===nm);
+
+  // Net on one bet at the selected stake. NOT a scaling of the $10 net: Kalshi's
+  // fee is ceil(0.07 x contracts x p x (1-p)) to the CENT, and a ceiling does not
+  // scale, so $20 is a little better than twice $10 and $5 a little worse than
+  // half. At $10 we hand back the payload's own figure, which was computed from
+  // the unrounded entry price, so the default view stays bit-for-bit what it was.
+  function netAt(i, s){
+    if(s === 10) return D.n[i];
+    const p = D.e[i]/100;
+    const contracts = s/p;
+    const fee = Math.ceil(0.07*contracts*p*(1-p)*100)/100;
+    return Math.round(((D.w[i]?contracts:0) - s - fee)*100)/100;
+  }
 
   const fmt  = v => (v<0?"-":"+") + "$" + Math.abs(v).toFixed(2);
   const fmt0 = v => (v<0?"-":"+") + "$" + Math.abs(v).toFixed(0);
@@ -344,9 +365,11 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     let eq=0, peak=0;
     for(const i of ix){
       v.t.push(D.t[i]); v.s.push(D.s[i]); v.d.push(D.d[i]);
-      v.e.push(D.e[i]); v.w.push(D.w[i]); v.net.push(D.n[i]);
-      eq += D.n[i]; peak = Math.max(peak, eq);
-      v.q.push(eq); v.dd.push(eq - peak);
+      v.e.push(D.e[i]); v.w.push(D.w[i]);
+      const nt = netAt(i, stake);
+      v.net.push(nt);
+      eq = Math.round((eq + nt)*100)/100; peak = Math.max(peak, eq);
+      v.q.push(eq); v.dd.push(Math.round((eq - peak)*100)/100);
     }
     v.wins  = v.w.reduce((a,b)=>a+b,0);
     v.total = v.q.length ? v.q[v.q.length-1] : 0;
@@ -367,7 +390,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       const m  = cl.reduce((a,c)=>a+c[0],0)/nb;
       const va = cl.reduce((a,c)=>a + c[1]*Math.pow(c[0]/c[1]-m,2),0)/(cl.length-1);
       v.sdc = Math.sqrt(va/cl.length) * Math.sqrt(nb);
-    } else v.sdc = D.sdc || D.sd;
+    } else v.sdc = (D.sdc || D.sd) * stake/10;
     return v;
   }
 
@@ -445,7 +468,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
          </div>`;
       return;
     }
-    const staked=10*V.n;
+    const staked=stake*V.n;
     const winNets=[], lossNets=[];
     for(let k=0;k<V.n;k++) (V.w[k]?winNets:lossNets).push(V.net[k]);
     const avgWin  = winNets.reduce((a,b)=>a+b,0)/(winNets.length||1);
@@ -481,7 +504,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       for(let i=0;i<ALL;i++){
         if(coin!=="ALL" && D.s[i] !== coin) continue;
         if(D.e[i] < MAXP) continue;
-        skipped++; skippedNet += D.n[i];
+        skipped++; skippedNet += netAt(i, stake);
       }
       tiles.push(["Skipped", `${skipped} bets`,
         `${coin==="ALL"?"":coin+" "}entries at 60¢+ · they would have returned ${fmt0(skippedNet)}`,
@@ -621,7 +644,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       + `<td>${sym}</td><td>${r.n}</td><td>${(r.w/r.n*100).toFixed(1)}%</td>`
       + `<td>${(r.e/r.n).toFixed(1)}\u00A2</td>`
       + `<td class="${r.net>=0?"pos":"neg"}">${fmt(r.net)}</td>`
-      + `<td class="${r.net>=0?"pos":"neg"}">${(r.net/(10*r.n)*100).toFixed(2)}%</td>`
+      + `<td class="${r.net>=0?"pos":"neg"}">${(r.net/(stake*r.n)*100).toFixed(2)}%</td>`
       + `<td class="${r.net>=0?"pos":"neg"}">${fmt(r.net/r.n)}</td></tr>`).join("");
     // rows double as a picker
     [...document.getElementById("coinbody").querySelectorAll("tr.pick")].forEach(tr=>{
@@ -779,6 +802,20 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     });
   }
 
+  function drawStakeSeg(){
+    const seg=document.getElementById("stakeSeg");
+    if(!seg) return;
+    seg.innerHTML = STAKES.map(s=>
+      `<button data-stake="${s}" aria-pressed="${String(stake===s)}">$${s}`
+      + `${s===10?" (default)":""}</button>`).join("");
+    [...seg.querySelectorAll("button")].forEach(b=>{
+      b.addEventListener("click",()=>{
+        const s=+b.getAttribute("data-stake");
+        if(stake!==s){ stake=s; renderAll(); }
+      });
+    });
+  }
+
   function drawRuleSeg(){
     const seg=document.getElementById("ruleSeg");
     if(!seg) return;
@@ -805,19 +842,26 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
 
   function renderAll(){
     V=buildView();
-    drawSubline(); drawCoinSeg(); drawRuleSeg();
+    drawSubline(); drawCoinSeg(); drawStakeSeg(); drawRuleSeg();
+    const eb=document.getElementById("eyebrow");
+    if(eb) eb.textContent = `Kalshi · 15-minute crypto · $${stake} flat`;
+    const dn=document.getElementById("dayNote");
+    if(dn) dn.textContent = `$${stake} flat on every signal`;
+    const fn=document.getElementById("footNote");
+    if(fn) fn.hidden = (stake===10);
     bAll.setAttribute("aria-pressed", String(mode==="all"));
     bChp.setAttribute("aria-pressed", String(mode!=="all"));
     const priceTxt = mode==="all" ? "every price" : "entries under 60¢";
     const coinTxt  = coin==="ALL" ? "all five coins" : coin + " only";
+    const stakeTxt = ` · $${stake} a bet`;
     if(rule==="V6"){
       vNote.textContent = `Champion v6 · ${coinTxt} at ${priceTxt} — ${V.n} of ${ALL} signals, `
-        + `${V.windows} independent window${V.windows===1?"":"s"}`;
+        + `${V.windows} independent window${V.windows===1?"":"s"}${stakeTxt}`;
     } else {
       const def=ruleDef(rule);
       vNote.textContent = V.n
         ? `${rule} (${def.why}) · frozen ${ctStamp(def.f)} · ${coinTxt} at ${priceTxt} — `
-          + `${V.n} bets, ${V.windows} independent window${V.windows===1?"":"s"}`
+          + `${V.n} bets, ${V.windows} independent window${V.windows===1?"":"s"}${stakeTxt}`
         : `${rule} (${def.why}) · frozen ${ctStamp(def.f)} — nothing logged yet`;
     }
     if(splitBtn){
