@@ -59,27 +59,38 @@ def _book(ticker, hdrs, depth=32):
     if not r.ok:
         return None, None, f"HTTP {r.status_code} {r.text[:80]}"
     try:
-        ob = r.json().get("orderbook") or {}
+        body = r.json()
     except Exception as e:
         return None, None, f"bad JSON: {e}"
 
+    # The live API returns {"orderbook_fp": {"yes_dollars": [["0.9590","129.00"],
+    # ...]}} -- a different container key from the documented "orderbook", sides
+    # suffixed _dollars, and BOTH price and size as decimal STRINGS. Reading only
+    # the documented shape found nothing and reported "no resting size", which
+    # looked like an illiquid market rather than a parsing miss. Accept every
+    # spelling and decide by what is present.
+    ob = body.get("orderbook_fp") or body.get("orderbook") or {}
+
     def levels(side):
-        raw = ob.get(side)
+        raw = ob.get(f"{side}_dollars")
+        in_dollars = raw is not None
+        if raw is None:
+            raw = ob.get(side)
         if not raw:
             return []
         out = []
         for lv in raw:
             try:
                 if isinstance(lv, dict):
-                    # Newer payloads name the fields; older ones are bare pairs.
-                    p = lv.get("price") or lv.get("price_cents")
+                    p = lv.get("price", lv.get("price_cents"))
                     if p is None and lv.get("price_dollars") is not None:
-                        p = float(lv["price_dollars"]) * 100
-                    q = lv.get("size") or lv.get("quantity") or lv.get("count")
+                        p, in_dollars = lv["price_dollars"], True
+                    q = lv.get("size", lv.get("quantity", lv.get("count")))
                 else:
                     p, q = lv[0], lv[1]
-                out.append((float(p), float(q)))
-            except (TypeError, ValueError, IndexError):
+                p, q = float(p), float(q)
+                out.append((p * 100 if in_dollars else p, q))
+            except (TypeError, ValueError, IndexError, KeyError):
                 continue
         return out
 
