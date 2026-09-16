@@ -27,6 +27,10 @@ jobs:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          # Step 2: log the order each signal WOULD send, to the "Dry Run" tab.
+          # Places nothing -- dryrun.py contains no POST and no order path.
+          # Set to "0" to switch the logging off without a code change.
+          DRY_RUN_ORDERS: "1"
         run: python predictor.py
       - name: Resolve outcomes
         env:
