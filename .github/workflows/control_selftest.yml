@@ -1,17 +1,24 @@
 name: Control Self-Test
 
-# Proves the halt switch works while there is still nothing that can bet.
+# Proves the halt switch works, and can set the per-bet stake.
 #
-# It reads the Control tab, reads the account balance, runs the funding check
-# at 1/3/5 signals, HALTS, confirms the halt stuck, then resumes. It sends one
-# real Pushover notification on the way through, so the alert path is proven
-# rather than assumed.
+# With no input it reads the Control tab, reads the balance, runs the funding
+# check at 1/3/5 signals, HALTS, confirms the halt stuck, then resumes -- and
+# sends one real Pushover notification so the alert path is proven.
 #
-# Manual only. No schedule, no orders, no money -- control.py issues one
-# signed GET for the balance and otherwise touches only the spreadsheet.
+# With a `stake` input it instead writes that stake to the Control tab. The tab
+# stays the source of truth; this just saves editing the cell by hand.
+#
+# Manual only. No orders either way: control.py issues one signed GET for the
+# balance and otherwise touches only the spreadsheet.
 
 on:
   workflow_dispatch:
+    inputs:
+      stake:
+        description: "Dollars per bet to write to the Control tab (blank = run the self-test instead)"
+        required: false
+        default: ""
 
 jobs:
   selftest:
@@ -27,16 +34,16 @@ jobs:
 
       - run: pip install requests gspread google-auth cryptography
 
-      # Same gate the predictor runs behind: if anything gained an order path,
-      # do not even run the self-test.
-      - name: No-trade guard
-        run: python no_trade_guard.py
-
-      - name: Control self-test
+      - name: Control self-test or set stake
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
-        run: python control.py
+        run: |
+          if [ -n "${{ inputs.stake }}" ]; then
+            python control.py --stake "${{ inputs.stake }}"
+          else
+            python control.py
+          fi
