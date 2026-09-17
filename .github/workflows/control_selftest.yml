@@ -1,27 +1,32 @@
-name: Control Self-Test
+name: Control
 
-# Proves the halt switch works, and can set the per-bet stake.
+# The betting switch, and the proof that it works.
 #
-# With no input it reads the Control tab, reads the balance, runs the funding
-# check at 1/3/5 signals, HALTS, confirms the halt stuck, then resumes -- and
-# sends one real Pushover notification so the alert path is proven.
+#   action: selftest (default) -- reads the Control tab and the balance, runs
+#     the funding check, HALTS, confirms the halt stuck, resumes, and sends one
+#     real Pushover notification so the alert path is proven.
+#   action: run   -- set the Control tab to RUNNING. Betting may resume at the
+#     next 15-minute window.
+#   action: halt  -- set it to HALTED. Betting stops at the next window.
+#   stake: <n>    -- write a new per-bet stake instead.
 #
-# With a `stake` input it instead writes that stake to the Control tab. The tab
-# stays the source of truth; this just saves editing the cell by hand.
-#
-# Manual only. No orders either way: control.py issues one signed GET for the
-# balance and otherwise touches only the spreadsheet.
+# Manual only. None of these place an order: control.py issues one signed GET
+# for the balance and otherwise touches only the spreadsheet.
 
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: "selftest | run | halt"
+        required: false
+        default: "selftest"
       stake:
-        description: "Dollars per bet to write to the Control tab (blank = run the self-test instead)"
+        description: "Dollars per bet (overrides action when set)"
         required: false
         default: ""
 
 jobs:
-  selftest:
+  control:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +39,7 @@ jobs:
 
       - run: pip install requests gspread google-auth cryptography
 
-      - name: Control self-test or set stake
+      - name: Control
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
@@ -44,6 +49,10 @@ jobs:
         run: |
           if [ -n "${{ inputs.stake }}" ]; then
             python control.py --stake "${{ inputs.stake }}"
+          elif [ "${{ inputs.action }}" = "run" ]; then
+            python control.py --run
+          elif [ "${{ inputs.action }}" = "halt" ]; then
+            python control.py --halt
           else
             python control.py
           fi
