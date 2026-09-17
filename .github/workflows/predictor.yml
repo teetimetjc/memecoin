@@ -57,10 +57,13 @@ jobs:
           LIVE_TRADING: "0"
           ALLOW_LIVE_TRADING: "1"
           LIVE_ALLOW_DOWN: "1"
-          # THE MEASUREMENT. Two signed GETs per signal, no orders: the quote
-          # at signal time and the quote about four minutes in, from the host
-          # a live order would actually pay.
-          MEASURE_ENTRY_DECAY: "1"
+          # OFF. This measured whether the edge survived the 3-4 minute entry a
+          # BOT would have been stuck with. Bets are now placed by hand from
+          # the phone alert at ~35 seconds -- the entry the history is already
+          # priced at -- so there is no delay left to measure. It also slept
+          # four minutes on every run. Set back to "1" if automated betting
+          # ever becomes possible.
+          MEASURE_ENTRY_DECAY: "0"
         run: python predictor.py
       - name: Resolve outcomes
         env:
