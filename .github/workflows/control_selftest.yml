@@ -1,0 +1,42 @@
+name: Control Self-Test
+
+# Proves the halt switch works while there is still nothing that can bet.
+#
+# It reads the Control tab, reads the account balance, runs the funding check
+# at 1/3/5 signals, HALTS, confirms the halt stuck, then resumes. It sends one
+# real Pushover notification on the way through, so the alert path is proven
+# rather than assumed.
+#
+# Manual only. No schedule, no orders, no money -- control.py issues one
+# signed GET for the balance and otherwise touches only the spreadsheet.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests gspread google-auth cryptography
+
+      # Same gate the predictor runs behind: if anything gained an order path,
+      # do not even run the self-test.
+      - name: No-trade guard
+        run: python no_trade_guard.py
+
+      - name: Control self-test
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: python control.py
