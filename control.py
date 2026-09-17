@@ -253,6 +253,18 @@ if __name__ == "__main__":
         for _r in _rows[-8:]:
             print("   ", " | ".join(str(_x)[:46] for _x in _r))
         sys.exit(0)
+    if len(sys.argv) > 1 and sys.argv[1] == "--placed":
+        # How many orders have ever actually been placed. Printed as a bare
+        # number so a shell can compare it before and after a window and know
+        # whether to stop trying. Any failure prints nothing and exits non-zero
+        # -- a caller looping "until one bet lands" must stop on an unreadable
+        # count, never treat it as "no bet yet" and keep betting.
+        import predictor as P
+        _sh = P._get_client().open_by_key(P.SPREADSHEET_ID)
+        _rows = _sh.worksheet("Live Bets").get_all_values()
+        _i = _rows[0].index("Status")
+        print(sum(1 for _r in _rows[1:] if len(_r) > _i and _r[_i] == "PLACED"))
+        sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1] == "--status":
         # Read-only. Says what the switch is without touching it, so checking
         # cannot itself change anything or fire a notification.
