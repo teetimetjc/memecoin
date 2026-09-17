@@ -31,6 +31,10 @@ on:
         description: 'Type exactly: PLACE ONE REAL BET'
         required: true
         default: ''
+      windows:
+        description: 'How many consecutive windows to try before giving up'
+        required: false
+        default: '6'
       allow_down:
         description: 'Allow a DOWN bet (sent as an ask; position is read back after)'
         type: boolean
@@ -69,15 +73,6 @@ jobs:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
         run: python control.py --status
 
-      # Signals are computed at the window boundary; firing mid-window would
-      # test nothing. Wait for the next :00/:15/:30/:45.
-      - name: Wait for the next 15-minute boundary
-        run: |
-          now=$(date -u +%s)
-          next=$(( (now / 900 + 1) * 900 ))
-          echo "Waiting $((next - now))s for $(date -u -d @$next +%H:%M:%S) UTC."
-          sleep $((next - now))
-
       - name: Arm the switch ($5, one bet)
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
@@ -89,7 +84,7 @@ jobs:
           python control.py --stake 5
           python control.py --run
 
-      - name: Place at most one $5 bet
+      - name: Keep trying windows until ONE bet lands
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
@@ -102,7 +97,35 @@ jobs:
           LIVE_ALLOW_DOWN: ${{ github.event.inputs.allow_down == 'true' && '1' || '0' }}
           DRY_RUN_ORDERS: "1"
           MEASURE_ENTRY_DECAY: "0"
-        run: python predictor.py
+        run: |
+          set -o pipefail
+          # A qualifying signal needs the champion rule to fire AND an entry
+          # under the price cut, which does not happen every window. One-shot
+          # dispatches kept spending a window to discover there was nothing to
+          # bet. So try consecutive windows and stop the moment one order is
+          # placed.
+          #
+          # LIVE_MAX_BETS caps orders PER WINDOW, so the loop itself is what
+          # keeps the total at one: it must break as soon as the count rises.
+          # If the count cannot be read, it breaks too -- an unreadable count
+          # must never be treated as "still nothing placed".
+          before=$(python control.py --placed) || { echo "cannot read placed count; stopping"; exit 1; }
+          echo "orders placed before this test: $before"
+
+          for w in $(seq 1 ${{ github.event.inputs.windows || 6 }}); do
+            now=$(date -u +%s); next=$(( (now / 900 + 1) * 900 ))
+            echo "--- window $w: waiting $((next - now))s for $(date -u -d @$next +%H:%M) UTC"
+            sleep $((next - now))
+
+            python predictor.py || echo "(predictor exited non-zero; checking anyway)"
+
+            after=$(python control.py --placed) || { echo "cannot read placed count; stopping"; break; }
+            if [ "$after" -gt "$before" ]; then
+              echo "=== ORDER PLACED in window $w ($before -> $after). Stopping."
+              break
+            fi
+            echo "--- window $w: nothing qualified; trying the next one"
+          done
 
       # always(): the switch goes back off even if the step above threw, timed
       # out, or was cancelled. A test that leaves the brakes off is worse than
