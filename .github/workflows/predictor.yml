@@ -40,6 +40,14 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           # Still logging the order each signal WOULD send.
           DRY_RUN_ORDERS: "1"
+          # PHONE ALERTS. The order API cannot trade from here -- every order
+          # is refused with market_not_found for markets that are live and
+          # priced -- so the bot names the bets and a human places them in the
+          # Kalshi app. Fires ~35 seconds into the window, which is the entry
+          # the whole history is priced at.
+          BET_ALERTS: "1"
+          ALERT_STAKE: "5"
+          ALERT_TZ: "America/Chicago"
           # BETTING IS OFF. The history is priced at the ~35 second quote, but
           # a live order cannot reach the book until the order host lists the
           # market three to four minutes later, by which time the price has
