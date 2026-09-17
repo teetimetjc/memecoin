@@ -130,7 +130,15 @@ def plan_order(ts_str, symbol, side, kalshi, signal_entry):
             round(signal_entry, 1) if signal_entry is not None else ""]
 
     if not ticker:
-        return base + ["", "", "", "", "", "", "NO", "no ticker on the signal row"]
+        # "No ticker" has two very different causes and they need different
+        # answers, so say which one. No market at all means Kalshi had nothing
+        # priced for that window -- a bet that could never have been placed.
+        # A market with no ticker field would be our own parsing failure, and
+        # that one is a bug worth fixing before real money depends on it.
+        return base + ["", "", "", "", "", "", "NO",
+                       "no Kalshi market for this window"
+                       if not kalshi else
+                       "market present but its ticker field was empty"]
 
     hdrs = _kalshi_headers("GET", f"/trade-api/v2/markets/{ticker}/orderbook")
     yes_b, no_b, err = _book(ticker, hdrs)

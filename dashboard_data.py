@@ -74,6 +74,28 @@ def build(rows):
     if not sig:
         raise SystemExit("FAILED: no graded champion signals found.")
 
+    # Why dry-run orders come back "no market resolved". The dry run can only
+    # say the ticker was missing; it cannot say whether Kalshi genuinely had no
+    # market for that window or whether we dropped one we had. The Predictions
+    # tab settles it, because it logs the ticker independently: count champion
+    # fires since the dry run started whose late ticker is blank. If that count
+    # matches the failures, the market was never there and nothing is lost; if
+    # it is far lower, the loss is ours and it is a bug to fix before real
+    # money depends on it.
+    DRY_FROM = "2026-09-16 23:15"
+    fired = noticker = 0
+    for r in rows[1:]:
+        if cell(r, "Model Version") != P.MODEL_VERSION:
+            continue
+        if cell(r, "CVD Call") not in ("UP", "DOWN"):
+            continue
+        ts = cell(r, "Timestamp")
+        if not ts or ts < DRY_FROM:
+            continue
+        fired += 1
+        if not cell(r, "K Late Ticker"):
+            noticker += 1
+
     sig.sort(key=lambda x: (x[0], x[1]))
     T, S, Dd, E, W, N, Q, R = [], [], [], [], [], [], [], []
     eq = 0.0
@@ -109,6 +131,8 @@ def build(rows):
         "sd": round(statistics.stdev(N), 4) if len(N) > 1 else 0.0,
         "sdc": round(sdc, 4),
         "win": len(cl),
+        "fired_since_dry": fired,
+        "no_late_ticker": noticker,
         "built": P.datetime.now(P.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
 
@@ -199,8 +223,10 @@ def _why(note):
     n = (note or "").strip().lower()
     if not n:
         return "unexplained"
-    if "no ticker" in n:
-        return "no market resolved"
+    if "no kalshi market" in n or "no ticker" in n:
+        return "no market that window"
+    if "ticker field was empty" in n:
+        return "market found, ticker missing (bug)"
     if "no resting size" in n:
         return "empty book"
     if "http 404" in n:
