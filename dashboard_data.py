@@ -84,6 +84,7 @@ def build(rows):
     # money depends on it.
     DRY_FROM = "2026-09-16 23:15"
     fired = noticker = 0
+    nt_when, nt_coins = [], {}
     for r in rows[1:]:
         if cell(r, "Model Version") != P.MODEL_VERSION:
             continue
@@ -95,6 +96,14 @@ def build(rows):
         fired += 1
         if not cell(r, "K Late Ticker"):
             noticker += 1
+            # WHEN they happened, not just how many. The count alone could not
+            # tell a steady rate from a burst that has already stopped, and
+            # those mean different things: a rate is structural, a burst is an
+            # episode. Also which coins, since one tape misbehaving is a very
+            # different problem from all five.
+            nt_when.append(ts)
+            nt_coins[cell(r, "Symbol").replace("USDT", "")] = \
+                nt_coins.get(cell(r, "Symbol").replace("USDT", ""), 0) + 1
 
     sig.sort(key=lambda x: (x[0], x[1]))
     T, S, Dd, E, W, N, Q, R = [], [], [], [], [], [], [], []
@@ -133,6 +142,9 @@ def build(rows):
         "win": len(cl),
         "fired_since_dry": fired,
         "no_late_ticker": noticker,
+        "no_ticker_first": nt_when[0] if nt_when else "",
+        "no_ticker_last": nt_when[-1] if nt_when else "",
+        "no_ticker_coins": dict(sorted(nt_coins.items(), key=lambda kv: -kv[1])),
         "built": P.datetime.now(P.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
 
