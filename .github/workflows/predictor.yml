@@ -51,6 +51,11 @@ jobs:
           # run; set the Control tab to HALTED to stop immediately.
           LIVE_TRADING: "1"
           ALLOW_LIVE_TRADING: "1"
+          # DOWN bets. Sent as an ask on the YES contract, which should open a
+          # NO position -- standard, but inferred rather than documented, so
+          # live.py reads positions back after every fill and prints the
+          # direction it actually got. Set to "0" to go back to UP-only.
+          LIVE_ALLOW_DOWN: "1"
         run: python predictor.py
       - name: Resolve outcomes
         env:
