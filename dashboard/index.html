@@ -116,8 +116,12 @@ tbody td:first-child{font-family:"IBM Plex Sans",sans-serif}
 .foot strong{color:var(--ink); font-weight:600}
 /* --- view filter --- */
 .viewbar{display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px}
-.seg{display:inline-flex; background:var(--surface); border:1px solid var(--rule);
-  border-radius:999px; padding:3px; gap:2px}
+/* The pill row must WRAP, not run off the side. With six price cuts and six
+   rules it is wider than a phone, and inline-flex with nowrap buttons pushed
+   "Under 50c", XRP and C6 past the right edge where they could not be tapped.
+   Wrapping keeps every option reachable at any width. */
+.seg{display:flex; flex-wrap:wrap; background:var(--surface);
+  border:1px solid var(--rule); border-radius:22px; padding:3px; gap:2px}
 .seg button{font-family:"IBM Plex Mono",monospace; font-size:.76rem; letter-spacing:.03em;
   color:var(--muted); background:transparent; border:0; border-radius:999px;
   padding:7px 15px; cursor:pointer; white-space:nowrap}
@@ -127,6 +131,16 @@ tbody td:first-child{font-family:"IBM Plex Sans",sans-serif}
 .viewrow{display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px}
 .viewrow .lbl{font-family:"IBM Plex Mono",monospace; font-size:.66rem; letter-spacing:.12em;
   text-transform:uppercase; color:var(--muted); min-width:86px}
+/* On a phone the label takes a whole line of its own so the pills get the full
+   width, and the buttons tighten up to fit more per row. */
+@media (max-width:620px){
+  body{padding-inline:16px}
+  .viewrow{flex-direction:column; align-items:stretch; gap:6px}
+  .viewrow .lbl{min-width:0}
+  .seg{width:100%}
+  .seg button{padding:8px 12px; font-size:.74rem; flex:1 0 auto}
+  .viewbar{gap:14px}
+}
 tbody tr.sel td{background:var(--accent-soft)}
 tbody tr.sel td:first-child{font-weight:600; color:var(--ink)}
 tbody tr.pick{cursor:pointer}
