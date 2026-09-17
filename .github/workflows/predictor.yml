@@ -52,6 +52,11 @@ jobs:
           # graded; they just do not buzz.
           ALERT_HOUR_START: "7"
           ALERT_HOUR_END: "22"
+          # CASH-OUT DATA. Read-only: samples what each bet could be SOLD for
+          # at +5 and +10 minutes, so the early-exit question can be settled
+          # with numbers instead of instinct. Adds ~10 minutes to each run,
+          # and runs after the alert so it can never delay it.
+          MEASURE_MIDWINDOW: "1"
           # BETTING IS OFF. The history is priced at the ~35 second quote, but
           # a live order cannot reach the book until the order host lists the
           # market three to four minutes later, by which time the price has
