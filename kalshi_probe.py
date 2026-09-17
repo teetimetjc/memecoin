@@ -500,6 +500,95 @@ def listing_timeline():
     return 0
 
 
+
+def min_order():
+    """Send the smallest real order Kalshi allows and report exactly what comes back.
+
+    Every larger test has been ambiguous. A zero count is rejected before the
+    market is ever looked up, so the ticker-form probe's "count complaint means
+    the ticker resolved" is not sound -- both forms returned the same count
+    error, which is what count-validated-first looks like. And the invalid
+    ticker probe returned a Washington geo-block, which may be real or may be
+    what an uncategorisable ticker defaults to.
+
+    Count 0.01 at roughly 40c is about four tenths of a cent. That buys an
+    unambiguous answer:
+
+      200/201            orders work. Everything else was our bug.
+      403 geo            the runner's location is blocked; no code fix helps.
+      404 market_not_found  with a ticker that GET resolves on this same host,
+                         which would mean the market is hidden from this
+                         account rather than missing.
+      anything else      a real payload problem, named precisely.
+
+    Uses the CURRENT open market, and the same body live.place() sends.
+    """
+    import uuid
+    print("=" * 62)
+    print("MINIMUM ORDER PROBE  (count 0.01 -- about $0.004)")
+    print("=" * 62)
+    hh = _sign("GET", "/trade-api/v2/markets", SCHEME)
+    r = requests.get(NEW_HOST + "/trade-api/v2/markets",
+                     params={"series_ticker": "KXBTC15M", "limit": 1,
+                             "status": "open"}, headers=hh, timeout=15)
+    ms = r.json().get("markets", []) if r.ok else []
+    if not ms:
+        print("  no open BTC market right now")
+        return 1
+    m = ms[0]
+    tk = m.get("ticker")
+    ask = m.get("yes_ask_dollars")
+    print(f"  ticker : {tk}")
+    print(f"  status : {m.get('status')}   yes_ask={ask}  yes_bid={m.get('yes_bid_dollars')}")
+
+    # Prove the SAME host resolves this ticker by GET, so a market_not_found
+    # from the order endpoint cannot be blamed on the market not existing.
+    hh2 = _sign("GET", f"/trade-api/v2/markets/{tk}", SCHEME)
+    g = requests.get(f"{NEW_HOST}/trade-api/v2/markets/{tk}", headers=hh2, timeout=10)
+    print(f"  GET {tk} on the ORDER host -> {g.status_code}")
+
+    try:
+        price = float(ask)
+    except (TypeError, ValueError):
+        price = 0.50
+    price = min(0.99, max(0.01, round(price, 2)))
+
+    body = {
+        "ticker": tk,
+        "client_order_id": str(uuid.uuid4()),
+        "side": "bid",
+        "count": "0.01",
+        "price": f"{price:.4f}",
+        "time_in_force": "good_till_canceled",
+        "self_trade_prevention_type": "taker_at_cross",
+        "post_only": False, "cancel_order_on_pause": False,
+        "reduce_only": False, "subaccount": 0, "exchange_index": 0,
+    }
+    hdrs = _sign("POST", "/trade-api/v2/portfolio/events/orders", SCHEME)
+    hdrs["Content-Type"] = "application/json"
+    print(f"  POST count=0.01 price={price:.4f}  (~${0.01 * price:.4f})")
+    try:
+        rr = requests.post(ORDER_URL, json=body, headers=hdrs, timeout=15)
+    except Exception as e:
+        print(f"  request failed: {e}")
+        return 1
+    print()
+    print(f"  -> HTTP {rr.status_code}")
+    print(f"  -> {rr.text[:400]}")
+    print()
+    if rr.status_code in (200, 201):
+        print("  ORDERS WORK. Everything blocking us was our own bug.")
+    elif rr.status_code == 403:
+        print("  BLOCKED BY LOCATION. No code change fixes this; it needs to run")
+        print("  from somewhere Kalshi permits.")
+    elif rr.status_code == 404 and g.status_code == 200:
+        print("  The order endpoint says market_not_found for a ticker THIS HOST")
+        print("  just resolved by GET. The market is hidden from this account,")
+        print("  not missing -- most likely a permissions or jurisdiction limit.")
+    print("=" * 62)
+    return 0
+
+
 def ticker_form():
     """Does the order endpoint want the MARKET ticker or the EVENT ticker?
 
@@ -606,6 +695,12 @@ def find_order_endpoint():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--min-order":
+        for _s in ("pss", "pkcs1v15"):
+            SCHEME = _s
+            if _get("/portfolio/balance")[0] == 200:
+                break
+        sys.exit(min_order())
     if len(sys.argv) > 1 and sys.argv[1] == "--listing-timeline":
         sys.exit(listing_timeline())
     if len(sys.argv) > 1 and sys.argv[1] == "--find-order-endpoint":
