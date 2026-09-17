@@ -46,7 +46,8 @@ LIVE_SHEET = "Live Bets"
 # Kalshi's V2 create-order endpoint. NOT the api.elections host this project
 # reads market data from, and NOT /portfolio/orders -- that path answers 410
 # "deprecated_v1_order_endpoint" on every host.
-ORDER_URL = "https://external-api.kalshi.com/trade-api/v2/portfolio/events/orders"
+ORDER_HOST = "https://external-api.kalshi.com"
+ORDER_URL = ORDER_HOST + "/trade-api/v2/portfolio/events/orders"
 
 # The V2 book has ONE side per market, quoted as the YES price, with bid/ask
 # rather than yes/no -- confirmed by probing: "side must be bid or ask".
@@ -72,7 +73,12 @@ SLIP_BUFFER_CENTS = 1.0
 # How long to wait before re-trying a market the order host has not listed yet.
 # The window is 15 minutes and we fire about 35 seconds in, so this spends
 # slack we have plenty of.
-RETRY_WAIT_SECONDS = 75
+# Kalshi does not list the current window's market immediately. Measured on
+# 17 Sep: the market ending 17:30 was not found at 17:15:35 or at 17:16:50,
+# and resolved at 17:19:08 -- roughly three to four minutes into the window.
+# So retry across that span rather than guessing a single short wait.
+RETRY_WAIT_SECONDS = 60
+RETRY_ATTEMPTS = 4          # ~4 minutes, inside a 15-minute window
 
 LIVE_HEADERS = [
     "Timestamp", "Symbol", "Side", "Ticker", "Entry ¢", "Limit ¢",
@@ -89,6 +95,46 @@ def enabled():
 def _client_order_id(ts, symbol):
     """Stable per signal, so a retried run cannot double-bet the same window."""
     return f"v6-{ts.replace(' ', 'T').replace(':', '')}-{symbol}"[:64]
+
+
+def current_entry(ticker, side):
+    """What the market costs RIGHT NOW, in cents, for the side we want.
+
+    The quote in the signal row was taken ~35 seconds into the window. By the
+    time Kalshi lists the market, minutes later, that number is stale and a
+    limit derived from it would simply miss. Re-quoting before each retry is
+    what makes the retry worth doing.
+
+    Buying YES pays the ask. Buying NO pays 100 minus the yes bid. Returns
+    None if the market still is not there.
+    """
+    import predictor as P
+    try:
+        hdrs = P._kalshi_headers("GET", f"/trade-api/v2/markets/{ticker}")
+        r = requests.get(f"{ORDER_HOST}/trade-api/v2/markets/{ticker}",
+                         headers=hdrs or {}, timeout=10)
+        if not r.ok:
+            return None
+        m = r.json().get("market") or {}
+    except Exception:
+        return None
+
+    def cents(key):
+        v = m.get(key)
+        try:
+            return float(v) * 100.0
+        except (TypeError, ValueError):
+            return None
+
+    if side == "UP":
+        px = cents("yes_ask_dollars") or cents("last_price_dollars")
+    else:
+        bid = cents("yes_bid_dollars")
+        px = (100.0 - bid) if bid is not None else None
+        if px is None:
+            last = cents("last_price_dollars")
+            px = (100.0 - last) if last is not None else None
+    return px if (px and 0 < px < 100) else None
 
 
 def place(ts, symbol, side, ticker, entry_cents, stake):
@@ -207,15 +253,27 @@ def run_window(client, signals, stake=None):
 
     rows = [attempt(s_) for s_ in signals]
 
-    # Give Kalshi a moment to list the market, then try the racers once more.
-    # There are ~14 minutes left in the window, so waiting is free.
-    retry = [i for i, r in enumerate(rows) if r[8] == "NOTYET"]
-    if retry:
+    # Kalshi lists the window's market a few minutes in, so keep trying across
+    # that span -- and RE-QUOTE each time, because a limit built from the
+    # opening quote would only miss by the time the market appears.
+    for round_no in range(1, RETRY_ATTEMPTS + 1):
+        retry = [i for i, r in enumerate(rows) if r[8] == "NOTYET"]
+        if not retry:
+            break
         print(f"  [live] {len(retry)} market(s) not listed yet; waiting "
-              f"{RETRY_WAIT_SECONDS}s and trying once more.")
+              f"{RETRY_WAIT_SECONDS}s (attempt {round_no}/{RETRY_ATTEMPTS}).")
         time.sleep(RETRY_WAIT_SECONDS)
         for i in retry:
-            rows[i] = attempt(signals[i])
+            ts_, sym_, side_, tk_, entry_ = signals[i]
+            fresh = current_entry(tk_, side_)
+            if fresh is not None:
+                if fresh >= MAX_ENTRY:
+                    rows[i][8] = "SKIPPED"
+                    rows[i][10] = (f"re-quoted at {fresh:.0f}c, at or above the "
+                                   f"{MAX_ENTRY:.0f}c cut")
+                    continue
+                entry_ = fresh
+            rows[i] = attempt((ts_, sym_, side_, tk_, entry_))
 
     placed, failures = 0, []
     for r in rows:
