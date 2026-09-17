@@ -275,10 +275,6 @@ def main():
     return 0 if ok else 1
 
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--find-order-endpoint":
-        sys.exit(find_order_endpoint())
-    sys.exit(main())
 
 
 # --- order endpoint discovery -------------------------------------------
@@ -346,3 +342,9 @@ def find_order_endpoint():
                 print(f"        body: {txt}")
     print("=" * 62)
     return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--find-order-endpoint":
+        sys.exit(find_order_endpoint())
+    sys.exit(main())
