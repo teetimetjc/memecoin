@@ -603,6 +603,118 @@ def min_order():
     return 0
 
 
+
+def why_blocked():
+    """Why can this account not place an order? Narrow it to one cause.
+
+    Known: a GET returns an active market with a real book, and a POST for the
+    same ticker on every host, path and ticker form returns market_not_found.
+    Two explanations survive and they call for completely different fixes:
+
+      LOCATION   Kalshi blocks trading from where this runner sits. One probe
+                 returned a Washington geo-block, and GitHub's runners are
+                 Azure machines. Fix: run from somewhere else. The code is fine.
+
+      ACCOUNT    The key lacks trade scope, or the account cannot trade these
+                 markets. Fix: Kalshi support. Moving the code changes nothing.
+
+    Four checks separate them:
+
+      1. where this machine actually is, by IP
+      2. whether the exchange says trading is open at all
+      3. whether the key can read the portfolio, which proves its scope
+      4. whether a NON-crypto market gives the SAME error
+
+    Check 4 is the discriminator. The geo message named Sports, Elections,
+    Politics, Culture, Tech and Science, and Mentions -- crypto was absent. If
+    a blocked category answers 403 while crypto answers 404, the two are
+    different mechanisms and crypto is not a geo problem at all. If everything
+    answers the same way, it is account-wide.
+    """
+    import uuid
+    print("=" * 62)
+    print("WHY BLOCKED -- location, or account?")
+    print("=" * 62)
+
+    print("\n  1. WHERE IS THIS MACHINE")
+    for url in ("https://ipinfo.io/json", "https://ifconfig.co/json"):
+        try:
+            r = requests.get(url, timeout=10)
+            if r.ok:
+                j = r.json()
+                print(f"     {j.get('ip','?')}  "
+                      f"{j.get('region') or j.get('region_name','?')}, "
+                      f"{j.get('country') or j.get('country_iso','?')}  "
+                      f"({j.get('city','?')}, org={str(j.get('org',''))[:40]})")
+                break
+        except Exception as e:
+            print(f"     {url} failed: {str(e)[:60]}")
+
+    print("\n  2. IS THE EXCHANGE OPEN")
+    for path in ("/trade-api/v2/exchange/status", "/trade-api/v2/exchange/schedule"):
+        code, body = _get(path)
+        print(f"     {path.split('/v2')[1]:22s} {code} {str(body)[:110]}")
+
+    print("\n  3. WHAT CAN THE KEY DO")
+    for path in ("/trade-api/v2/portfolio/balance",
+                 "/trade-api/v2/portfolio/orders",
+                 "/trade-api/v2/portfolio/positions",
+                 "/trade-api/v2/portfolio/fills"):
+        code, body = _get(path)
+        verdict = "ok" if code == 200 else "DENIED"
+        print(f"     {path.split('/portfolio/')[1]:12s} {code} {verdict}  {str(body)[:80]}")
+
+    print("\n  4. DOES A NON-CRYPTO MARKET FAIL THE SAME WAY")
+    # One crypto market and one from another series, same request shape.
+    def first_open(series):
+        hh = _sign("GET", "/trade-api/v2/markets", SCHEME)
+        r = requests.get(NEW_HOST + "/trade-api/v2/markets",
+                         params={"series_ticker": series, "limit": 1, "status": "open"},
+                         headers=hh, timeout=15)
+        ms = r.json().get("markets", []) if r.ok else []
+        return ms[0] if ms else None
+
+    def try_order(mkt, label):
+        if not mkt:
+            print(f"     {label:14s} no open market to test")
+            return
+        body = {
+            "ticker": mkt["ticker"],
+            "client_order_id": str(uuid.uuid4()),
+            "side": "bid", "count": "0.01", "price": "0.0100",
+            "time_in_force": "good_till_canceled",
+            "self_trade_prevention_type": "taker_at_cross",
+            "post_only": False, "cancel_order_on_pause": False,
+            "reduce_only": False, "subaccount": 0, "exchange_index": 0,
+        }
+        hd = _sign("POST", "/trade-api/v2/portfolio/events/orders", SCHEME)
+        hd["Content-Type"] = "application/json"
+        try:
+            rr = requests.post(ORDER_URL, json=body, headers=hd, timeout=15)
+            print(f"     {label:14s} {mkt['ticker'][:26]:26s} -> {rr.status_code} {rr.text[:95]}")
+        except Exception as e:
+            print(f"     {label:14s} failed {str(e)[:60]}")
+
+    try_order(first_open("KXBTC15M"), "crypto 15m")
+    for alt in ("KXHIGHNY", "KXINXD", "KXAAPL"):
+        m = first_open(alt)
+        if m:
+            try_order(m, f"other ({alt})")
+            break
+    else:
+        print("     other series   none of the tried series had an open market")
+
+    print()
+    print("  READ IT LIKE THIS")
+    print("   - region says Washington and everything 404s  -> LOCATION")
+    print("   - non-crypto 403s but crypto 404s             -> different causes;")
+    print("     crypto is not geo-blocked and the 404 is something else")
+    print("   - portfolio reads DENIED                      -> key lacks scope")
+    print("   - everything 404s from a permitted region     -> ACCOUNT")
+    print("=" * 62)
+    return 0
+
+
 def ticker_form():
     """Does the order endpoint want the MARKET ticker or the EVENT ticker?
 
@@ -709,6 +821,12 @@ def find_order_endpoint():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--why-blocked":
+        for _s in ("pss", "pkcs1v15"):
+            SCHEME = _s
+            if _get("/portfolio/balance")[0] == 200:
+                break
+        sys.exit(why_blocked())
     if len(sys.argv) > 1 and sys.argv[1] == "--min-order":
         for _s in ("pss", "pkcs1v15"):
             SCHEME = _s
