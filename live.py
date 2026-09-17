@@ -33,6 +33,7 @@ The rules it enforces:
 import json
 import math
 import os
+import uuid
 from datetime import datetime, timezone
 
 import requests
@@ -40,6 +41,24 @@ import requests
 import control
 
 LIVE_SHEET = "Live Bets"
+
+# Kalshi's V2 create-order endpoint. NOT the api.elections host this project
+# reads market data from, and NOT /portfolio/orders -- that path answers 410
+# "deprecated_v1_order_endpoint" on every host.
+ORDER_URL = "https://external-api.kalshi.com/trade-api/v2/portfolio/events/orders"
+
+# The V2 book has ONE side per market, quoted as the YES price, with bid/ask
+# rather than yes/no -- confirmed by probing: "side must be bid or ask".
+#
+#   UP   = bid: buy the YES contract at its price. Unambiguous.
+#   DOWN = ask: selling YES at p is economically buying NO at (1-p). That is
+#          standard, and it is still an INFERENCE -- no page we have says it.
+#          Reading it backwards would put every DOWN bet on the wrong side of
+#          the market, which is the worst failure this system could have, so
+#          DOWN is not bet until one order has been placed and the resulting
+#          position read back and confirmed. UP-only halves the bet rate and
+#          costs nothing that a day of data will not replace.
+ALLOW_DOWN = os.environ.get("LIVE_ALLOW_DOWN", "").strip() == "1"
 
 # The slice the evidence supports. Entries at or above this are not bet.
 MAX_ENTRY = 50.0
@@ -81,35 +100,53 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
     if entry_cents >= MAX_ENTRY:
         return "SKIPPED", f"entry {entry_cents:.0f}c is at or above the {MAX_ENTRY:.0f}c cut", 0, 0.0, ""
 
+    if side == "DOWN" and not ALLOW_DOWN:
+        return ("SKIPPED",
+                "DOWN needs the ask-side mapping confirmed against a real fill",
+                0, 0.0, "")
+
     limit_c = min(99.0, math.ceil(entry_cents + SLIP_BUFFER_CENTS))
     contracts = int(stake / (limit_c / 100.0))     # never round UP into overspend
     if contracts < 1:
         return "SKIPPED", f"${stake:.2f} buys no contracts at {limit_c:.0f}c", 0, 0.0, ""
     cost = round(contracts * limit_c / 100.0, 2)
 
+    # The order is priced in YES terms whichever way we are betting: buying YES
+    # at p, or selling YES at (1-p) which is buying NO at p.
+    yes_price = limit_c / 100.0 if side == "UP" else 1.0 - limit_c / 100.0
+
     body = {
         "ticker": ticker,
-        "client_order_id": _client_order_id(ts, symbol),
-        "action": "buy",
-        "side": "yes" if side == "UP" else "no",
-        "count": contracts,
-        "type": "limit",
-        ("yes_price" if side == "UP" else "no_price"): int(limit_c),
+        # Deterministic UUID from the window and symbol: the server dedupes on
+        # it, so a retried run cannot bet the same signal twice, and the V2
+        # endpoint requires UUID form rather than a free-text id.
+        "client_order_id": str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                          _client_order_id(ts, symbol))),
+        "side": "bid" if side == "UP" else "ask",
+        "count": f"{contracts}.00",
+        "price": f"{yes_price:.4f}",
+        "time_in_force": "good_till_canceled",
+        "self_trade_prevention_type": "taker_at_cross",
+        "post_only": False,
+        "cancel_order_on_pause": False,
+        "reduce_only": False,
+        "subaccount": 0,
+        "exchange_index": 0,
     }
-    hdrs = P._kalshi_headers("POST", "/trade-api/v2/portfolio/orders")
+    hdrs = P._kalshi_headers("POST", "/trade-api/v2/portfolio/events/orders")
     if not hdrs:
         return "FAILED", "could not sign the order request", 0, 0.0, ""
     hdrs["Content-Type"] = "application/json"
 
     try:
-        r = requests.post(f"{P.KALSHI_BASE}/portfolio/orders",
-                          json=body, headers=hdrs, timeout=15)
+        r = requests.post(ORDER_URL, json=body, headers=hdrs, timeout=15)
     except Exception as e:
         return "FAILED", f"request failed: {e}", contracts, cost, ""
 
     if r.status_code in (200, 201):
         try:
-            oid = (r.json().get("order") or {}).get("order_id", "")
+            j = r.json()
+            oid = j.get("order_id") or (j.get("order") or {}).get("order_id", "")
         except Exception:
             oid = ""
         return "PLACED", "", contracts, cost, oid
