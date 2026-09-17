@@ -13,6 +13,7 @@ Usage:
 
 import os, sys, json, math, time, argparse, requests
 
+import control
 import dryrun
 from datetime import datetime, timedelta, timezone
 
@@ -1497,6 +1498,25 @@ def run_predictions():
             dryrun.append(client, dry_rows)
         except Exception as e:
             print(f"  [dry run] could not write tab: {e}")
+
+        # Exercise the funding check on every window, months before it guards
+        # real money. It only reports here -- halting during a dry run would
+        # be noise -- but the balance read, the arithmetic and the all-or-
+        # nothing verdict are the same ones live betting will depend on, so
+        # they are being tested continuously rather than on the day it counts.
+        try:
+            state, why = control.get_state(client)
+            ok, needed, bal, reason = control.check_window(client, len(dry_rows))
+            control.record_balance(client, bal)
+            baltxt = "unreadable" if bal is None else f"${bal:.2f}"
+            print(f"  [funding] {len(dry_rows)} signal(s) need ${needed:.2f}, "
+                  f"balance {baltxt} -- "
+                  f"{'fundable' if ok else 'WOULD HALT: ' + reason}")
+            if state != control.RUNNING:
+                print(f"  [funding] Control tab is {state}"
+                      f"{' -- ' + why if why else ''}; betting would be skipped.")
+        except Exception as e:
+            print(f"  [funding] check skipped: {e}")
 
     if written == 0:
         sys.exit(

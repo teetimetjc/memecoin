@@ -26,7 +26,8 @@ import re
 import sys
 
 # Files to read. Anything the predictor workflow could execute.
-SCAN = ["predictor.py", "dryrun.py", "kalshi_probe.py", "dashboard_data.py"]
+SCAN = ["predictor.py", "dryrun.py", "control.py", "kalshi_probe.py",
+        "dashboard_data.py"]
 
 WRITE_VERB = re.compile(r"requests\.(post|put|patch|delete)\s*\(", re.I)
 ORDER_WORD = re.compile(
