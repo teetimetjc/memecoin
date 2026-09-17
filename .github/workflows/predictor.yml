@@ -48,6 +48,10 @@ jobs:
           BET_ALERTS: "1"
           ALERT_STAKE: "5"
           ALERT_TZ: "America/Chicago"
+          # Waking hours only. Overnight windows are still collected and
+          # graded; they just do not buzz.
+          ALERT_HOUR_START: "7"
+          ALERT_HOUR_END: "22"
           # BETTING IS OFF. The history is priced at the ~35 second quote, but
           # a live order cannot reach the book until the order host lists the
           # market three to four minutes later, by which time the price has
