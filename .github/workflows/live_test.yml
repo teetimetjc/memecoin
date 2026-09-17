@@ -10,10 +10,14 @@ name: Live Test (ONE real $5 bet)
 # What keeps this small:
 #   LIVE_MAX_BETS=1   at most ONE order, ever, on the cheapest qualifying signal
 #   stake $5          so the answer costs $5, not $25
-#   LIVE_ALLOW_DOWN=0 UP only. DOWN is sent as an ask and is BELIEVED to open a
-#                     NO position, but that is the one mapping that would put a
-#                     bet on the wrong side of the market. An UP fill is read
-#                     back first; DOWN stays off until that is confirmed.
+#   allow_down        off by default. DOWN is sent as an ask and is BELIEVED to
+#                     open a NO position -- the one mapping that would put a bet
+#                     on the wrong side of the market. Turning it on does not
+#                     gamble on that being right: verify_positions() reads the
+#                     account back and prints the direction actually held, so a
+#                     $5 DOWN bet is the experiment that SETTLES the mapping
+#                     rather than one that depends on it. Worst case is $5 on
+#                     the wrong side and a definite answer.
 #   re-HALTED after   the Control tab goes back to HALTED even if the run fails,
 #                     so this cannot leak into the next 15-minute window.
 #
@@ -27,6 +31,11 @@ on:
         description: 'Type exactly: PLACE ONE REAL BET'
         required: true
         default: ''
+      allow_down:
+        description: 'Allow a DOWN bet (sent as an ask; position is read back after)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -90,7 +99,7 @@ jobs:
           ALLOW_LIVE_TRADING: "1"
           LIVE_TRADING: "1"
           LIVE_MAX_BETS: "1"
-          LIVE_ALLOW_DOWN: "0"
+          LIVE_ALLOW_DOWN: ${{ github.event.inputs.allow_down == 'true' && '1' || '0' }}
           DRY_RUN_ORDERS: "1"
           MEASURE_ENTRY_DECAY: "0"
         run: python predictor.py
