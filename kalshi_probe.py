@@ -291,10 +291,19 @@ BOGUS_TICKER = "KXNOSUCHMARKET-00XXX000000-00"
 
 CANDIDATES = [
     ("POST", "/trade-api/v2/portfolio/orders"),      # the deprecated one
-    ("POST", "/trade-api/v2/orders"),
-    ("POST", "/trade-api/v2/portfolio/order"),
-    ("POST", "/v2/portfolio/orders"),
-    ("POST", "/trade-api/v2/portfolio/orders/create"),
+    ("POST", "/trade-api/v3/portfolio/orders"),
+    ("POST", "/trade-api/v3/orders"),
+    ("POST", "/trade-api/v2/portfolio/orders/v2"),
+    ("POST", "/trade-api/v2/portfolio/v2/orders"),
+    ("POST", "/api/v2/portfolio/orders"),
+    ("POST", "/v2/orders"),
+]
+
+# Paths that might publish the API's own schema. If one answers, it names the
+# real order endpoint outright and ends the guessing.
+SPEC_PATHS = [
+    "/trade-api/v2/openapi.json", "/trade-api/openapi.json",
+    "/openapi.json", "/trade-api/v2/swagger.json", "/trade-api/v2/docs",
 ]
 
 
@@ -329,6 +338,23 @@ def find_order_endpoint():
         if code == 200:
             print(f"  signing: {scheme}")
             break
+    # Ask the API to describe itself first -- a spec beats guessing paths.
+    import re as _re
+    print("\n  --- looking for a published schema")
+    for sp in SPEC_PATHS:
+        try:
+            rr = requests.get(P.KALSHI_BASE.replace("/trade-api/v2", "") + sp, timeout=10)
+        except Exception as e:
+            print(f"  GET  {sp:42s} -> failed: {e}")
+            continue
+        print(f"  GET  {sp:42s} -> {rr.status_code}")
+        if rr.status_code == 200:
+            hits = sorted(set(_re.findall(r'"(/[^"]*orders?[^"]*)"', rr.text)))[:12]
+            if hits:
+                print("        order-ish paths in the spec:")
+                for h in hits:
+                    print(f"          {h}")
+
     for price_field in ("yes_price", "yes_price_dollars"):
         print(f"\n  --- price field: {price_field}")
         for method, path in CANDIDATES:
