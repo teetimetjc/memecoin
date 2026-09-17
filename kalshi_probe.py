@@ -564,27 +564,41 @@ def min_order():
         "post_only": False, "cancel_order_on_pause": False,
         "reduce_only": False, "subaccount": 0, "exchange_index": 0,
     }
-    hdrs = _sign("POST", "/trade-api/v2/portfolio/events/orders", SCHEME)
-    hdrs["Content-Type"] = "application/json"
-    print(f"  POST count=0.01 price={price:.4f}  (~${0.01 * price:.4f})")
-    try:
-        rr = requests.post(ORDER_URL, json=body, headers=hdrs, timeout=15)
-    except Exception as e:
-        print(f"  request failed: {e}")
-        return 1
+    # The one combination never actually tried: a VALID count with the event
+    # ticker. The earlier form probe used count 0, which is rejected before the
+    # market is looked up, so it tested nothing about tickers. Try both forms
+    # against both hosts and both order paths -- at 0.01 contracts the whole
+    # matrix costs a few cents, and guessing has been more expensive than that.
+    evt = m.get("event_ticker") or tk.rsplit("-", 1)[0]
+    paths = ["/trade-api/v2/portfolio/events/orders", "/trade-api/v2/portfolio/orders"]
+    hosts = [("external-api", NEW_HOST), ("api.elections", OLD_HOST)]
+    print(f"  event ticker: {evt}")
     print()
-    print(f"  -> HTTP {rr.status_code}")
-    print(f"  -> {rr.text[:400]}")
+    print(f"  {'host':14s} {'path':22s} {'ticker':7s} -> result")
+    best = None
+    for hname, host in hosts:
+        for path in paths:
+            for label, tkr in (("market", tk), ("event", evt)):
+                body["ticker"] = tkr
+                body["client_order_id"] = str(uuid.uuid4())
+                hd = _sign("POST", path, SCHEME)
+                hd["Content-Type"] = "application/json"
+                try:
+                    rr = requests.post(host + path, json=body, headers=hd, timeout=15)
+                    code, txt = rr.status_code, rr.text[:110]
+                except Exception as e:
+                    code, txt = 0, str(e)[:110]
+                short = path.split("/portfolio/")[1]
+                print(f"  {hname:14s} {short:22s} {label:7s} -> {code} {txt}")
+                if code in (200, 201) and best is None:
+                    best = (hname, path, label)
     print()
-    if rr.status_code in (200, 201):
-        print("  ORDERS WORK. Everything blocking us was our own bug.")
-    elif rr.status_code == 403:
-        print("  BLOCKED BY LOCATION. No code change fixes this; it needs to run")
-        print("  from somewhere Kalshi permits.")
-    elif rr.status_code == 404 and g.status_code == 200:
-        print("  The order endpoint says market_not_found for a ticker THIS HOST")
-        print("  just resolved by GET. The market is hidden from this account,")
-        print("  not missing -- most likely a permissions or jurisdiction limit.")
+    if best:
+        print(f"  IT WORKS: host={best[0]} path={best[1]} ticker={best[2]}")
+        print("  Orders can be placed. Point live.py at this combination.")
+    else:
+        print("  Every combination refused. The order path is not the problem;")
+        print("  this account cannot trade these markets from here.")
     print("=" * 62)
     return 0
 
