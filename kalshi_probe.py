@@ -35,6 +35,7 @@ Usage:  python kalshi_probe.py
 import json
 import os
 import sys
+import time
 
 import requests
 
@@ -370,6 +371,101 @@ def listing_lead():
     return 0
 
 
+
+def listing_timeline():
+    """Does the ORDER host EVER list a window's market while that window runs?
+
+    This is the question the whole live-betting plan rests on, and it has never
+    been answered. Two things are already known: the order host 404s at ~35
+    seconds, and on 17 Sep a window's ETH and DOGE markets were polled for 4.5
+    minutes and never appeared at all. If markets reliably list a few minutes
+    in, an automated bet is possible and the only cost is a worse entry. If
+    they sometimes never list during their own window, no amount of polling
+    fixes it and automated betting on 15-minute markets is not viable.
+
+    So: take the CURRENT window's ticker for all five coins and poll the order
+    host every 15 seconds until the window closes, recording when each one
+    first appears and whether it is actually priced.
+
+    Read-only. Signed GETs only, no order body anywhere in this function.
+    """
+    import predictor as P
+    from datetime import datetime, timezone, timedelta
+    print("=" * 62)
+    print("LISTING TIMELINE  (read-only) -- when can an order actually go in?")
+    print("=" * 62)
+
+    now = datetime.now(timezone.utc)
+    boundary = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    close = boundary + timedelta(minutes=15)
+    print(f"  window {boundary:%H:%M} -> {close:%H:%M} UTC, now {now:%H:%M:%S}\n")
+
+    # Ask the PRICE host what this window's ticker is, per coin. That host
+    # lists immediately, so this is just name resolution, not the measurement.
+    targets = {}
+    for sym in P.KALSHI_SERIES:
+        try:
+            k = P.get_kalshi_odds(sym, allow_recent=False)
+            if k and k.get("ticker"):
+                targets[sym] = k["ticker"]
+        except Exception as e:
+            print(f"  {sym}: could not resolve ticker -- {e}")
+    if not targets:
+        print("  no tickers resolved; nothing to poll.")
+        return 1
+    for sym, tk in targets.items():
+        print(f"  {sym:9s} {tk}")
+    print()
+
+    seen = {}
+    round_no = 0
+    while datetime.now(timezone.utc) < close - timedelta(seconds=20):
+        round_no += 1
+        secs = int((datetime.now(timezone.utc) - boundary).total_seconds())
+        for sym, tk in targets.items():
+            if sym in seen:
+                continue
+            try:
+                hh = _sign("GET", f"/trade-api/v2/markets/{tk}", SCHEME)
+                r = requests.get(f"{NEW_HOST}/trade-api/v2/markets/{tk}",
+                                 headers=hh, timeout=10)
+            except Exception:
+                continue
+            if r.status_code == 200:
+                m = r.json().get("market") or {}
+                ask = m.get("yes_ask_dollars")
+                bid = m.get("yes_bid_dollars")
+                seen[sym] = (secs, m.get("status"), bid, ask)
+                print(f"  +{secs:4d}s  {sym:9s} LISTED  status={m.get('status')} "
+                      f"bid={bid} ask={ask}")
+        if len(seen) == len(targets):
+            break
+        time.sleep(15)
+
+    print()
+    print("  RESULT")
+    for sym, tk in targets.items():
+        if sym in seen:
+            secs, st, bid, ask = seen[sym]
+            priced = "priced" if (bid or ask) else "NO PRICES"
+            print(f"    {sym:9s} listed at +{secs}s  ({st}, {priced})")
+        else:
+            print(f"    {sym:9s} NEVER LISTED during its own window")
+    print()
+    if not seen:
+        print("  VERDICT  the order host never listed ANY market this window.")
+        print("           Automated betting on 15-minute markets is not viable.")
+    elif len(seen) < len(targets):
+        print(f"  VERDICT  {len(seen)}/{len(targets)} listed. Betting is possible")
+        print("           but unreliable -- some windows will simply be missed.")
+    else:
+        worst = max(v[0] for v in seen.values())
+        print(f"  VERDICT  all {len(targets)} listed, latest at +{worst}s.")
+        print("           An automated bet IS possible at that entry.")
+    print("=" * 62)
+    return 0
+
+
 def ticker_form():
     """Does the order endpoint want the MARKET ticker or the EVENT ticker?
 
@@ -476,6 +572,8 @@ def find_order_endpoint():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--listing-timeline":
+        sys.exit(listing_timeline())
     if len(sys.argv) > 1 and sys.argv[1] == "--find-order-endpoint":
         for _s in ("pss", "pkcs1v15"):
             SCHEME = _s
