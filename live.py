@@ -33,6 +33,7 @@ The rules it enforces:
 import json
 import math
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -67,6 +68,11 @@ MAX_ENTRY = 50.0
 # ordinary tick of movement between reading the book and the order landing;
 # beyond that we would rather miss the bet.
 SLIP_BUFFER_CENTS = 1.0
+
+# How long to wait before re-trying a market the order host has not listed yet.
+# The window is 15 minutes and we fire about 35 seconds in, so this spends
+# slack we have plenty of.
+RETRY_WAIT_SECONDS = 75
 
 LIVE_HEADERS = [
     "Timestamp", "Symbol", "Side", "Ticker", "Entry ¢", "Limit ¢",
@@ -151,9 +157,18 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
             oid = ""
         return "PLACED", "", contracts, cost, oid
 
-    # A rejection is not necessarily a crisis, but it IS unexpected, and the
-    # rule for unexpected things involving money is to stop and ask a human.
-    return "FAILED", f"HTTP {r.status_code} {r.text[:150]}", contracts, cost, ""
+    # market_not_found is NOT a crisis. We quote the upcoming market seconds
+    # after the window opens, and the order host does not always have it listed
+    # yet -- we are racing Kalshi's own market creation. Treating that as a
+    # failure halted the whole system over a timing quirk. It gets its own
+    # status so the caller can wait and try once more.
+    body_txt = r.text[:150]
+    if r.status_code == 404 and "market_not_found" in body_txt:
+        return "NOTYET", "market not listed yet", contracts, cost, ""
+
+    # Anything else IS unexpected, and the rule for unexpected things
+    # involving money is to stop and ask a human.
+    return "FAILED", f"HTTP {r.status_code} {body_txt}", contracts, cost, ""
 
 
 def run_window(client, signals, stake=None):
@@ -182,17 +197,36 @@ def run_window(client, signals, stake=None):
         control.halt(client, f"Funding short -- {reason}. No orders were placed.")
         return []
 
-    rows, placed, failures = [], 0, []
-    for ts, symbol, side, ticker, entry in signals:
+    def attempt(sig):
+        ts, symbol, side, ticker, entry = sig
         status, detail, n, cost, oid = place(ts, symbol, side, ticker, entry, stake)
-        rows.append([ts, symbol, side, ticker,
-                     round(entry, 1) if entry else "",
-                     math.ceil(entry + SLIP_BUFFER_CENTS) if entry else "",
-                     n, cost, status, oid, detail])
-        if status == "PLACED":
+        return [ts, symbol, side, ticker,
+                round(entry, 1) if entry else "",
+                math.ceil(entry + SLIP_BUFFER_CENTS) if entry else "",
+                n, cost, status, oid, detail]
+
+    rows = [attempt(s_) for s_ in signals]
+
+    # Give Kalshi a moment to list the market, then try the racers once more.
+    # There are ~14 minutes left in the window, so waiting is free.
+    retry = [i for i, r in enumerate(rows) if r[8] == "NOTYET"]
+    if retry:
+        print(f"  [live] {len(retry)} market(s) not listed yet; waiting "
+              f"{RETRY_WAIT_SECONDS}s and trying once more.")
+        time.sleep(RETRY_WAIT_SECONDS)
+        for i in retry:
+            rows[i] = attempt(signals[i])
+
+    placed, failures = 0, []
+    for r in rows:
+        if r[8] == "PLACED":
             placed += 1
-        elif status == "FAILED":
-            failures.append(f"{symbol}: {detail}")
+        elif r[8] == "FAILED":
+            failures.append(f"{r[1]}: {r[10]}")
+        elif r[8] == "NOTYET":
+            # Still not listed after the retry. A bet not placed, like any
+            # other skip -- it costs an opportunity, never money.
+            r[8], r[10] = "SKIPPED", "market never listed in this window"
 
     if rows:
         append(client, rows)
