@@ -295,6 +295,19 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     <div class="legend" id="decayFoot"></div>
   </section>
 
+  <section class="panel" id="cashPanel" hidden>
+    <div class="phead">
+      <h2>Cash out early, or hold?</h2>
+      <span class="note">same bets, same outcomes, three exits &mdash; priced at the bid you could actually sell into</span>
+    </div>
+    <div class="stats" id="cashStats" style="border:0;border-radius:0"></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Entry</th><th>Bets</th><th>Hold</th><th>Sell +5m</th><th>Sell +10m</th></tr></thead>
+      <tbody id="cashbody"></tbody>
+    </table></div>
+    <div class="legend" id="cashFoot"></div>
+  </section>
+
   <div class="divider">
     <h2>When they fire</h2>
     <span class="d" id="clockNote">the same signals, placed on your clock</span>
@@ -1057,6 +1070,79 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
           + `anything. More windows will settle it.</span>`);
   }
 
+  // ---- cash out --------------------------------------------------------
+  // Kalshi lets you sell before settlement. This is the only place that can
+  // say whether that is worth doing, because it is the only place holding
+  // exit prices. Same bets and same outcomes under three exit choices, so the
+  // comparison is paired and luck cancels out.
+  function drawCash(){
+    const C = D.cashout, panel = document.getElementById("cashPanel");
+    if(!panel) return;
+    if(!C || !C.logged){ panel.hidden = true; return; }
+    panel.hidden = false;
+    const tile = (k,v,n,c) =>
+      `<div class="stat"><span class="k">${k}</span><span class="v ${c||""}">${v}</span>`
+      + `<span class="n">${n}</span></div>`;
+
+    if(!C.graded){
+      document.getElementById("cashStats").innerHTML =
+        tile("Sampled", `${C.logged}`, "exit prices recorded", "")
+      + tile("Graded", "0", "no window settled yet", "")
+      + tile("Verdict", "TOO EARLY", "needs settled windows", "");
+      document.getElementById("cashbody").innerHTML =
+        `<tr><td colspan="5">Exit prices are being recorded; none of these `
+        + `windows has settled yet.</td></tr>`;
+      document.getElementById("cashFoot").innerHTML =
+        `<span>Each bet is priced three ways once it settles: held to the end, `
+        + `sold at +5 minutes, sold at +10 minutes.</span>`;
+      return;
+    }
+
+    const d5 = (C.ev_5 == null) ? null : C.ev_5 - C.ev_hold;
+    const d10 = (C.ev_10 == null) ? null : C.ev_10 - C.ev_hold;
+    const decided = a => a && (a[0] > 0 || a[1] < 0);
+    let verdict = "TOO EARLY";
+    if(decided(C.ci_5) || decided(C.ci_10)){
+      const best = Math.max(d5 == null ? -99 : d5, d10 == null ? -99 : d10);
+      verdict = best > 0 ? "SELLING WINS" : "HOLDING WINS";
+    }
+
+    document.getElementById("cashStats").innerHTML =
+      tile("Hold to settle", fmt(C.ev_hold), `${C.graded} settled bets`,
+           C.ev_hold>=0?"pos":"neg")
+    + tile("Sell at +5m", C.ev_5==null?"\u2014":fmt(C.ev_5),
+           C.ci_5 ? `95% CI ${fmt(C.ci_5[0])} to ${fmt(C.ci_5[1])}` : `${C.n5} priced`,
+           C.ev_5!=null && C.ev_5>=0?"pos":"neg")
+    + tile("Sell at +10m", C.ev_10==null?"\u2014":fmt(C.ev_10),
+           C.ci_10 ? `95% CI ${fmt(C.ci_10[0])} to ${fmt(C.ci_10[1])}` : `${C.n10} priced`,
+           C.ev_10!=null && C.ev_10>=0?"pos":"neg")
+    + tile("Verdict", verdict, `${C.windows} window${C.windows===1?"":"s"}`,
+           verdict==="SELLING WINS"?"pos":verdict==="HOLDING WINS"?"neg":"");
+
+    const order = ["<40c","40-50c","50-60c",">=60c"];
+    const rows = order.filter(k => C.buckets[k]);
+    document.getElementById("cashbody").innerHTML = rows.map(k => {
+      const v = C.buckets[k];
+      const best = Math.max(v.hold, v.m5, v.m10);
+      const cell = x => `<td class="${x>=0?"pos":"neg"}">${x===best?"<b>":""}`
+                      + `${fmt(x/v.n)}${x===best?"</b>":""}</td>`;
+      return `<tr><td>${k}</td><td>${v.n}</td>`
+           + cell(v.hold) + cell(v.m5) + cell(v.m10) + `</tr>`;
+    }).join("") || `<tr><td colspan="5">No settled bets yet.</td></tr>`;
+
+    document.getElementById("cashFoot").innerHTML =
+      `<span>Exits are priced at the <b>bid</b> &mdash; what someone will `
+      + `actually pay you &mdash; never the mid. Both fees are charged: `
+      + `entering costs one and selling costs another.</span>`
+      + (C.spread_med != null ? `<span>Median spread at exit `
+          + `<b>${C.spread_med.toFixed(1)}\u00A2</b>.</span>` : "")
+      + `<span>Per-bet figures at the $10 stake, best of the three in bold. `
+      + `Intervals cluster by window and are paired, so this is one sample `
+      + `priced three ways rather than three samples compared.</span>`
+      + (verdict === "TOO EARLY" ? `<span><b>Not yet decided.</b> The intervals `
+          + `still include zero.</span>` : "");
+  }
+
   // ---- dry run ---------------------------------------------------------
   // Deliberately OUTSIDE the filtered view. This measures the execution cost
   // of the rule as it actually fires, so it must not move when the reader
@@ -1162,7 +1248,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       splitBtn.setAttribute("aria-pressed", String(showSplit));
     }
     drawLive();
-    drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawDry(); drawDecay(); drawClock();
+    drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawDry(); drawDecay(); drawCash(); drawClock();
   }
   const bandBtn=document.getElementById("bandBtn");
   bandBtn.addEventListener("click",()=>{

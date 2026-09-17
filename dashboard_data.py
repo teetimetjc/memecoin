@@ -461,6 +461,117 @@ def build_decay(decay_rows, pred_rows):
     }
 
 
+def build_cashout(mid_rows, pred_rows):
+    """Would selling early have beaten holding to settlement?
+
+    Same bets, same outcomes, three exit choices -- hold, sell at +5 minutes,
+    sell at +10 minutes -- so the comparison is paired and luck cancels.
+
+    Both fees are charged. Entering costs a fee and so does selling, and a
+    cash-out that ignored the second one would look better than it is by
+    roughly the fee on every single trade. That is the whole question here, so
+    it has to be right.
+
+    Reported at the $10 flat stake the rest of the page uses.
+    """
+    if not mid_rows or len(mid_rows) < 2:
+        return None
+    mi = {h: i for i, h in enumerate(mid_rows[0])}
+
+    def mc(r, k):
+        i = mi.get(k, -1)
+        return r[i] if 0 <= i < len(r) else ""
+
+    pi = {h: i for i, h in enumerate(P.ALL_HEADERS)}
+    outcome = {}
+    for r in pred_rows[1:]:
+        res = r[pi["CVD Correct?"]] if pi.get("CVD Correct?", -1) < len(r) else ""
+        if res in ("Yes", "No"):
+            outcome[(r[pi["Timestamp"]], r[pi["Symbol"]])] = (res == "Yes")
+
+    logged = 0
+    n = {"hold": 0, "m5": 0, "m10": 0}
+    tot = {"hold": 0.0, "m5": 0.0, "m10": 0.0}
+    by_win = defaultdict(lambda: {"hold": [0.0, 0], "m5": [0.0, 0], "m10": [0.0, 0]})
+    buckets = defaultdict(lambda: {"n": 0, "hold": 0.0, "m5": 0.0, "m10": 0.0})
+    spreads = []
+
+    for r in mid_rows[1:]:
+        logged += 1
+        ts, sym = mc(r, "Timestamp"), mc(r, "Symbol")
+        try:
+            entry = float(mc(r, "Entry ¢"))
+        except ValueError:
+            continue
+        if not (0 < entry < 100):
+            continue
+        won = outcome.get((ts, sym))
+        if won is None:
+            continue                       # not graded yet
+
+        p = entry / 100.0
+        contracts = 10.0 / p
+        entry_fee = _fee(contracts, p)
+        hold = (contracts if won else 0.0) - 10.0 - entry_fee
+        n["hold"] += 1
+        tot["hold"] += hold
+        w = by_win[ts]
+        w["hold"][0] += hold; w["hold"][1] += 1
+
+        b = ("<40c" if entry < 40 else "40-50c" if entry < 50
+             else "50-60c" if entry < 60 else ">=60c")
+        buckets[b]["n"] += 1
+        buckets[b]["hold"] += hold
+
+        for key, col, scol in (("m5", "Exit @5m ¢", "Spread @5m"),
+                               ("m10", "Exit @10m ¢", "Spread @10m")):
+            try:
+                ex = float(mc(r, col))
+            except ValueError:
+                continue
+            if not (0 < ex < 100):
+                continue
+            # Sell the contracts back at the bid, and pay the fee again.
+            net = contracts * (ex / 100.0) - 10.0 - entry_fee - _fee(contracts, ex / 100.0)
+            n[key] += 1
+            tot[key] += net
+            w[key][0] += net; w[key][1] += 1
+            buckets[b][key] += net
+            try:
+                spreads.append(float(mc(r, scol)))
+            except ValueError:
+                pass
+
+    if not n["hold"]:
+        return {"logged": logged, "graded": 0}
+
+    def ev(k):
+        return round(tot[k] / n[k], 2) if n[k] else None
+
+    # Paired, clustered by window: five coins in one window are one event.
+    def ci(k):
+        pairs = [(v[k][0] / v[k][1] - v["hold"][0] / v["hold"][1])
+                 for v in by_win.values() if v[k][1] and v["hold"][1]]
+        if len(pairs) < 2:
+            return None
+        m = statistics.mean(pairs)
+        se = statistics.stdev(pairs) / math.sqrt(len(pairs))
+        return [round(m - 1.96 * se, 2), round(m + 1.96 * se, 2)]
+
+    return {
+        "logged": logged,
+        "graded": n["hold"],
+        "windows": len(by_win),
+        "n5": n["m5"], "n10": n["m10"],
+        "ev_hold": ev("hold"), "ev_5": ev("m5"), "ev_10": ev("m10"),
+        "ci_5": ci("m5"), "ci_10": ci("m10"),
+        "spread_med": round(statistics.median(spreads), 1) if spreads else None,
+        "buckets": {k: {"n": v["n"], "hold": round(v["hold"], 2),
+                        "m5": round(v["m5"], 2), "m10": round(v["m10"], 2)}
+                    for k, v in sorted(buckets.items())},
+    }
+
+
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else OUT_DEFAULT
     client = P._get_client()
@@ -498,6 +609,19 @@ def main():
     except Exception as e:
         print(f"  (decay summary skipped: {e})")
         data["decay"] = None
+    # Cash-out: is Kalshi's early exit worth taking?
+    try:
+        data["cashout"] = build_cashout(_read_tab(client, "Mid Window"), rows)
+        if data["cashout"]:
+            C = data["cashout"]
+            print(f"  Cash-out: {C['logged']} logged, {C.get('graded', 0)} graded"
+                  + (f", hold {C['ev_hold']:+.2f} vs +5m {C['ev_5']:+.2f}"
+                     if C.get('ev_5') is not None else ""))
+        else:
+            print("  Cash-out: tab empty or missing -- nothing sampled yet")
+    except Exception as e:
+        print(f"  (cash-out summary skipped: {e})")
+        data["cashout"] = None
     import pathlib
     p = pathlib.Path(out)
     p.parent.mkdir(parents=True, exist_ok=True)
