@@ -75,10 +75,14 @@ SLIP_BUFFER_CENTS = 1.0
 # slack we have plenty of.
 # Kalshi does not list the current window's market immediately. Measured on
 # 17 Sep: the market ending 17:30 was not found at 17:15:35 or at 17:16:50,
-# and resolved at 17:19:08 -- roughly three to four minutes into the window.
-# So retry across that span rather than guessing a single short wait.
-RETRY_WAIT_SECONDS = 60
-RETRY_ATTEMPTS = 4          # ~4 minutes, inside a 15-minute window
+# and resolved at 17:19:08 -- roughly three to four minutes in.
+#
+# Polling faster cannot make it list sooner. What it does is get the order in
+# the moment it DOES list, instead of up to a minute later. Every second of
+# delay is a second in which the price absorbs more of the move the signal is
+# predicting, so the cheapest fill available is the earliest one.
+RETRY_WAIT_SECONDS = 15
+RETRY_ATTEMPTS = 18         # ~4.5 minutes of polling, well inside the window
 
 LIVE_HEADERS = [
     "Timestamp", "Symbol", "Side", "Ticker", "Entry ¢", "Limit ¢",
@@ -260,8 +264,10 @@ def run_window(client, signals, stake=None):
         retry = [i for i, r in enumerate(rows) if r[8] == "NOTYET"]
         if not retry:
             break
-        print(f"  [live] {len(retry)} market(s) not listed yet; waiting "
-              f"{RETRY_WAIT_SECONDS}s (attempt {round_no}/{RETRY_ATTEMPTS}).")
+        if round_no == 1 or round_no % 4 == 0:
+            print(f"  [live] {len(retry)} market(s) not listed yet; polling "
+                  f"every {RETRY_WAIT_SECONDS}s (attempt {round_no}/"
+                  f"{RETRY_ATTEMPTS}).")
         time.sleep(RETRY_WAIT_SECONDS)
         for i in retry:
             ts_, sym_, side_, tk_, entry_ = signals[i]
