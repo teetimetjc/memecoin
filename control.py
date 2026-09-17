@@ -239,6 +239,17 @@ def _cli_state(word):
 if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "--stake":
         sys.exit(set_stake(sys.argv[2]))
+    if len(sys.argv) > 1 and sys.argv[1] == "--status":
+        # Read-only. Says what the switch is without touching it, so checking
+        # cannot itself change anything or fire a notification.
+        import predictor as P
+        _c = P._get_client()
+        _st, _why = get_state(_c)
+        _b = fetch_balance()
+        print(f"  state   : {_st}{' -- ' + _why if _why else ''}")
+        print(f"  stake   : ${get_stake(_c):.2f}")
+        print(f"  balance : {'unreadable' if _b is None else f'${_b:.2f}'}")
+        sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1] in ("--run", "--halt"):
         sys.exit(_cli_state(RUNNING if sys.argv[1] == "--run" else HALTED))
     sys.exit(selftest())
