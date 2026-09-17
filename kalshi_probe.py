@@ -290,7 +290,9 @@ def main():
 BOGUS_TICKER = "KXNOSUCHMARKET-00XXX000000-00"
 
 # The real V2 create-order endpoint, from Kalshi's docs.
-ORDER_URL = "https://external-api.kalshi.com/trade-api/v2/portfolio/events/orders"
+NEW_HOST = "https://external-api.kalshi.com"      # where orders go
+OLD_HOST = "https://api.elections.kalshi.com"     # where prices are read
+ORDER_URL = NEW_HOST + "/trade-api/v2/portfolio/events/orders"
 
 # The documented body uses decimal STRINGS and a bid/ask side, not the
 # yes/no this project assumed. What is NOT documented on that page is how to
