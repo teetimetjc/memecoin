@@ -22,13 +22,10 @@ jobs:
       - run: pip install requests gspread google-auth cryptography
 
       # --- spending gate ---------------------------------------------------
-      # FIRST, and allowed to fail the job. Scans the files this workflow can
-      # execute for anything that could place a Kalshi order, and blocks the
-      # run unless ALLOW_LIVE_TRADING says that is intended.
-      #
-      # It is set to "1" below, so live betting IS authorised. To revoke that,
-      # set it to "0": the guard then blocks any order path and the run stops
-      # before collection, which is the safe direction to fail.
+      # Scans the files this workflow can execute for anything that could place
+      # a Kalshi order. live.py contains an order path, so the guard is told
+      # that is known and intended; what actually prevents betting is
+      # LIVE_TRADING being "0" below AND the Control tab reading HALTED.
       - name: No-trade guard
         env:
           ALLOW_LIVE_TRADING: "1"
@@ -41,21 +38,21 @@ jobs:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
-          # Step 2: log the order each signal WOULD send, to the "Dry Run" tab.
-          # Kept running alongside live betting so the intended fill and the
-          # real one can be reconciled from the sheet.
+          # Still logging the order each signal WOULD send.
           DRY_RUN_ORDERS: "1"
-          # LIVE BETTING. Real money. Both of these must be "1", the Control
-          # tab must read RUNNING, and the entry must be under 50c -- live.py
-          # re-checks all of it. Set either to "0" to stop betting at the next
-          # run; set the Control tab to HALTED to stop immediately.
-          LIVE_TRADING: "1"
+          # BETTING IS OFF. The history is priced at the ~35 second quote, but
+          # a live order cannot reach the book until the order host lists the
+          # market three to four minutes later, by which time the price has
+          # absorbed part of the move the signal predicts. Until that gap is
+          # measured against outcomes, a live bet is not the bet the backtest
+          # describes. Set back to "1" once the data says the edge survives.
+          LIVE_TRADING: "0"
           ALLOW_LIVE_TRADING: "1"
-          # DOWN bets. Sent as an ask on the YES contract, which should open a
-          # NO position -- standard, but inferred rather than documented, so
-          # live.py reads positions back after every fill and prints the
-          # direction it actually got. Set to "0" to go back to UP-only.
           LIVE_ALLOW_DOWN: "1"
+          # THE MEASUREMENT. Two signed GETs per signal, no orders: the quote
+          # at signal time and the quote about four minutes in, from the host
+          # a live order would actually pay.
+          MEASURE_ENTRY_DECAY: "1"
         run: python predictor.py
       - name: Resolve outcomes
         env:
@@ -67,10 +64,9 @@ jobs:
         run: python predictor.py --report --sheet
 
       # --- hourly pulse ----------------------------------------------------
-      # One summary per hour: bets placed, dollars staked, balance, state.
-      # Not one message per bet -- at ~90 bets a day that would be unreadable.
-      # Rides on this workflow for the same reason the dashboard does: this
-      # repo's cron never fires, but this workflow demonstrably runs.
+      # One summary per hour, not one message per bet. Rides on this workflow
+      # because this repo's cron never fires but this workflow demonstrably
+      # runs every 15 minutes.
       - name: Hourly pulse
         continue-on-error: true
         env:
@@ -87,18 +83,8 @@ jobs:
           python -c "import predictor as P, live; live.pulse(P._get_client())"
 
       # --- dashboard data -------------------------------------------------
-      # LAST, and continue-on-error, so nothing below can affect collection:
-      # every step that touches the sheet has already succeeded by this point,
-      # and a failure here is reported without failing the run.
-      #
-      # It lives here rather than in its own scheduled workflow because
-      # GitHub's cron does not fire on this repo -- dashboard.yml's schedule
-      # never ran once. This workflow demonstrably runs every 15 minutes, so
-      # the dashboard rides along with it. dashboard.yml is kept for manual
-      # rebuilds.
-      #
-      # Only every 4th run (on the hour) to keep repo churn sane: the chart is
-      # for watching multi-day trends, not 15-minute ones.
+      # LAST, and continue-on-error, so nothing below can affect collection.
+      # Only on the hour, to keep repo churn sane.
       - name: Rebuild dashboard data
         continue-on-error: true
         env:
