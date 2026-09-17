@@ -310,7 +310,12 @@ def _try_body(side_value):
         "count": "1.00",
         "price": "0.0100",
         "time_in_force": "good_till_canceled",
+        "self_trade_prevention_type": "taker_at_cross",
         "post_only": False,
+        "cancel_order_on_pause": False,
+        "reduce_only": False,
+        "subaccount": 0,
+        "exchange_index": 0,
     }
     hdrs = _sign("POST", urlsplit(ORDER_URL).path, SCHEME)
     hdrs["Content-Type"] = "application/json"
