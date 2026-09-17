@@ -250,13 +250,106 @@ def _why(note):
     return n[:40]
 
 
-def _read_dry(client):
-    """Dry Run tab if it exists. Absent before step 2 starts logging."""
+def _read_tab(client, title):
+    """One tab's values, or None if it does not exist yet."""
     try:
         sh = client.open_by_key(P.SPREADSHEET_ID)
-        return sh.worksheet("Dry Run").get_all_values()
+        return sh.worksheet(title).get_all_values()
     except Exception:
         return None
+
+
+def _read_dry(client):
+    """Dry Run tab if it exists. Absent before step 2 starts logging."""
+    return _read_tab(client, "Dry Run")
+
+
+def build_live(live_rows, pred_rows):
+    """Real money: what was actually placed, and how it settled.
+
+    The Live Bets tab records placements, not outcomes -- Kalshi settles the
+    market, not us. So each placed order is joined back to the Predictions tab
+    on (timestamp, symbol) for the result, and the P&L is computed from the
+    contracts and the price actually paid. Unsettled bets are counted
+    separately rather than assumed to win or lose.
+    """
+    if not live_rows or len(live_rows) < 2:
+        return None
+    li = {h: i for i, h in enumerate(live_rows[0])}
+
+    def lc(r, k):
+        i = li.get(k, -1)
+        return r[i] if 0 <= i < len(r) else ""
+
+    # Outcome lookup from the collection tab, which grades every window.
+    pi = {h: i for i, h in enumerate(P.ALL_HEADERS)}
+
+    def pc(r, k):
+        i = pi.get(k, -1)
+        return r[i] if 0 <= i < len(r) else ""
+
+    outcome = {}
+    for r in pred_rows[1:]:
+        res = pc(r, "CVD Correct?")
+        if res in ("Yes", "No"):
+            outcome[(pc(r, "Timestamp"), pc(r, "Symbol"))] = (res == "Yes")
+
+    placed = skipped = failed = 0
+    settled = wins = 0
+    staked = pnl = 0.0
+    open_stake = 0.0
+    by_coin = {}
+    skip_why = {}
+    first = last = ""
+    for r in live_rows[1:]:
+        st = lc(r, "Status")
+        if st == "SKIPPED":
+            skipped += 1
+            k = _why(lc(r, "Detail"))
+            skip_why[k] = skip_why.get(k, 0) + 1
+            continue
+        if st == "FAILED":
+            failed += 1
+            continue
+        if st != "PLACED":
+            continue
+
+        placed += 1
+        ts, sym = lc(r, "Timestamp"), lc(r, "Symbol")
+        first = first or ts
+        last = ts
+        try:
+            n = float(lc(r, "Contracts") or 0)
+            cost = float(lc(r, "Cost $") or 0)
+            limit_c = float(lc(r, "Limit ¢") or 0)
+        except ValueError:
+            continue
+        staked += cost
+
+        won = outcome.get((ts, sym))
+        if won is None:
+            open_stake += cost          # still running; no result yet
+            continue
+        settled += 1
+        wins += 1 if won else 0
+        # Kalshi's fee is 7% of stake x (1 - price), charged at trade time.
+        fee = math.ceil(0.07 * n * (limit_c / 100.0) * (1 - limit_c / 100.0) * 100) / 100
+        net = (n if won else 0.0) - cost - fee
+        pnl += net
+        c = sym.replace("USDT", "")
+        b = by_coin.setdefault(c, {"n": 0, "w": 0, "net": 0.0})
+        b["n"] += 1; b["w"] += 1 if won else 0; b["net"] += net
+
+    return {
+        "placed": placed, "skipped": skipped, "failed": failed,
+        "settled": settled, "wins": wins,
+        "staked": round(staked, 2), "pnl": round(pnl, 2),
+        "open_stake": round(open_stake, 2),
+        "first": first, "last": last,
+        "coins": {k: {"n": v["n"], "w": v["w"], "net": round(v["net"], 2)}
+                  for k, v in sorted(by_coin.items())},
+        "skip_why": dict(sorted(skip_why.items(), key=lambda kv: -kv[1])),
+    }
 
 
 def main():
@@ -271,6 +364,17 @@ def main():
     except Exception as e:
         print(f"  (dry-run summary skipped: {e})")
         data["dry"] = None
+    # Same rule for the live summary: a problem here must leave the chart
+    # standing rather than take the whole rebuild down with it.
+    try:
+        data["live"] = build_live(_read_tab(client, "Live Bets"), rows)
+        if data["live"]:
+            L = data["live"]
+            print(f"  Live Bets: {L['placed']} placed, {L['settled']} settled, "
+                  f"net ${L['pnl']:+.2f} on ${L['staked']:.2f} staked")
+    except Exception as e:
+        print(f"  (live summary skipped: {e})")
+        data["live"] = None
     import pathlib
     p = pathlib.Path(out)
     p.parent.mkdir(parents=True, exist_ok=True)

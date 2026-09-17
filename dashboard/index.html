@@ -196,6 +196,24 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     <span class="viewnote" id="viewNote"></span>
   </div>
 
+  <div class="divider" id="liveDiv" hidden>
+    <h2>Real money</h2>
+    <span class="d" id="liveNote"></span>
+  </div>
+
+  <section class="panel" id="livePanel" hidden style="border-color:var(--accent)">
+    <div class="phead">
+      <h2>Live bets</h2>
+      <span class="note">actually placed on Kalshi · $5 flat on entries under 50&cent;</span>
+    </div>
+    <div class="stats" id="liveStats" style="border:0;border-radius:0"></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Coin</th><th>Settled</th><th>Hit&nbsp;%</th><th>P&amp;L</th></tr></thead>
+      <tbody id="livebody"></tbody>
+    </table></div>
+    <div class="legend" id="liveFoot"></div>
+  </section>
+
   <section class="stats" id="stats"></section>
 
   <section class="panel">
@@ -907,6 +925,57 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     });
   }
 
+  // ---- live bets -------------------------------------------------------
+  // Real money, so it sits above everything else and ignores the filters.
+  // The rest of this page is a simulation you can slice; this is what the
+  // account actually did, and it must not move when a button is pressed.
+  function drawLive(){
+    const L = D.live, div = document.getElementById("liveDiv"),
+          panel = document.getElementById("livePanel");
+    if(!div || !panel) return;
+    if(!L || !L.placed){ div.hidden = panel.hidden = true; return; }
+    div.hidden = panel.hidden = false;
+
+    document.getElementById("liveNote").textContent =
+      `${L.placed} order${L.placed===1?"":"s"} placed since ${ctStamp(L.first)}`;
+
+    const roi = L.staked ? (L.pnl / (L.staked - L.open_stake || 1) * 100) : 0;
+    const hit = L.settled ? (L.wins / L.settled * 100) : 0;
+    const tile = (k,v,n,c) =>
+      `<div class="stat"><span class="k">${k}</span><span class="v ${c||""}">${v}</span>`
+      + `<span class="n">${n}</span></div>`;
+    document.getElementById("liveStats").innerHTML =
+      tile("Realised P&L", fmt(L.pnl),
+           `${L.settled} settled bet${L.settled===1?"":"s"}`
+           + (L.settled ? ` · ${roi>=0?"+":""}${roi.toFixed(1)}% ROI` : ""),
+           L.pnl>=0?"pos":"neg")
+    + tile("Hit rate", L.settled ? hit.toFixed(1)+"%" : "—",
+           L.settled ? `${L.wins} of ${L.settled} settled` : "nothing settled yet", "")
+    + tile("Staked", `$${L.staked.toFixed(2)}`,
+           L.open_stake ? `$${L.open_stake.toFixed(2)} still running` : "all settled", "")
+    + tile("Not bet", `${L.skipped}`,
+           `skipped by the rules${L.failed?` · ${L.failed} failed`:""}`,
+           L.failed?"neg":"");
+
+    const rows = Object.entries(L.coins||{}).sort((a,b)=>b[1].net-a[1].net);
+    document.getElementById("livebody").innerHTML = rows.length
+      ? rows.map(([c,v])=>
+          `<tr><td>${c}</td><td>${v.n}</td>`
+          + `<td>${v.n?(v.w/v.n*100).toFixed(1):"—"}%</td>`
+          + `<td class="${v.net>=0?"pos":"neg"}">${fmt(v.net)}</td></tr>`).join("")
+      : `<tr><td colspan="4">No settled bets yet — results appear here as `
+        + `each 15-minute market closes.</td></tr>`;
+
+    const why = Object.entries(L.skip_why||{});
+    document.getElementById("liveFoot").innerHTML =
+      `<span>P&amp;L is computed from the contracts and the price actually paid, `
+      + `after Kalshi's fee, and only for bets that have settled — an open bet `
+      + `is counted as staked, never as a win or a loss.</span>`
+      + (why.length ? `<span>Not bet: ${why.map(([k,v])=>`<b>${v}</b> ${k}`).join(" · ")}.</span>` : "")
+      + `<span>This panel ignores the filters above: it is what the account did, `
+      + `not a view you can slice.</span>`;
+  }
+
   // ---- dry run ---------------------------------------------------------
   // Deliberately OUTSIDE the filtered view. This measures the execution cost
   // of the rule as it actually fires, so it must not move when the reader
@@ -1011,6 +1080,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       if(!isAll()) showSplit=false;
       splitBtn.setAttribute("aria-pressed", String(showSplit));
     }
+    drawLive();
     drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawDry(); drawClock();
   }
   const bandBtn=document.getElementById("bandBtn");
