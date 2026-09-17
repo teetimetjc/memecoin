@@ -23,13 +23,15 @@ jobs:
 
       # --- spending gate ---------------------------------------------------
       # FIRST, and allowed to fail the job. Scans the files this workflow can
-      # execute for anything that could place a Kalshi order. Nothing here is
-      # supposed to spend money yet, and this is what keeps that true across
-      # future edits rather than trusting that it stays true.
+      # execute for anything that could place a Kalshi order, and blocks the
+      # run unless ALLOW_LIVE_TRADING says that is intended.
       #
-      # To go live deliberately, set ALLOW_LIVE_TRADING to "1" below. That is
-      # the thumbs-up -- an explicit, committed change, never an accident.
+      # It is set to "1" below, so live betting IS authorised. To revoke that,
+      # set it to "0": the guard then blocks any order path and the run stops
+      # before collection, which is the safe direction to fail.
       - name: No-trade guard
+        env:
+          ALLOW_LIVE_TRADING: "1"
         run: python no_trade_guard.py
 
       - name: Generate predictions
@@ -40,9 +42,15 @@ jobs:
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           # Step 2: log the order each signal WOULD send, to the "Dry Run" tab.
-          # Places nothing -- dryrun.py contains no POST and no order path.
-          # Set to "0" to switch the logging off without a code change.
+          # Kept running alongside live betting so the intended fill and the
+          # real one can be reconciled from the sheet.
           DRY_RUN_ORDERS: "1"
+          # LIVE BETTING. Real money. Both of these must be "1", the Control
+          # tab must read RUNNING, and the entry must be under 50c -- live.py
+          # re-checks all of it. Set either to "0" to stop betting at the next
+          # run; set the Control tab to HALTED to stop immediately.
+          LIVE_TRADING: "1"
+          ALLOW_LIVE_TRADING: "1"
         run: python predictor.py
       - name: Resolve outcomes
         env:
@@ -52,6 +60,26 @@ jobs:
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python predictor.py --report --sheet
+
+      # --- hourly pulse ----------------------------------------------------
+      # One summary per hour: bets placed, dollars staked, balance, state.
+      # Not one message per bet -- at ~90 bets a day that would be unreadable.
+      # Rides on this workflow for the same reason the dashboard does: this
+      # repo's cron never fires, but this workflow demonstrably runs.
+      - name: Hourly pulse
+        continue-on-error: true
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: |
+          if [ "$(date -u +%M)" -ge 15 ]; then
+            echo "Not the top of the hour; no pulse."
+            exit 0
+          fi
+          python -c "import predictor as P, live; live.pulse(P._get_client())"
 
       # --- dashboard data -------------------------------------------------
       # LAST, and continue-on-error, so nothing below can affect collection:
