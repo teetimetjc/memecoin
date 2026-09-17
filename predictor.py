@@ -15,6 +15,7 @@ import os, sys, json, math, time, argparse, requests
 
 import control
 import dryrun
+import live
 from datetime import datetime, timedelta, timezone
 
 # --- CONFIG ---
@@ -1318,6 +1319,7 @@ def run_predictions():
     futures = get_futures_stats()
     written = 0
     dry_rows = []                 # planned orders, written once after the loop
+    live_sigs = []                # the same signals, for real order placement
 
     btc_sig = None
     try:
@@ -1424,12 +1426,18 @@ def run_predictions():
             # changed payload shape, anything -- cannot stop the row above from
             # having been written or the loop from continuing. Collection is
             # the asset; this is an observer bolted beside it.
-            if flow and dryrun.enabled():
+            if flow and (dryrun.enabled() or live.enabled()):
                 try:
                     side = cvd_call(flow["cvd_ratio"])
                     if side:
                         entry = (kalshi.get("up_cents") if side == "UP"
                                  else kalshi.get("down_cents")) if kalshi else None
+                        # One list feeds both. The dry run keeps measuring even
+                        # once betting is live, so the two can be reconciled --
+                        # if the logged fill and the real one ever disagree, we
+                        # want to find out from the sheet, not the balance.
+                        live_sigs.append((ts_str, symbol, side,
+                                          (kalshi or {}).get("ticker", ""), entry))
                         dry_rows.append(
                             dryrun.plan_order(ts_str, symbol, side, kalshi, entry))
                 except Exception as e:
@@ -1517,6 +1525,22 @@ def run_predictions():
                       f"{' -- ' + why if why else ''}; betting would be skipped.")
         except Exception as e:
             print(f"  [funding] check skipped: {e}")
+
+    # LIVE ORDERS. Last, after every signal row is safely on the sheet, so a
+    # failure here can never cost collection. Requires both switches, the
+    # Control tab on RUNNING, and an entry under the price cut -- run_window
+    # re-checks all of it rather than trusting this call site.
+    if live_sigs and live.enabled():
+        try:
+            live.run_window(client, live_sigs)
+        except Exception as e:
+            # An unhandled error in the code that spends money is exactly the
+            # case the halt switch exists for. Stop, notify, wait for a human.
+            print(f"  [live] ERROR: {e}")
+            try:
+                control.halt(client, f"Unhandled error while placing orders: {e}")
+            except Exception:
+                pass
 
     if written == 0:
         sys.exit(

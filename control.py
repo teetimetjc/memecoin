@@ -211,5 +211,18 @@ def selftest():
     return 0
 
 
+def set_stake(dollars):
+    """Write the per-bet stake. The tab stays the single source of truth --
+    this just saves typing it by hand, and prints what it wrote."""
+    import predictor as P
+    client = P._get_client()
+    ws = _tab(client)
+    ws.update(f"B{_ROW['Stake $']}", [[f"{float(dollars):.2f}"]])
+    print(f"  stake set to ${float(dollars):.2f} per bet")
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "--stake":
+        sys.exit(set_stake(sys.argv[2]))
     sys.exit(selftest())
