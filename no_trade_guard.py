@@ -27,6 +27,7 @@ import sys
 
 # Files to read. Anything the predictor workflow could execute.
 SCAN = ["predictor.py", "dryrun.py", "control.py", "live.py", "manual_bet.py",
+        "midwindow.py", "alert.py",
         "local_check.py",
         "decay.py", "kalshi_probe.py", "dashboard_data.py"]
 

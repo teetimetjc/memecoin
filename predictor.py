@@ -15,6 +15,7 @@ import os, sys, json, math, time, argparse, requests
 
 import alert
 import control
+import midwindow
 import decay
 import dryrun
 import live
@@ -1538,6 +1539,16 @@ def run_predictions():
     # entry the history is priced at.
     if live_sigs and alert.enabled():
         alert.send(live_sigs, boundary, live_targets)
+
+    # CASH-OUT PRICES. Read-only. Samples what each bet could be SOLD for at
+    # +5 and +10 minutes, so whether to take Kalshi's early exit can be decided
+    # from data rather than instinct. AFTER the alert, because it sleeps ten
+    # minutes and the alert is time-critical.
+    if live_sigs and midwindow.enabled():
+        try:
+            midwindow.measure(client, live_sigs, boundary)
+        except Exception as e:
+            print(f"  [midwindow] skipped: {e}")
 
     # ENTRY DECAY. Read-only, and deliberately AFTER everything else because
     # it sleeps for minutes: the history is priced at the ~35s quote, a live
