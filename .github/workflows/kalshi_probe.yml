@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "credentials (default) or find-order-endpoint"
+        description: "credentials | find-order-endpoint | listing-timeline"
         required: false
         default: "credentials"
 
@@ -38,8 +38,8 @@ jobs:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           KALSHI_KEY_ID:  ${{ secrets.KALSHI_KEY_ID }}
         run: |
-          if [ "${{ inputs.mode }}" = "find-order-endpoint" ]; then
-            python kalshi_probe.py --find-order-endpoint
-          else
-            python kalshi_probe.py
-          fi
+          case "${{ inputs.mode }}" in
+            find-order-endpoint) python kalshi_probe.py --find-order-endpoint ;;
+            listing-timeline)    python kalshi_probe.py --listing-timeline ;;
+            *)                   python kalshi_probe.py ;;
+          esac
