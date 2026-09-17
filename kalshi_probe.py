@@ -289,14 +289,16 @@ def main():
 
 BOGUS_TICKER = "KXNOSUCHMARKET-00XXX000000-00"
 
+# The docs show the host as external-api.kalshi.com, not the
+# api.elections.kalshi.com this project has always used. Every path 404d
+# because they were the right paths on the wrong host.
+NEW_HOST = "https://external-api.kalshi.com"
+OLD_HOST = "https://api.elections.kalshi.com"
+
 CANDIDATES = [
-    ("POST", "/trade-api/v2/portfolio/orders"),      # the deprecated one
-    ("POST", "/trade-api/v3/portfolio/orders"),
-    ("POST", "/trade-api/v3/orders"),
-    ("POST", "/trade-api/v2/portfolio/orders/v2"),
-    ("POST", "/trade-api/v2/portfolio/v2/orders"),
-    ("POST", "/api/v2/portfolio/orders"),
-    ("POST", "/v2/orders"),
+    ("POST", NEW_HOST + "/trade-api/v2/portfolio/orders"),
+    ("POST", NEW_HOST + "/trade-api/v2/orders"),
+    ("POST", OLD_HOST + "/trade-api/v2/portfolio/orders"),   # known deprecated
 ]
 
 # Paths that might publish the API's own schema. If one answers, it names the
@@ -307,8 +309,10 @@ SPEC_PATHS = [
 ]
 
 
-def _try_order_path(method, path, price_field):
+def _try_order_path(method, url, price_field):
     import predictor as P
+    from urllib.parse import urlsplit
+    path = urlsplit(url).path
     body = {
         "ticker": BOGUS_TICKER,
         "client_order_id": "endpoint-probe-does-not-exist",
@@ -318,8 +322,7 @@ def _try_order_path(method, path, price_field):
     hdrs = _sign(method, path, SCHEME)
     hdrs["Content-Type"] = "application/json"
     try:
-        r = requests.post(P.KALSHI_BASE.replace("/trade-api/v2", "") + path,
-                          json=body, headers=hdrs, timeout=15)
+        r = requests.post(url, json=body, headers=hdrs, timeout=15)
     except Exception as e:
         return None, f"request failed: {e}"
     txt = r.text[:200].replace("\n", " ")
@@ -355,6 +358,15 @@ def find_order_endpoint():
                 for h in hits:
                     print(f"          {h}")
 
+    print("\n  --- does the new host serve reads with our key?")
+    for h in (NEW_HOST, OLD_HOST):
+        try:
+            hh = _sign("GET", "/trade-api/v2/portfolio/balance", SCHEME)
+            rr = requests.get(h + "/trade-api/v2/portfolio/balance", headers=hh, timeout=10)
+            print(f"  GET  {h[8:]:32s} /portfolio/balance -> {rr.status_code} {rr.text[:80]}")
+        except Exception as e:
+            print(f"  GET  {h[8:]:32s} -> failed: {e}")
+
     for price_field in ("yes_price", "yes_price_dollars"):
         print(f"\n  --- price field: {price_field}")
         for method, path in CANDIDATES:
@@ -363,7 +375,7 @@ def find_order_endpoint():
                        410: "DEPRECATED",
                        401: "auth rejected",
                        403: "forbidden"}.get(code, "")
-            print(f"  {method:5s} {path:42s} -> {code} {verdict}")
+            print(f"  {method:5s} {path[8:]:58s} -> {code} {verdict}")
             if code not in (404, 410, None):
                 print(f"        body: {txt}")
     print("=" * 62)
