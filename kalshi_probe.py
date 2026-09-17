@@ -444,58 +444,58 @@ def listing_timeline():
         print(f"  {sym:9s} {tk}")
     print()
 
-    # "first seen" is only a listing time if we were looking from the start.
-    first_look = int((datetime.now(timezone.utc) - boundary).total_seconds())
-    seen = {}
-    round_no = 0
-    while datetime.now(timezone.utc) < close - timedelta(seconds=20):
-        round_no += 1
+    # Poll the WHOLE window, not just until the first sighting. The question
+    # is not only when a market becomes orderable but when it STOPS being
+    # orderable: a manual order 14 minutes into a window was rejected with
+    # market_not_found, so the usable span has an end as well as a start, and
+    # only watching to the first sighting would have missed that entirely.
+    log = {sym: [] for sym in targets}          # (secs, http_status)
+    while True:
+        left = (close - datetime.now(timezone.utc)).total_seconds()
+        if left <= 2:
+            break
         secs = int((datetime.now(timezone.utc) - boundary).total_seconds())
+        line = []
         for sym, tk in targets.items():
-            if sym in seen:
-                continue
             try:
                 hh = _sign("GET", f"/trade-api/v2/markets/{tk}", SCHEME)
                 r = requests.get(f"{NEW_HOST}/trade-api/v2/markets/{tk}",
                                  headers=hh, timeout=10)
+                code = r.status_code
             except Exception:
-                continue
-            if r.status_code == 200:
-                m = r.json().get("market") or {}
-                ask = m.get("yes_ask_dollars")
-                bid = m.get("yes_bid_dollars")
-                seen[sym] = (secs, m.get("status"), bid, ask)
-                print(f"  +{secs:4d}s  {sym:9s} LISTED  status={m.get('status')} "
-                      f"bid={bid} ask={ask}")
-        if len(seen) == len(targets):
-            break
-        time.sleep(15)
+                code = 0
+            log[sym].append((secs, code))
+            line.append(f"{sym[:3]}:{'OK' if code == 200 else code}")
+        print(f"  +{secs:4d}s  " + "  ".join(line))
+        time.sleep(min(15, max(1, left - 2)))
 
     print()
-    print("  RESULT")
-    for sym, tk in targets.items():
-        if sym in seen:
-            secs, st, bid, ask = seen[sym]
-            priced = "priced" if (bid or ask) else "NO PRICES"
-            print(f"    {sym:9s} listed at +{secs}s  ({st}, {priced})")
-        else:
-            print(f"    {sym:9s} NEVER LISTED during its own window")
+    print("  WHEN IS EACH MARKET REACHABLE ON THE ORDER HOST?")
+    spans = {}
+    for sym, entries in log.items():
+        ok = [t for t, c in entries if c == 200]
+        if not ok:
+            codes = sorted({c for _, c in entries})
+            print(f"    {sym:9s} NEVER reachable (codes seen: {codes})")
+            continue
+        spans[sym] = (min(ok), max(ok))
+        gaps = [t for t, c in entries if c != 200 and min(ok) < t < max(ok)]
+        print(f"    {sym:9s} +{min(ok)}s -> +{max(ok)}s"
+              + (f"   WITH {len(gaps)} GAP(S) inside" if gaps else ""))
+
     print()
-    if not seen:
-        print("  VERDICT  the order host never listed ANY market this window.")
-        print("           Automated betting on 15-minute markets is not viable.")
-    elif len(seen) < len(targets):
-        print(f"  VERDICT  {len(seen)}/{len(targets)} listed. Betting is possible")
-        print("           but unreliable -- some windows will simply be missed.")
+    if not spans:
+        print("  VERDICT  no market was reachable on the order host this window.")
     else:
-        worst = max(v[0] for v in seen.values())
-        if worst <= first_look + 20:
-            print(f"  VERDICT  all {len(targets)} were ALREADY listed on the first")
-            print(f"           poll at +{first_look}s, so this run does not show when")
-            print(f"           they appeared -- only that betting is possible by then.")
-        else:
-            print(f"  VERDICT  all {len(targets)} listed, latest at +{worst}s.")
-            print("           An automated bet IS possible at that entry.")
+        latest_open = max(v[0] for v in spans.values())
+        earliest_shut = min(v[1] for v in spans.values())
+        print(f"  VERDICT  safe ordering span for ALL {len(spans)} coins:")
+        print(f"           +{latest_open}s to +{earliest_shut}s "
+              f"({latest_open//60}m{latest_open%60:02d}s to "
+              f"{earliest_shut//60}m{earliest_shut%60:02d}s into the window)")
+        if earliest_shut < 840:
+            print(f"           NOTE: closes ~{(900-earliest_shut)//60}m before the")
+            print(f"           window ends -- orders after that are rejected.")
     print("=" * 62)
     return 0
 
