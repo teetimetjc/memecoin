@@ -2,23 +2,22 @@ name: Control
 
 # The betting switch, and the proof that it works.
 #
-#   action: status   -- read the switch, stake and balance. Changes nothing,
-#     notifies nobody. Use this to answer "is it still betting?".
-#   action: selftest -- reads the Control tab and the balance, runs the funding
-#     check, HALTS, confirms the halt stuck, resumes, and sends one real
-#     Pushover notification so the alert path is proven.
+#   action: status   -- read the switch, stake and balance. Changes nothing.
+#   action: recent   -- print the last few Live Bets rows, including the exact
+#     ticker sent and the exact error returned.
+#   action: selftest -- exercise the halt path end to end, including one real
+#     Pushover notification.
 #   action: run      -- set the Control tab to RUNNING.
 #   action: halt     -- set it to HALTED.
 #   stake: <n>       -- write a new per-bet stake instead.
 #
-# Manual only. None of these place an order: control.py issues one signed GET
-# for the balance and otherwise touches only the spreadsheet.
+# Manual only. None of these place an order.
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "status | selftest | run | halt"
+        description: "status | recent | selftest | run | halt"
         required: false
         default: "status"
       stake:
@@ -54,6 +53,8 @@ jobs:
             python control.py --run
           elif [ "${{ inputs.action }}" = "halt" ]; then
             python control.py --halt
+          elif [ "${{ inputs.action }}" = "recent" ]; then
+            python control.py --recent
           elif [ "${{ inputs.action }}" = "selftest" ]; then
             python control.py
           else
