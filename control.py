@@ -222,7 +222,23 @@ def set_stake(dollars):
     return 0
 
 
+def _cli_state(word):
+    """Flip the switch from a workflow, for scheduling a start or a stop."""
+    import predictor as P
+    client = P._get_client()
+    if word == RUNNING:
+        resume(client)
+        print(f"  state set to {RUNNING} -- betting may resume at the next window")
+    else:
+        halt(client, "Halted from the control workflow.")
+    st, why = get_state(client)
+    print(f"  confirmed: {st}{' -- ' + why if why else ''}")
+    return 0 if st == word else 1
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "--stake":
         sys.exit(set_stake(sys.argv[2]))
+    if len(sys.argv) > 1 and sys.argv[1] in ("--run", "--halt"):
+        sys.exit(_cli_state(RUNNING if sys.argv[1] == "--run" else HALTED))
     sys.exit(selftest())
