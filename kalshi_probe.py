@@ -395,9 +395,21 @@ def listing_timeline():
     print("LISTING TIMELINE  (read-only) -- when can an order actually go in?")
     print("=" * 62)
 
+    # Measuring from mid-window answers the wrong question: the first poll
+    # finds the market already there and reports its own start time as the
+    # listing time. The interesting range is the first four minutes, so if we
+    # are past the very start of a window, wait for the NEXT one and watch it
+    # from second zero.
     now = datetime.now(timezone.utc)
     boundary = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    if (now - boundary).total_seconds() > 30:
+        boundary += timedelta(minutes=15)
+        wait = (boundary - now).total_seconds()
+        print(f"  {int(wait)}s into a window already; waiting {int(wait)}s for "
+              f"the {boundary:%H:%M} window so the first minutes are measured.")
+        time.sleep(max(0, wait))
     close = boundary + timedelta(minutes=15)
+    now = datetime.now(timezone.utc)
     print(f"  window {boundary:%H:%M} -> {close:%H:%M} UTC, now {now:%H:%M:%S}\n")
 
     # Ask the PRICE host what this window's ticker is, per coin. That host
@@ -417,6 +429,8 @@ def listing_timeline():
         print(f"  {sym:9s} {tk}")
     print()
 
+    # "first seen" is only a listing time if we were looking from the start.
+    first_look = int((datetime.now(timezone.utc) - boundary).total_seconds())
     seen = {}
     round_no = 0
     while datetime.now(timezone.utc) < close - timedelta(seconds=20):
@@ -460,8 +474,13 @@ def listing_timeline():
         print("           but unreliable -- some windows will simply be missed.")
     else:
         worst = max(v[0] for v in seen.values())
-        print(f"  VERDICT  all {len(targets)} listed, latest at +{worst}s.")
-        print("           An automated bet IS possible at that entry.")
+        if worst <= first_look + 20:
+            print(f"  VERDICT  all {len(targets)} were ALREADY listed on the first")
+            print(f"           poll at +{first_look}s, so this run does not show when")
+            print(f"           they appeared -- only that betting is possible by then.")
+        else:
+            print(f"  VERDICT  all {len(targets)} listed, latest at +{worst}s.")
+            print("           An automated bet IS possible at that entry.")
     print("=" * 62)
     return 0
 
