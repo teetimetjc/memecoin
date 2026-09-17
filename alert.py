@@ -14,9 +14,15 @@ WHICH MEANS THE MESSAGE IS THE PRODUCT. Someone is reading it on a phone,
 possibly half awake, with a few minutes to act, and a misread costs real
 money. So it says what to tap, not what the model thinks:
 
-  UP   -> BUY YES      because that is the button in the app
-  DOWN -> BUY NO
-  the strike price     so the right market gets opened
+  BET UP / BET DOWN    the decision, first and in those words, because that
+                       is how the reader thinks about it. "BUY NO ... above
+                       0.081395" requires inverting it in your head to see you
+                       are betting on a fall, and that inversion is where a
+                       mistake gets made with real money on it.
+  win if X is ABOVE/   the condition spelled out, so the direction can be
+  BELOW <strike>       checked against the decision without any inference
+  tap "Yes" / "No"     the button, kept but demoted: it matters at the moment
+                       of tapping, not when deciding
   a maximum price      so a moved book does not turn a good bet into a bad one
   a contract count     so the stake is right without mental arithmetic
   the close time       in the reader's own timezone, not UTC
@@ -98,6 +104,7 @@ def build(signals, boundary, targets=None):
             continue
         bets.append({
             "coin": coin,
+            "side": side,
             "buy": "YES" if side == "UP" else "NO",
             "entry": entry,
             "limit": limit,
@@ -115,11 +122,15 @@ def build(signals, boundary, targets=None):
 
     lines = []
     for b in bets:
-        lines.append(f"{b['coin']} — BUY {b['buy']}")
+        lines.append(f"{b['coin']} — BET {b['side']}")
         if b["strike"]:
-            lines.append(f"   market: above {b['strike']:,}")
-        lines.append(f"   pay up to {b['limit']}c · {b['contracts']} contracts "
-                     f"(${b['cost']:.2f})")
+            # The win condition, not the market's name. Betting DOWN on a
+            # market titled "above X" is the one place this could be misread.
+            above_below = "ABOVE" if b["side"] == "UP" else "BELOW"
+            strike = f"{b['strike']:,}" if b["strike"] >= 1 else f"{b['strike']}"
+            lines.append(f"   win if {b['coin']} is {above_below} {strike}")
+        lines.append(f"   tap \"{b['buy'].title()}\" · pay up to {b['limit']}c")
+        lines.append(f"   {b['contracts']} contracts (${b['cost']:.2f})")
         lines.append("")
 
     if skips:
