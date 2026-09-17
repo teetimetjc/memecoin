@@ -43,8 +43,26 @@ MAX_ENTRY = 50.0
 SLIP = 1.0
 
 
+# Waking hours, in LOCAL_TZ. Roughly 73% of the 96 daily windows carry a bet,
+# so alerting on all of them is about seventy notifications a day, one every
+# twenty minutes, through the night. An alert you sleep through is not neutral
+# -- it teaches you to swipe the next one away, including the one that
+# mattered. Overnight windows still get collected and graded; they just do not
+# buzz, because nobody was going to place them anyway.
+QUIET_START = int(os.environ.get("ALERT_HOUR_START", "7"))    # inclusive
+QUIET_END = int(os.environ.get("ALERT_HOUR_END", "22"))       # exclusive
+
+
 def enabled():
     return os.environ.get("BET_ALERTS", "").strip() == "1"
+
+
+def in_hours(now_utc):
+    """Is it a reasonable hour to buzz someone's phone?"""
+    h = now_utc.astimezone(LOCAL_TZ).hour
+    if QUIET_START <= QUIET_END:
+        return QUIET_START <= h < QUIET_END
+    return h >= QUIET_START or h < QUIET_END      # a range crossing midnight
 
 
 def _stake():
@@ -114,7 +132,13 @@ def build(signals, boundary, targets=None):
 def send(signals, boundary, targets=None):
     """Build and send. Never raises: a failed alert must not affect collection."""
     import predictor as P
+    from datetime import datetime, timezone
     try:
+        if not in_hours(datetime.now(timezone.utc)):
+            local = datetime.now(timezone.utc).astimezone(LOCAL_TZ)
+            print(f"  [alert] {local:%H:%M} local is outside "
+                  f"{QUIET_START:02d}:00-{QUIET_END:02d}:00; no notification.")
+            return False
         title, message = build(signals, boundary, targets)
         if not title:
             print("  [alert] nothing qualifies this window; no notification sent.")
