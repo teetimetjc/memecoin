@@ -1,0 +1,64 @@
+name: Manual Bet (ONE bet, by name)
+
+# Places one bet a human names: coin, side, stake. No signal, no strategy, no
+# retry, no loop. Dispatch-only, and the confirm phrase must match exactly.
+#
+# This exists because the automated path keeps deciding there is nothing worth
+# betting, which never answers whether an order can be placed at all.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type exactly: PLACE ONE REAL BET'
+        required: true
+        default: ''
+      symbol:
+        description: 'BTCUSDT | ETHUSDT | SOLUSDT | XRPUSDT | DOGEUSDT'
+        required: true
+        default: 'BTCUSDT'
+      side:
+        description: 'UP or DOWN'
+        required: true
+        default: 'DOWN'
+      stake:
+        description: 'Dollars (max 25)'
+        required: true
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  bet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Check the confirm phrase
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "PLACE ONE REAL BET" ]; then
+            echo "Confirm phrase not matched. Nothing was placed."
+            exit 1
+          fi
+
+      - name: Place it
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          ALLOW_LIVE_TRADING: "1"
+          LIVE_TRADING: "1"
+          LIVE_ALLOW_DOWN: "1"
+        run: |
+          python manual_bet.py "${{ github.event.inputs.symbol }}" \
+                               "${{ github.event.inputs.side }}" \
+                               "${{ github.event.inputs.stake }}"
