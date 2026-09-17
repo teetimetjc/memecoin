@@ -14,6 +14,7 @@ Usage:
 import os, sys, json, math, time, argparse, requests
 
 import control
+import decay
 import dryrun
 import live
 from datetime import datetime, timedelta, timezone
@@ -1525,6 +1526,16 @@ def run_predictions():
                       f"{' -- ' + why if why else ''}; betting would be skipped.")
         except Exception as e:
             print(f"  [funding] check skipped: {e}")
+
+    # ENTRY DECAY. Read-only, and deliberately AFTER everything else because
+    # it sleeps for minutes: the history is priced at the ~35s quote, a live
+    # order cannot go in until the order host lists the market some minutes
+    # later, and nothing we have says whether the edge survives that gap.
+    if live_sigs and decay.enabled():
+        try:
+            decay.measure(client, live_sigs, boundary)
+        except Exception as e:
+            print(f"  [decay] skipped: {e}")
 
     # LIVE ORDERS. Last, after every signal row is safely on the sheet, so a
     # failure here can never cost collection. Requires both switches, the
