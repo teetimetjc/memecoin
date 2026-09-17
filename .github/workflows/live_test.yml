@@ -1,0 +1,120 @@
+name: Live Test (ONE real $5 bet)
+
+# A single proving run. Not a strategy test -- a plumbing test.
+#
+# Every order this project has ever sent died on a bug: HTTP 410 (wrong
+# endpoint), HTTP 404 (market not listed yet), a misparsed order book. Each was
+# fixed, but NOTHING HAS EVER ACTUALLY FILLED, so the V2 order body is still
+# only inferred from the docs. One real fill settles it.
+#
+# What keeps this small:
+#   LIVE_MAX_BETS=1   at most ONE order, ever, on the cheapest qualifying signal
+#   stake $5          so the answer costs $5, not $25
+#   LIVE_ALLOW_DOWN=0 UP only. DOWN is sent as an ask and is BELIEVED to open a
+#                     NO position, but that is the one mapping that would put a
+#                     bet on the wrong side of the market. An UP fill is read
+#                     back first; DOWN stays off until that is confirmed.
+#   re-HALTED after   the Control tab goes back to HALTED even if the run fails,
+#                     so this cannot leak into the next 15-minute window.
+#
+# It must be dispatched by a human typing the confirm phrase. Nothing schedules
+# it and nothing else calls it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type exactly: PLACE ONE REAL BET'
+        required: true
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  livetest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install requests gspread google-auth cryptography
+
+      # The human thumbs-up. A typo means no run, not a smaller run.
+      - name: Check the confirm phrase
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "PLACE ONE REAL BET" ]; then
+            echo "Confirm phrase not matched. Nothing was placed."
+            exit 1
+          fi
+          echo "Confirmed by ${{ github.actor }}."
+
+      - name: State before
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python control.py --status
+
+      # Signals are computed at the window boundary; firing mid-window would
+      # test nothing. Wait for the next :00/:15/:30/:45.
+      - name: Wait for the next 15-minute boundary
+        run: |
+          now=$(date -u +%s)
+          next=$(( (now / 900 + 1) * 900 ))
+          echo "Waiting $((next - now))s for $(date -u -d @$next +%H:%M:%S) UTC."
+          sleep $((next - now))
+
+      - name: Arm the switch ($5, one bet)
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: |
+          python control.py --stake 5
+          python control.py --run
+
+      - name: Place at most one $5 bet
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          ALLOW_LIVE_TRADING: "1"
+          LIVE_TRADING: "1"
+          LIVE_MAX_BETS: "1"
+          LIVE_ALLOW_DOWN: "0"
+          DRY_RUN_ORDERS: "1"
+          MEASURE_ENTRY_DECAY: "0"
+        run: python predictor.py
+
+      # always(): the switch goes back off even if the step above threw, timed
+      # out, or was cancelled. A test that leaves the brakes off is worse than
+      # no test.
+      - name: Re-halt, whatever happened
+        if: always()
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: python control.py --halt
+
+      - name: What actually happened
+        if: always()
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: |
+          python control.py --recent
+          python control.py --status
+          python -c "import live; live.verify_positions()"
