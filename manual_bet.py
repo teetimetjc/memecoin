@@ -33,6 +33,7 @@ hand-rolled request works, which is not the thing in doubt.
 
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -105,8 +106,38 @@ def main():
               f"placing anyway because this bet was asked for by name.")
         live.MAX_ENTRY = 100.0
 
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # A quote this extreme means the window is already decided: the other side
+    # has no bid left. The order would pay ~$5 to win ~$5, which is not the bet
+    # anyone meant to place. Refusing is better than filling it.
+    if entry >= 97.0:
+        print(f"  {entry:.1f}c means this window is effectively over -- the other")
+        print(f"  side has no bid. That bet would risk ${stake:.2f} to win about")
+        print(f"  ${stake * (100 - entry) / entry:.2f}. Not placing; try earlier in a window.")
+        return 1
+
+    # Derived from the WINDOW, not the clock, so the retries below reuse one
+    # client_order_id. Kalshi dedupes on it, so a retry cannot double-bet.
+    now_ = datetime.now(timezone.utc)
+    ts = now_.replace(minute=(now_.minute // 15) * 15,
+                      second=0, microsecond=0).strftime("%Y-%m-%d %H:%M UTC")
     status, detail, n, cost, oid = live.place(ts, symbol, side, ticker, entry, stake)
+
+    # The order host lists a window's market minutes after it opens. NOTYET
+    # means exactly that, so poll -- re-quoting each time, because a limit
+    # built from a stale price simply misses. Bounded: this places one order
+    # or none, and every attempt carries the same client_order_id.
+    tries = 0
+    while status == "NOTYET" and tries < 16:
+        tries += 1
+        time.sleep(15)
+        fresh = live.current_entry(ticker, side)
+        if fresh is not None:
+            entry = fresh
+        if entry >= 97.0:
+            status, detail = "SKIPPED", f"re-quoted at {entry:.1f}c; window decided"
+            break
+        print(f"  ...not listed yet, retry {tries}/16 at {entry:.0f}c")
+        status, detail, n, cost, oid = live.place(ts, symbol, side, ticker, entry, stake)
     print()
     print(f"  STATUS : {status}")
     print(f"  detail : {detail or '(none)'}")
