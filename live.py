@@ -288,12 +288,51 @@ def run_window(client, signals, stake=None):
 
     if rows:
         append(client, rows)
+    if placed:
+        verify_positions()
     print(f"  [live] {placed} order(s) placed, "
           f"{sum(1 for r in rows if r[8]=='SKIPPED')} skipped, {len(failures)} failed.")
 
     if failures:
         control.halt(client, "Order rejected by Kalshi -- " + "; ".join(failures[:3]))
     return rows
+
+
+def verify_positions():
+    """Read positions back and print what direction they actually are.
+
+    DOWN is sent as an ask on the YES contract, which should open a NO
+    position. That is standard but it was inferred, not documented, so every
+    window that places something reads the account back and says plainly what
+    it got. A mismatch is visible in the log and in the pulse rather than
+    discovered weeks later in the P&L.
+    """
+    import predictor as P
+    try:
+        hdrs = P._kalshi_headers("GET", "/trade-api/v2/portfolio/positions")
+        r = requests.get(f"{ORDER_HOST}/trade-api/v2/portfolio/positions",
+                         headers=hdrs or {}, params={"limit": 50}, timeout=15)
+        if not r.ok:
+            print(f"  [verify] positions unreadable: HTTP {r.status_code}")
+            return []
+        pos = r.json().get("market_positions") or []
+    except Exception as e:
+        print(f"  [verify] positions unreadable: {e}")
+        return []
+    if not pos:
+        print("  [verify] no open positions after placing -- orders may be "
+              "resting unfilled, which is normal for a limit order.")
+        return []
+    for p in pos[:10]:
+        # A positive position is YES, a negative one is NO, in Kalshi's model.
+        q = p.get("position") or p.get("market_exposure") or 0
+        try:
+            qn = float(q)
+        except (TypeError, ValueError):
+            qn = 0.0
+        kind = "YES (up)" if qn > 0 else ("NO (down)" if qn < 0 else "flat")
+        print(f"  [verify] {p.get('ticker','?')}: {q} -> {kind}")
+    return pos
 
 
 def append(client, rows):
