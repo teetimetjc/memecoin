@@ -276,4 +276,73 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--find-order-endpoint":
+        sys.exit(find_order_endpoint())
     sys.exit(main())
+
+
+# --- order endpoint discovery -------------------------------------------
+# The documented POST /trade-api/v2/portfolio/orders answered HTTP 410
+# "deprecated_v1_order_endpoint", and the docs are unreachable from here, so
+# find the live path by asking the server.
+#
+# SAFE BY CONSTRUCTION: every probe uses a ticker that cannot exist, so a path
+# that is real rejects it on validation and a path that is not real 404s. No
+# candidate can fill, because there is no market to fill against. The point is
+# to read the STATUS CODE, not to trade.
+
+BOGUS_TICKER = "KXNOSUCHMARKET-00XXX000000-00"
+
+CANDIDATES = [
+    ("POST", "/trade-api/v2/portfolio/orders"),      # the deprecated one
+    ("POST", "/trade-api/v2/orders"),
+    ("POST", "/trade-api/v2/portfolio/order"),
+    ("POST", "/v2/portfolio/orders"),
+    ("POST", "/trade-api/v2/portfolio/orders/create"),
+]
+
+
+def _try_order_path(method, path, price_field):
+    import predictor as P
+    body = {
+        "ticker": BOGUS_TICKER,
+        "client_order_id": "endpoint-probe-does-not-exist",
+        "action": "buy", "side": "yes", "count": 1, "type": "limit",
+        price_field: 1 if price_field.endswith("price") else 0.01,
+    }
+    hdrs = _sign(method, path, SCHEME)
+    hdrs["Content-Type"] = "application/json"
+    try:
+        r = requests.post(P.KALSHI_BASE.replace("/trade-api/v2", "") + path,
+                          json=body, headers=hdrs, timeout=15)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    txt = r.text[:200].replace("\n", " ")
+    return r.status_code, txt
+
+
+def find_order_endpoint():
+    print("=" * 62)
+    print("ORDER ENDPOINT DISCOVERY  (invalid ticker -- cannot fill)")
+    print("=" * 62)
+    # Establish the signing scheme first, as main() does.
+    global SCHEME
+    for scheme in ("pss", "pkcs1v15"):
+        SCHEME = scheme
+        code, _, err = _get("/portfolio/balance")
+        if code == 200:
+            print(f"  signing: {scheme}")
+            break
+    for price_field in ("yes_price", "yes_price_dollars"):
+        print(f"\n  --- price field: {price_field}")
+        for method, path in CANDIDATES:
+            code, txt = _try_order_path(method, path, price_field)
+            verdict = {404: "path does not exist",
+                       410: "DEPRECATED",
+                       401: "auth rejected",
+                       403: "forbidden"}.get(code, "")
+            print(f"  {method:5s} {path:42s} -> {code} {verdict}")
+            if code not in (404, 410, None):
+                print(f"        body: {txt}")
+    print("=" * 62)
+    return 0
