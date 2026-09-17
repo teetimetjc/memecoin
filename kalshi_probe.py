@@ -389,7 +389,7 @@ def compare_hosts():
     print("HOST COMPARISON  (read-only)")
     print("=" * 62)
     for host in (NEW_HOST, OLD_HOST):
-        for series in ("KXBTC15M",):
+        for series in ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M"):
             try:
                 hh = _sign("GET", "/trade-api/v2/markets", SCHEME)
                 r = requests.get(host + "/trade-api/v2/markets",
