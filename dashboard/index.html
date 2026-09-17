@@ -286,6 +286,15 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     <div class="legend" id="dryFoot"></div>
   </section>
 
+  <section class="panel" id="decayPanel" hidden>
+    <div class="phead">
+      <h2>Entry delay: what the wait costs</h2>
+      <span class="note">every number on this page is priced ~35s into the window · a live order cannot go in for ~4 minutes</span>
+    </div>
+    <div class="stats" id="decayStats" style="border:0;border-radius:0"></div>
+    <div class="legend" id="decayFoot"></div>
+  </section>
+
   <div class="divider">
     <h2>When they fire</h2>
     <span class="d" id="clockNote">the same signals, placed on your clock</span>
@@ -976,6 +985,78 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       + `not a view you can slice.</span>`;
   }
 
+  // ---- entry delay -----------------------------------------------------
+  // The one panel that questions the rest of the page. Everything above is
+  // priced at the ~35 second quote; a live order cannot reach Kalshi's order
+  // host for another three to four minutes. This shows the SAME bets with the
+  // SAME outcomes priced at both moments, so the gap between the two numbers
+  // is the cost of the delay and nothing else. Like the dry-run panel it sits
+  // outside the filtered view -- slippage is a property of the book at that
+  // moment, not of how the reader later slices results.
+  function drawDecay(){
+    const E = D.decay, panel = document.getElementById("decayPanel");
+    if(!panel) return;
+    if(!E || !E.logged){ panel.hidden = true; return; }
+    panel.hidden = false;
+
+    const tile = (k,v,n,c) =>
+      `<div class="stat"><span class="k">${k}</span><span class="v ${c||""}">${v}</span>`
+      + `<span class="n">${n}</span></div>`;
+
+    // Before anything is graded there is drift but no verdict. Say so plainly
+    // rather than showing an EV built on nothing.
+    if(!E.pairs){
+      document.getElementById("decayStats").innerHTML =
+        tile("Signals measured", `${E.quoted}`,
+             `${E.logged} logged · ${E.logged-E.quoted} had no later quote`, "")
+      + tile("Mean drift", E.quoted ? `${E.drift_mean>=0?"+":""}${E.drift_mean.toFixed(2)}¢` : "—",
+             E.quoted ? `${E.drift_worse} of ${E.quoted} got worse` : "nothing re-quoted yet",
+             E.drift_mean>0?"neg":"pos")
+      + tile("Re-priced P&L", "—", "no window graded yet", "")
+      + tile("Verdict", "TOO EARLY", "needs graded windows", "");
+      document.getElementById("decayFoot").innerHTML =
+        `<span>Drift is being recorded, but none of these windows has settled `
+        + `yet, so there is no outcome to re-price against. The verdict appears `
+        + `once graded windows accumulate.</span>`;
+      return;
+    }
+
+    const delta = E.ev_late - E.ev_early;
+    const kept = E.eligible ? (E.still_eligible / E.eligible * 100) : 0;
+    // The CI is the honest part: a sign is not a finding until it excludes zero.
+    const ci = E.diff_ci;
+    const decided = ci && (ci[0] > 0 || ci[1] < 0);
+    const verdict = !decided ? "TOO EARLY"
+                  : delta >= 0 ? "SURVIVES" : "EDGE ERODES";
+
+    document.getElementById("decayStats").innerHTML =
+      tile("EV at 35s", fmt(E.ev_early), `what this page reports`, E.ev_early>=0?"pos":"neg")
+    + tile("EV at 4min", fmt(E.ev_late),
+           `what a live order would get`, E.ev_late>=0?"pos":"neg")
+    + tile("Cost of the delay", fmt(delta),
+           ci ? `95% CI ${fmt(ci[0])} to ${fmt(ci[1])}` : "per bet",
+           delta>=0?"pos":"neg")
+    + tile("Verdict", verdict,
+           `${E.pairs} bets · ${E.windows} window${E.windows===1?"":"s"}`,
+           verdict==="EDGE ERODES"?"neg":verdict==="SURVIVES"?"pos":"");
+
+    document.getElementById("decayFoot").innerHTML =
+      `<span>Mean drift <b>${E.drift_mean>=0?"+":""}${E.drift_mean.toFixed(2)}¢</b> `
+      + `(median ${E.drift_med>=0?"+":""}${E.drift_med.toFixed(2)}¢); `
+      + `<b>${E.drift_worse}</b> of ${E.quoted} re-quotes came back worse.</span>`
+      + (E.eligible
+          ? `<span>Of ${E.eligible} signals that were under 50¢ at 35 seconds, `
+            + `<b>${E.still_eligible}</b> (${kept.toFixed(0)}%) were still under 50¢ `
+            + `four minutes in — the rest would no longer have been bet at all.</span>`
+          : "")
+      + `<span>Same bets, same outcomes, two entry prices — so this is a paired `
+      + `comparison, not two samples. The interval clusters by window, because `
+      + `five coins in one 15-minute window are one market event.</span>`
+      + (decided ? "" : `<span><b>Not yet decided.</b> The interval still `
+          + `includes zero, so the delay has not been shown to cost or save `
+          + `anything. More windows will settle it.</span>`);
+  }
+
   // ---- dry run ---------------------------------------------------------
   // Deliberately OUTSIDE the filtered view. This measures the execution cost
   // of the rule as it actually fires, so it must not move when the reader
@@ -1081,7 +1162,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       splitBtn.setAttribute("aria-pressed", String(showSplit));
     }
     drawLive();
-    drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawDry(); drawClock();
+    drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawDry(); drawDecay(); drawClock();
   }
   const bandBtn=document.getElementById("bandBtn");
   bandBtn.addEventListener("click",()=>{

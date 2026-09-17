@@ -24,12 +24,22 @@ OUT_DEFAULT = "dashboard/equity_data.js"
 FROZEN = P.CVD_FROZEN
 
 
+def _fee(contracts, p):
+    """Kalshi's fee: 7% x contracts x P x (1-P), rounded UP to the cent.
+
+    The round() guard is not cosmetic. When the exact fee lands on a cent
+    boundary -- 25 contracts at 40c gives exactly 42c -- binary floating point
+    stores it as 42.00000000000001, and ceil then charges 43c. That penny was
+    being added to a fair fraction of the history.
+    """
+    return math.ceil(round(0.07 * contracts * p * (1 - p) * 100, 9)) / 100
+
+
 def _pnl(entry_cents, won):
     """Net on a $10 bet at `entry_cents`, Kalshi fee rounded up to the cent."""
     p = entry_cents / 100.0
     contracts = 10.0 / p
-    fee = math.ceil(0.07 * contracts * p * (1 - p) * 100) / 100
-    return (contracts if won else 0.0) - 10.0 - fee
+    return (contracts if won else 0.0) - 10.0 - _fee(contracts, p)
 
 
 def build(rows):
@@ -333,8 +343,7 @@ def build_live(live_rows, pred_rows):
         settled += 1
         wins += 1 if won else 0
         # Kalshi's fee is 7% of stake x (1 - price), charged at trade time.
-        fee = math.ceil(0.07 * n * (limit_c / 100.0) * (1 - limit_c / 100.0) * 100) / 100
-        net = (n if won else 0.0) - cost - fee
+        net = (n if won else 0.0) - cost - _fee(n, limit_c / 100.0)
         pnl += net
         c = sym.replace("USDT", "")
         b = by_coin.setdefault(c, {"n": 0, "w": 0, "net": 0.0})
@@ -349,6 +358,106 @@ def build_live(live_rows, pred_rows):
         "coins": {k: {"n": v["n"], "w": v["w"], "net": round(v["net"], 2)}
                   for k, v in sorted(by_coin.items())},
         "skip_why": dict(sorted(skip_why.items(), key=lambda kv: -kv[1])),
+    }
+
+
+def build_decay(decay_rows, pred_rows):
+    """Re-price the strategy at the entry a live order could actually get.
+
+    Every number on this dashboard is priced at the quote taken ~35 seconds
+    into the window. A live order cannot reach Kalshi's order host until three
+    to four minutes in, by which time the price has absorbed part of the move
+    the signal is predicting. Those are two different bets and only one of them
+    has ever been measured.
+
+    The Entry Decay tab records both quotes for the same signal. Joining them
+    to the graded outcome gives the same bets, same wins, two entry prices --
+    so the difference in P&L is the cost of the delay and nothing else. That
+    paired design matters: it is not two samples being compared, it is one
+    sample priced twice, which removes luck from the comparison entirely.
+
+    Reported at the $10 flat stake the rest of the dashboard uses.
+    """
+    if not decay_rows or len(decay_rows) < 2:
+        return None
+    di = {h: i for i, h in enumerate(decay_rows[0])}
+
+    def dc(r, k):
+        i = di.get(k, -1)
+        return r[i] if 0 <= i < len(r) else ""
+
+    pi = {h: i for i, h in enumerate(P.ALL_HEADERS)}
+    outcome = {}
+    for r in pred_rows[1:]:
+        res = r[pi["CVD Correct?"]] if pi.get("CVD Correct?", -1) < len(r) else ""
+        if res in ("Yes", "No"):
+            outcome[(r[pi["Timestamp"]], r[pi["Symbol"]])] = (res == "Yes")
+
+    logged = quoted = 0
+    drifts = []
+    # Paired P&L, and the same pair grouped by window so the CI can account
+    # for five coins in one window being one market event, not five.
+    by_win = defaultdict(lambda: [0.0, 0.0, 0])
+    n_pairs = wins = 0
+    early_sum = late_sum = 0.0
+    still_eligible = eligible = 0
+    for r in decay_rows[1:]:
+        logged += 1
+        ts, sym = dc(r, "Timestamp"), dc(r, "Symbol")
+        try:
+            early = float(dc(r, "Entry @35s ¢"))
+            late = float(dc(r, "Entry @4min ¢"))
+        except ValueError:
+            continue                      # the later quote never resolved
+        if not (0 < early < 100 and 0 < late < 100):
+            continue
+        quoted += 1
+        drifts.append(late - early)
+        # Would the live rule still have taken this bet at the later price?
+        if early < 50.0:
+            eligible += 1
+            if late < 50.0:
+                still_eligible += 1
+
+        won = outcome.get((ts, sym))
+        if won is None:
+            continue                      # window not graded yet
+        n_pairs += 1
+        wins += 1 if won else 0
+        e, l = _pnl(early, won), _pnl(late, won)
+        early_sum += e
+        late_sum += l
+        w = by_win[ts]
+        w[0] += e; w[1] += l; w[2] += 1
+
+    if not quoted:
+        return {"logged": logged, "quoted": 0, "pairs": 0}
+
+    # Clustered CI on the paired per-bet difference: one observation per
+    # window, so a bad minute cannot pose as five independent data points.
+    diff_ci = None
+    if len(by_win) > 1:
+        per_win = [(w[1] - w[0]) / w[2] for w in by_win.values()]
+        m = statistics.mean(per_win)
+        se = statistics.stdev(per_win) / math.sqrt(len(per_win))
+        diff_ci = [round(m - 1.96 * se, 2), round(m + 1.96 * se, 2)]
+
+    return {
+        "logged": logged,
+        "quoted": quoted,
+        "pairs": n_pairs,
+        "windows": len(by_win),
+        "wins": wins,
+        "drift_mean": round(statistics.mean(drifts), 2),
+        "drift_med": round(statistics.median(drifts), 2),
+        "drift_worse": sum(1 for d in drifts if d > 0),
+        "eligible": eligible,
+        "still_eligible": still_eligible,
+        "ev_early": round(early_sum / n_pairs, 2) if n_pairs else None,
+        "ev_late": round(late_sum / n_pairs, 2) if n_pairs else None,
+        "pnl_early": round(early_sum, 2),
+        "pnl_late": round(late_sum, 2),
+        "diff_ci": diff_ci,
     }
 
 
@@ -375,6 +484,20 @@ def main():
     except Exception as e:
         print(f"  (live summary skipped: {e})")
         data["live"] = None
+    # And the entry-delay measurement. Same rule again -- this is the newest
+    # of the three and the least proven, so it gets the least trust.
+    try:
+        data["decay"] = build_decay(_read_tab(client, "Entry Decay"), rows)
+        if data["decay"]:
+            E = data["decay"]
+            print(f"  Entry Decay: {E['logged']} logged, {E['quoted']} quoted, "
+                  f"{E.get('pairs', 0)} graded"
+                  + (f", mean drift {E['drift_mean']:+.2f}c" if E['quoted'] else ""))
+        else:
+            print("  Entry Decay: tab empty or missing -- nothing measured yet")
+    except Exception as e:
+        print(f"  (decay summary skipped: {e})")
+        data["decay"] = None
     import pathlib
     p = pathlib.Path(out)
     p.parent.mkdir(parents=True, exist_ok=True)
