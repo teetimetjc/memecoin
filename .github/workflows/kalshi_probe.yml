@@ -1,17 +1,23 @@
 name: Kalshi Probe
 
-# Step 1 of the path to automated order placement: confirm the API key works
-# against the authenticated portfolio endpoints and find out whether it carries
-# trade scope or only read scope.
+# Confirms the API key works against the authenticated portfolio endpoints,
+# and -- with mode: find-order-endpoint -- discovers which order path is
+# current after the documented one started returning HTTP 410.
 #
-# MANUAL ONLY. There is deliberately no schedule. It runs when a human presses
-# the button and never on its own.
+# MANUAL ONLY. There is deliberately no schedule.
 #
-# The script it runs issues GETs exclusively -- it cannot place, cancel or
-# modify an order, and cannot move money. See kalshi_probe.py's header.
+# Neither mode can place a real order. The default mode issues GETs
+# exclusively. The discovery mode posts a ticker that cannot exist, so a live
+# path rejects it on validation and a wrong path 404s -- there is no market to
+# fill against, by construction.
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "credentials (default) or find-order-endpoint"
+        required: false
+        default: "credentials"
 
 jobs:
   probe:
@@ -27,8 +33,13 @@ jobs:
 
       - run: pip install requests gspread google-auth cryptography
 
-      - name: Probe credentials
+      - name: Probe
         env:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           KALSHI_KEY_ID:  ${{ secrets.KALSHI_KEY_ID }}
-        run: python kalshi_probe.py
+        run: |
+          if [ "${{ inputs.mode }}" = "find-order-endpoint" ]; then
+            python kalshi_probe.py --find-order-endpoint
+          else
+            python kalshi_probe.py
+          fi
