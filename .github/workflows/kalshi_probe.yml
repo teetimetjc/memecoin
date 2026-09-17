@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "credentials | find-order-endpoint | listing-timeline"
+        description: "credentials | find-order-endpoint | listing-timeline | min-order"
         required: false
         default: "credentials"
 
@@ -41,5 +41,6 @@ jobs:
           case "${{ inputs.mode }}" in
             find-order-endpoint) python kalshi_probe.py --find-order-endpoint ;;
             listing-timeline)    python kalshi_probe.py --listing-timeline ;;
+            min-order)           python kalshi_probe.py --min-order ;;
             *)                   python kalshi_probe.py ;;
           esac
