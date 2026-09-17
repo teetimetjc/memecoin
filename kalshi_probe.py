@@ -412,14 +412,29 @@ def listing_timeline():
     now = datetime.now(timezone.utc)
     print(f"  window {boundary:%H:%M} -> {close:%H:%M} UTC, now {now:%H:%M:%S}\n")
 
-    # Ask the PRICE host what this window's ticker is, per coin. That host
-    # lists immediately, so this is just name resolution, not the measurement.
+    # Resolve this window's ticker per coin by matching its CLOSE TIME, not by
+    # asking for a usable price. At second zero the market exists but its book
+    # is a placeholder -- bid 0.001, ask 0.002 -- so any price-validating
+    # lookup reports "no market" exactly when we need the name. The name and
+    # the price become available at different times, and this only needs the
+    # name.
     targets = {}
-    for sym in P.KALSHI_SERIES:
+    want = f"{close:%Y-%m-%dT%H:%M}"
+    for sym, series in P.KALSHI_SERIES.items():
         try:
-            k = P.get_kalshi_odds(sym, allow_recent=False)
-            if k and k.get("ticker"):
-                targets[sym] = k["ticker"]
+            hh = _sign("GET", "/trade-api/v2/markets", SCHEME)
+            r = requests.get(OLD_HOST + "/trade-api/v2/markets",
+                             params={"series_ticker": series, "limit": 200},
+                             headers=hh, timeout=15)
+            if not r.ok:
+                print(f"  {sym}: markets list HTTP {r.status_code}")
+                continue
+            for mk in r.json().get("markets", []):
+                if str(mk.get("close_time", ""))[:16] == want:
+                    targets[sym] = mk["ticker"]
+                    break
+            else:
+                print(f"  {sym}: no market closing at {want}")
         except Exception as e:
             print(f"  {sym}: could not resolve ticker -- {e}")
     if not targets:
