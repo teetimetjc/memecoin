@@ -326,6 +326,40 @@ def _try_body(side_value):
     return r.status_code, r.text[:220].replace("\n", " ")
 
 
+def compare_hosts():
+    """Does the ORDER host know the tickers the MARKET host quotes?
+
+    Orders are rejected with market_not_found for real, currently-open tickers,
+    which suggests the two hosts serve different market universes. If so, every
+    price this project has ever logged came from a venue we cannot trade on,
+    and the fix is to read from the same host we order on.
+    """
+    import predictor as P
+    print("=" * 62)
+    print("HOST COMPARISON  (read-only)")
+    print("=" * 62)
+    for host in (NEW_HOST, OLD_HOST):
+        for series in ("KXBTC15M",):
+            try:
+                hh = _sign("GET", "/trade-api/v2/markets", SCHEME)
+                r = requests.get(host + "/trade-api/v2/markets",
+                                 params={"series_ticker": series, "limit": 4,
+                                         "status": "open"},
+                                 headers=hh, timeout=15)
+            except Exception as e:
+                print(f"  {host[8:]:26s} {series}: failed {e}")
+                continue
+            if not r.ok:
+                print(f"  {host[8:]:26s} {series}: HTTP {r.status_code} {r.text[:90]}")
+                continue
+            ms = r.json().get("markets", [])
+            print(f"  {host[8:]:26s} {series}: {len(ms)} open market(s)")
+            for m in ms[:3]:
+                print(f"        {m.get('ticker')}  status={m.get('status')}")
+    print("=" * 62)
+    return 0
+
+
 def find_order_endpoint():
     print("=" * 62)
     print("ORDER BODY PROBE  (invalid ticker -- cannot fill)")
@@ -351,5 +385,10 @@ def find_order_endpoint():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--find-order-endpoint":
+        for _s in ("pss", "pkcs1v15"):
+            SCHEME = _s
+            if _get("/portfolio/balance")[0] == 200:
+                break
+        compare_hosts()
         sys.exit(find_order_endpoint())
     sys.exit(main())
