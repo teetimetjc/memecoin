@@ -84,6 +84,23 @@ SLIP_BUFFER_CENTS = 1.0
 RETRY_WAIT_SECONDS = 15
 RETRY_ATTEMPTS = 18         # ~4.5 minutes of polling, well inside the window
 
+# Hard ceiling on how many orders one window may place. Unset means the normal
+# rule: bet every qualifying signal. Set to 1 for a live proving run, where the
+# question is "does an order actually fill" and not "is the strategy good" --
+# one fill answers it, and five cost five times as much to learn the same thing.
+#
+# This caps ORDERS, not signals. The rest of the window is still evaluated and
+# logged as skipped, so the row for a bet we chose not to place is visible
+# rather than silently missing.
+def _max_bets():
+    raw = os.environ.get("LIVE_MAX_BETS", "").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
 LIVE_HEADERS = [
     "Timestamp", "Symbol", "Side", "Ticker", "Entry ¢", "Limit ¢",
     "Contracts", "Cost $", "Status", "Order ID", "Detail",
@@ -241,6 +258,20 @@ def run_window(client, signals, stake=None):
         print("  [live] nothing betable this window.")
         return []
 
+    # Apply the ceiling before the funding check, so a capped run only ever
+    # reserves what it can actually spend. Cheapest entries win the slots: the
+    # <40c bucket is where the measured edge is, so if only one order is going
+    # in, it should be the one the evidence likes best.
+    capped = set()
+    cap = _max_bets()
+    if cap is not None and len(betable) > cap:
+        keep = {(s[0], s[1]) for s in sorted(betable, key=lambda s: s[4])[:cap]}
+        capped = {(s[0], s[1]) for s in betable if (s[0], s[1]) not in keep}
+        print(f"  [live] LIVE_MAX_BETS={cap}: placing the {cap} cheapest of "
+              f"{len(betable)} qualifying signal(s); the rest are logged as "
+              f"skipped.")
+        betable = [s for s in betable if (s[0], s[1]) in keep]
+
     ok, needed, bal, reason = control.check_window(client, len(betable), stake=stake)
     control.record_balance(client, bal)
     if not ok:
@@ -249,6 +280,12 @@ def run_window(client, signals, stake=None):
 
     def attempt(sig):
         ts, symbol, side, ticker, entry = sig
+        # A capped-out signal must never reach place(). Checked here rather
+        # than at the call sites so the retry loop cannot route around it.
+        if (ts, symbol) in capped:
+            return [ts, symbol, side, ticker,
+                    round(entry, 1) if entry else "", "", "", "",
+                    "SKIPPED", "", f"held back by LIVE_MAX_BETS={cap}"]
         status, detail, n, cost, oid = place(ts, symbol, side, ticker, entry, stake)
         return [ts, symbol, side, ticker,
                 round(entry, 1) if entry else "",
