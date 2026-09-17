@@ -289,51 +289,42 @@ def main():
 
 BOGUS_TICKER = "KXNOSUCHMARKET-00XXX000000-00"
 
-# The docs show the host as external-api.kalshi.com, not the
-# api.elections.kalshi.com this project has always used. Every path 404d
-# because they were the right paths on the wrong host.
-NEW_HOST = "https://external-api.kalshi.com"
-OLD_HOST = "https://api.elections.kalshi.com"
+# The real V2 create-order endpoint, from Kalshi's docs.
+ORDER_URL = "https://external-api.kalshi.com/trade-api/v2/portfolio/events/orders"
 
-CANDIDATES = [
-    ("POST", NEW_HOST + "/trade-api/v2/portfolio/orders"),
-    ("POST", NEW_HOST + "/trade-api/v2/orders"),
-    ("POST", OLD_HOST + "/trade-api/v2/portfolio/orders"),   # known deprecated
-]
-
-# Paths that might publish the API's own schema. If one answers, it names the
-# real order endpoint outright and ends the guessing.
-SPEC_PATHS = [
-    "/trade-api/v2/openapi.json", "/trade-api/openapi.json",
-    "/openapi.json", "/trade-api/v2/swagger.json", "/trade-api/v2/docs",
-]
+# The documented body uses decimal STRINGS and a bid/ask side, not the
+# yes/no this project assumed. What is NOT documented on that page is how to
+# express a DOWN bet -- buying NO. Rather than guess with real money, send
+# deliberately invalid tickers with different side values and read which ones
+# the validator objects to. No candidate can fill: the market does not exist.
+SIDE_VALUES = ["bid", "ask", "yes", "no"]
 
 
-def _try_order_path(method, url, price_field):
+def _try_body(side_value):
     import predictor as P
     from urllib.parse import urlsplit
-    path = urlsplit(url).path
     body = {
         "ticker": BOGUS_TICKER,
-        "client_order_id": "endpoint-probe-does-not-exist",
-        "action": "buy", "side": "yes", "count": 1, "type": "limit",
-        price_field: 1 if price_field.endswith("price") else 0.01,
+        "client_order_id": "00000000-0000-4000-8000-000000000000",
+        "side": side_value,
+        "count": "1.00",
+        "price": "0.0100",
+        "time_in_force": "good_till_canceled",
+        "post_only": False,
     }
-    hdrs = _sign(method, path, SCHEME)
+    hdrs = _sign("POST", urlsplit(ORDER_URL).path, SCHEME)
     hdrs["Content-Type"] = "application/json"
     try:
-        r = requests.post(url, json=body, headers=hdrs, timeout=15)
+        r = requests.post(ORDER_URL, json=body, headers=hdrs, timeout=15)
     except Exception as e:
         return None, f"request failed: {e}"
-    txt = r.text[:200].replace("\n", " ")
-    return r.status_code, txt
+    return r.status_code, r.text[:220].replace("\n", " ")
 
 
 def find_order_endpoint():
     print("=" * 62)
-    print("ORDER ENDPOINT DISCOVERY  (invalid ticker -- cannot fill)")
+    print("ORDER BODY PROBE  (invalid ticker -- cannot fill)")
     print("=" * 62)
-    # Establish the signing scheme first, as main() does.
     global SCHEME
     for scheme in ("pss", "pkcs1v15"):
         SCHEME = scheme
@@ -341,44 +332,15 @@ def find_order_endpoint():
         if code == 200:
             print(f"  signing: {scheme}")
             break
-    # Ask the API to describe itself first -- a spec beats guessing paths.
-    import re as _re
-    print("\n  --- looking for a published schema")
-    for sp in SPEC_PATHS:
-        try:
-            rr = requests.get(P.KALSHI_BASE.replace("/trade-api/v2", "") + sp, timeout=10)
-        except Exception as e:
-            print(f"  GET  {sp:42s} -> failed: {e}")
-            continue
-        print(f"  GET  {sp:42s} -> {rr.status_code}")
-        if rr.status_code == 200:
-            hits = sorted(set(_re.findall(r'"(/[^"]*orders?[^"]*)"', rr.text)))[:12]
-            if hits:
-                print("        order-ish paths in the spec:")
-                for h in hits:
-                    print(f"          {h}")
-
-    print("\n  --- does the new host serve reads with our key?")
-    for h in (NEW_HOST, OLD_HOST):
-        try:
-            hh = _sign("GET", "/trade-api/v2/portfolio/balance", SCHEME)
-            rr = requests.get(h + "/trade-api/v2/portfolio/balance", headers=hh, timeout=10)
-            print(f"  GET  {h[8:]:32s} /portfolio/balance -> {rr.status_code} {rr.text[:80]}")
-        except Exception as e:
-            print(f"  GET  {h[8:]:32s} -> failed: {e}")
-
-    for price_field in ("yes_price", "yes_price_dollars"):
-        print(f"\n  --- price field: {price_field}")
-        for method, path in CANDIDATES:
-            code, txt = _try_order_path(method, path, price_field)
-            verdict = {404: "path does not exist",
-                       410: "DEPRECATED",
-                       401: "auth rejected",
-                       403: "forbidden"}.get(code, "")
-            print(f"  {method:5s} {path[8:]:58s} -> {code} {verdict}")
-            if code not in (404, 410, None):
-                print(f"        body: {txt}")
+    print(f"  url: {ORDER_URL}\n")
+    for sv in SIDE_VALUES:
+        code, txt = _try_body(sv)
+        print(f'  side="{sv}"  -> {code}')
+        print(f"        {txt}")
     print("=" * 62)
+    print("A 404 'market not found' means the BODY was accepted and only the")
+    print("ticker was wrong -- that side value is valid. A 400 naming the side")
+    print("field means that value is not.")
     return 0
 
 
