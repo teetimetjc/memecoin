@@ -328,6 +328,54 @@ def _try_body(side_value):
     return r.status_code, r.text[:220].replace("\n", " ")
 
 
+def ticker_form():
+    """Does the order endpoint want the MARKET ticker or the EVENT ticker?
+
+    Real, open market tickers are rejected with market_not_found, so the
+    endpoint is not finding what we send. The path is /portfolio/EVENTS/orders,
+    which suggests it resolves an event rather than a market.
+
+    SAFE: every probe sends count "0.00". A zero-size order cannot be filled,
+    so the only thing being read is WHICH error comes back -- a count complaint
+    means the ticker resolved, a market_not_found means it did not.
+    """
+    import predictor as P
+    print("=" * 62)
+    print("TICKER FORM PROBE  (count 0 -- cannot fill)")
+    print("=" * 62)
+    hh = _sign("GET", "/trade-api/v2/markets", SCHEME)
+    r = requests.get(NEW_HOST + "/trade-api/v2/markets",
+                     params={"series_ticker": "KXBTC15M", "limit": 1,
+                             "status": "open"}, headers=hh, timeout=15)
+    ms = r.json().get("markets", []) if r.ok else []
+    if not ms:
+        print("  no open BTC market to test with right now")
+        return 0
+    mkt = ms[0].get("ticker", "")
+    evt = ms[0].get("event_ticker") or mkt.rsplit("-", 1)[0]
+    print(f"  market ticker : {mkt}")
+    print(f"  event ticker  : {evt}\n")
+    for label, tk in (("market", mkt), ("event", evt)):
+        body = {
+            "ticker": tk,
+            "client_order_id": "00000000-0000-4000-8000-00000000000" + ("1" if label == "market" else "2"),
+            "side": "bid", "count": "0.00", "price": "0.0100",
+            "time_in_force": "good_till_canceled",
+            "self_trade_prevention_type": "taker_at_cross",
+            "post_only": False, "cancel_order_on_pause": False,
+            "reduce_only": False, "subaccount": 0, "exchange_index": 0,
+        }
+        hdrs = _sign("POST", "/trade-api/v2/portfolio/events/orders", SCHEME)
+        hdrs["Content-Type"] = "application/json"
+        try:
+            rr = requests.post(ORDER_URL, json=body, headers=hdrs, timeout=15)
+            print(f"  {label:7s} -> {rr.status_code} {rr.text[:190]}")
+        except Exception as e:
+            print(f"  {label:7s} -> failed {e}")
+    print("=" * 62)
+    return 0
+
+
 def compare_hosts():
     """Does the ORDER host know the tickers the MARKET host quotes?
 
@@ -392,5 +440,6 @@ if __name__ == "__main__":
             if _get("/portfolio/balance")[0] == 200:
                 break
         compare_hosts()
+        ticker_form()
         sys.exit(find_order_endpoint())
     sys.exit(main())
