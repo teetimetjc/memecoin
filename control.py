@@ -239,6 +239,20 @@ def _cli_state(word):
 if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "--stake":
         sys.exit(set_stake(sys.argv[2]))
+    if len(sys.argv) > 1 and sys.argv[1] == "--recent":
+        # Dump the last few Live Bets rows. Theorising about which ticker was
+        # sent is pointless when the row records it exactly.
+        import predictor as P
+        _sh = P._get_client().open_by_key(P.SPREADSHEET_ID)
+        try:
+            _rows = _sh.worksheet("Live Bets").get_all_values()
+        except Exception as _e:
+            print(f"  no Live Bets tab yet: {_e}")
+            sys.exit(0)
+        print(f"  {len(_rows)-1} row(s); last 8:")
+        for _r in _rows[-8:]:
+            print("   ", " | ".join(str(_x)[:46] for _x in _r))
+        sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1] == "--status":
         # Read-only. Says what the switch is without touching it, so checking
         # cannot itself change anything or fire a notification.
