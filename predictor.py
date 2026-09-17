@@ -13,6 +13,7 @@ Usage:
 
 import os, sys, json, math, time, argparse, requests
 
+import alert
 import control
 import decay
 import dryrun
@@ -1321,6 +1322,7 @@ def run_predictions():
     written = 0
     dry_rows = []                 # planned orders, written once after the loop
     live_sigs = []                # the same signals, for real order placement
+    live_targets = {}             # symbol -> strike, so an alert can name the market
 
     btc_sig = None
     try:
@@ -1439,6 +1441,8 @@ def run_predictions():
                         # want to find out from the sheet, not the balance.
                         live_sigs.append((ts_str, symbol, side,
                                           (kalshi or {}).get("ticker", ""), entry))
+                        if kalshi and kalshi.get("target") is not None:
+                            live_targets[symbol] = kalshi["target"]
                         dry_rows.append(
                             dryrun.plan_order(ts_str, symbol, side, kalshi, entry))
                 except Exception as e:
@@ -1526,6 +1530,14 @@ def run_predictions():
                       f"{' -- ' + why if why else ''}; betting would be skipped.")
         except Exception as e:
             print(f"  [funding] check skipped: {e}")
+
+    # BET ALERTS. FIRST among the post-loop steps, and that ordering is the
+    # whole point: the decay step below sleeps for four minutes, and an alert
+    # telling someone to bet a window that is already half over is worse than
+    # no alert. The signals are ~35 seconds old here, which is exactly the
+    # entry the history is priced at.
+    if live_sigs and alert.enabled():
+        alert.send(live_sigs, boundary, live_targets)
 
     # ENTRY DECAY. Read-only, and deliberately AFTER everything else because
     # it sleeps for minutes: the history is priced at the ~35s quote, a live
