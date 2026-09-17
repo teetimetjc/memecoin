@@ -328,6 +328,48 @@ def _try_body(side_value):
     return r.status_code, r.text[:220].replace("\n", " ")
 
 
+def listing_lead():
+    """Does the ORDER host list a window's market BEFORE the window opens?
+
+    If it does, the order can be resting at second zero instead of chasing the
+    market three to four minutes in, and live entries would match the price
+    the signal actually saw. If it does not, being late is structural and no
+    amount of polling fixes it.
+
+    Read-only: lists markets by status on both hosts and prints what exists.
+    """
+    import predictor as P
+    from datetime import datetime, timezone
+    print("=" * 62)
+    print("LISTING LEAD  (read-only) -- what exists BEFORE a window opens")
+    print("=" * 62)
+    now = datetime.now(timezone.utc)
+    print(f"  now: {now:%H:%M:%S} UTC\n")
+    for host in (NEW_HOST, OLD_HOST):
+        for status in ("open", "unopened", "initialized", ""):
+            try:
+                hh = _sign("GET", "/trade-api/v2/markets", SCHEME)
+                params = {"series_ticker": "KXBTC15M", "limit": 6}
+                if status:
+                    params["status"] = status
+                r = requests.get(host + "/trade-api/v2/markets",
+                                 params=params, headers=hh, timeout=15)
+            except Exception as e:
+                print(f"  {host[8:]:26s} status={status or 'any':12s} failed {e}")
+                continue
+            if not r.ok:
+                print(f"  {host[8:]:26s} status={status or 'any':12s} HTTP {r.status_code}")
+                continue
+            ms = r.json().get("markets", [])
+            label = status or "any"
+            print(f"  {host[8:]:26s} status={label:12s} {len(ms)} market(s)")
+            for mk in ms[:4]:
+                print(f"        {mk.get('ticker'):28s} status={mk.get('status'):12s} "
+                      f"open={str(mk.get('open_time'))[11:19]} close={str(mk.get('close_time'))[11:19]}")
+    print("=" * 62)
+    return 0
+
+
 def ticker_form():
     """Does the order endpoint want the MARKET ticker or the EVENT ticker?
 
@@ -440,6 +482,7 @@ if __name__ == "__main__":
             if _get("/portfolio/balance")[0] == 200:
                 break
         compare_hosts()
+        listing_lead()
         ticker_form()
         sys.exit(find_order_endpoint())
     sys.exit(main())
