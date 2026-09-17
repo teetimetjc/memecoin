@@ -164,6 +164,10 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       <div class="seg" id="priceSeg" role="group" aria-label="Which signals to include"></div>
     </div>
     <div class="viewrow">
+      <span class="lbl">Period</span>
+      <div class="seg" id="eraSeg" role="group" aria-label="Which period to include"></div>
+    </div>
+    <div class="viewrow">
       <span class="lbl">Coin</span>
       <div class="seg" id="coinSeg" role="group" aria-label="Which coin to include"></div>
     </div>
@@ -341,9 +345,22 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   // specifically -- it is the claim being made, not the view being chosen.
   let cap = Infinity;
   const CAPS = [{v:Infinity, label:"All signals"},
+                {v:70, label:"Under 70¢"},
                 {v:60, label:"Under 60¢"},
-                {v:50, label:"Under 50¢"}];
+                {v:50, label:"Under 50¢"},
+                {v:40, label:"Under 40¢"},
+                {v:30, label:"Under 30¢"}];
   const isAll = () => cap === Infinity;
+
+  // Period. The whole v6 forward test, or only what has run since the Kalshi
+  // work went in on 16 Sep -- the first bets whose execution cost is being
+  // measured rather than assumed. Kept as a separate axis from price so the
+  // two can be combined; the timestamps are UTC, which is what the payload
+  // stores and what sorts correctly, and only the LABEL is Central.
+  const STEP1 = "2026-09-16 23:15";
+  let era = "ALL";
+  const ERAS = [{v:"ALL", label:"All v6 data"},
+                {v:"STEP1", label:"Since step 1"}];
   let coin = "ALL";                      // "ALL" or a single symbol
   let stake = 10;                        // dollars per bet
   const STAKES = [5, 10, 20];
@@ -374,6 +391,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     const bit = rule==="V6" ? -1 : ruleBit(rule);
     for(let i=0;i<ALL;i++){
       if(D.e[i] >= cap) continue;
+      if(era === "STEP1" && D.t[i] < STEP1) continue;
       if(coin!=="ALL" && D.s[i] !== coin) continue;
       // A challenger is a strict subset of the champion: same side, same
       // window, same outcome. Selecting one keeps only the rows where it
@@ -821,6 +839,19 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       });
     });
   }
+  function drawEraSeg(){
+    const seg=document.getElementById("eraSeg");
+    if(!seg) return;
+    seg.innerHTML = ERAS.map(e=>
+      `<button data-era="${e.v}" aria-pressed="${String(era===e.v)}">${e.label}</button>`).join("");
+    [...seg.querySelectorAll("button")].forEach(b=>{
+      b.addEventListener("click",()=>{
+        const v=b.getAttribute("data-era");
+        if(era!==v){ era=v; renderAll(); }
+      });
+    });
+  }
+
   function drawCoinSeg(){
     const seg=document.getElementById("coinSeg");
     seg.innerHTML = ["ALL",...COINS].map(c=>
@@ -911,12 +942,20 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     // The comparison that decides whether any of this is worth doing.
     const edge = D.n.reduce((a,b)=>a+b,0)/D.n.length;
     const net = edge - costPerBet;
+    // Why the unpriceable ones failed. A count on its own says one in six
+    // orders could not be priced and nothing about what to fix.
+    const W = R.why || {};
+    const keys = Object.keys(W);
+    const whyTxt = keys.length
+      ? `<span>Could not price: ${keys.map(k=>`<b>${W[k]}</b> ${k}`).join(" · ")}.</span>`
+      : "";
     document.getElementById("dryFoot").innerHTML =
       `<span>Champion edge <b>${edge>=0?"+":"-"}$${Math.abs(edge).toFixed(2)}</b>/bet `
       + `minus execution <b>-$${Math.abs(costPerBet).toFixed(2)}</b> leaves `
       + `<b class="${net>=0?"pos":"neg"}">${net>=0?"+":"-"}$${Math.abs(net).toFixed(2)}</b>/bet. `
       + `Slippage is measured on every signal, not only the ones a filter keeps, `
-      + `so this panel does not follow the buttons above.</span>`;
+      + `so this panel does not follow the buttons above.</span>`
+      + whyTxt;
   }
 
   function drawSubline(){
@@ -931,7 +970,8 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
 
   function renderAll(){
     V=buildView();
-    drawSubline(); drawPriceSeg(); drawCoinSeg(); drawStakeSeg(); drawRuleSeg();
+    drawSubline(); drawPriceSeg(); drawEraSeg(); drawCoinSeg();
+    drawStakeSeg(); drawRuleSeg();
     const eb=document.getElementById("eyebrow");
     if(eb) eb.textContent = `Kalshi · 15-minute crypto · $${stake} flat`;
     const dn=document.getElementById("dayNote");
@@ -940,7 +980,8 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     if(fn) fn.hidden = (stake===10);
     const priceTxt = isAll() ? "every price" : `entries under ${cap}¢`;
     const coinTxt  = coin==="ALL" ? "all five coins" : coin + " only";
-    const stakeTxt = ` · $${stake} a bet`;
+    const stakeTxt = ` · $${stake} a bet`
+      + (era==="STEP1" ? ` · since ${ctStamp(STEP1)}` : "");
     if(rule==="V6"){
       vNote.textContent = `Champion v6 · ${coinTxt} at ${priceTxt} — ${V.n} of ${ALL} signals, `
         + `${V.windows} independent window${V.windows===1?"":"s"}${stakeTxt}`;

@@ -150,14 +150,21 @@ def build_dry(rows):
         return r[i] if 0 <= i < len(r) else ""
 
     slips, fills, partial, failed, by_coin = [], 0, 0, 0, {}
+    why = {}
     for r in rows[1:]:
         state = cell(r, "Fillable?")
         if state == "YES":
             fills += 1
         elif state == "PARTIAL":
             partial += 1
+            why[_why(cell(r, "Note"))] = why.get(_why(cell(r, "Note")), 0) + 1
         else:
             failed += 1
+            # Counting failures without their reasons said one in six orders
+            # could not be priced and nothing about why -- which is the half of
+            # the finding that would let us fix it. Bucket the note instead.
+            k = _why(cell(r, "Note"))
+            why[k] = why.get(k, 0) + 1
             continue
         try:
             s = float(cell(r, "Slippage ¢"))
@@ -167,7 +174,8 @@ def build_dry(rows):
         by_coin.setdefault(cell(r, "Symbol").replace("USDT", ""), []).append(s)
 
     if not slips:
-        return {"n": 0, "fills": fills, "partial": partial, "failed": failed}
+        return {"n": 0, "fills": fills, "partial": partial, "failed": failed,
+                "why": why}
 
     slips.sort()
     mid = slips[len(slips) // 2]
@@ -181,7 +189,27 @@ def build_dry(rows):
         "p90": round(slips[min(len(slips) - 1, int(len(slips) * 0.9))], 3),
         "worst": round(slips[-1], 3),
         "coins": {k: round(sum(v) / len(v), 3) for k, v in sorted(by_coin.items())},
+        "why": dict(sorted(why.items(), key=lambda kv: -kv[1])),
     }
+
+
+# Free-text notes bucketed into the few causes that need different fixes. The
+# raw note stays in the sheet; this is only what the dashboard needs to show.
+def _why(note):
+    n = (note or "").strip().lower()
+    if not n:
+        return "unexplained"
+    if "no ticker" in n:
+        return "no market resolved"
+    if "no resting size" in n:
+        return "empty book"
+    if "http 404" in n:
+        return "market not found (404)"
+    if "http 4" in n or "http 5" in n or "book unavailable" in n:
+        return "book fetch failed"
+    if "only $" in n:
+        return "not enough depth for $10"
+    return n[:40]
 
 
 def _read_dry(client):
