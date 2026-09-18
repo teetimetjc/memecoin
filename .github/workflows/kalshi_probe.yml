@@ -46,5 +46,6 @@ jobs:
             find-market-url)     python kalshi_probe.py --find-market-url ;;
             exchange-index)      python kalshi_probe.py --exchange-index ;;
             fills)               python kalshi_probe.py --fills ;;
+            order-types)         python kalshi_probe.py --order-types ;;
             *)                   python kalshi_probe.py ;;
           esac
