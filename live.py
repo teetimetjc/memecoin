@@ -249,7 +249,17 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
         "side": "bid" if side == "UP" else "ask",
         "count": f"{contracts}.00",
         "price": f"{yes_price:.4f}",
-        "time_in_force": "good_till_canceled",
+        # IMMEDIATE OR CANCEL. A good_till_canceled limit that misses the book
+        # rests there: one sat at 58c against a 2.90c market while the log said
+        # PLACED and the phone alert announced a bet nobody had made. On a
+        # 15-minute market an order that does not trade at once is not a bet,
+        # it is money reserved against nothing.
+        #
+        # Probed on 18 Sep: good_till_canceled rested, immediate_or_cancel was
+        # accepted and gone. fill_or_kill also works but refuses the whole
+        # order unless the book can fill every contract, which on a thin market
+        # would decline good bets over a partial fill.
+        "time_in_force": "immediate_or_cancel",
         "self_trade_prevention_type": "taker_at_cross",
         "post_only": False,
         "cancel_order_on_pause": False,
@@ -271,8 +281,19 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
         try:
             j = r.json()
             oid = j.get("order_id") or (j.get("order") or {}).get("order_id", "")
+            filled = float(j.get("fill_count") or (j.get("order") or {}).get("fill_count") or 0)
         except Exception:
-            oid = ""
+            oid, filled = "", 0.0
+
+        # With IOC, an accepted order that filled nothing is a bet that did not
+        # happen. Reporting it as PLACED is what made the alert announce a bet
+        # against an order resting at 58c in a 2.90c market.
+        if filled <= 0:
+            return ("SKIPPED", "accepted but filled nothing (book moved away)",
+                    0, 0.0, oid)
+        if filled < contracts:
+            return ("PLACED", f"partial fill {filled:g} of {contracts}",
+                    filled, round(filled * limit_c / 100.0, 2), oid)
         return "PLACED", "", contracts, cost, oid
 
     # market_not_found is NOT a crisis. We quote the upcoming market seconds
