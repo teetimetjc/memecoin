@@ -106,13 +106,21 @@ def main():
               f"placing anyway because this bet was asked for by name.")
         live.MAX_ENTRY = 100.0
 
-    # A quote this extreme means the window is already decided: the other side
-    # has no bid left. The order would pay ~$5 to win ~$5, which is not the bet
-    # anyone meant to place. Refusing is better than filling it.
-    if entry >= 97.0:
-        print(f"  {entry:.1f}c means this window is effectively over -- the other")
-        print(f"  side has no bid. That bet would risk ${stake:.2f} to win about")
-        print(f"  ${stake * (100 - entry) / entry:.2f}. Not placing; try earlier in a window.")
+    # Refuse a bet whose payout cannot justify its risk. The first version of
+    # this guard used a flat 97c cut and let a 96c bet through -- $4.90 staked
+    # to win about 10c, on a window already 11 minutes old. A price cut was the
+    # wrong test: what matters is what the bet PAYS, so measure that directly.
+    #
+    # At 96c the return is 4%. Below MIN_RETURN_PCT the downside is the whole
+    # stake and the upside is rounding error, whichever price produced it.
+    MIN_RETURN_PCT = 15.0
+    ret = (100.0 - entry) / entry * 100.0
+    if ret < MIN_RETURN_PCT:
+        win = stake * (100.0 - entry) / entry
+        print(f"  {entry:.1f}c pays only {ret:.1f}% -- ${stake:.2f} staked to win "
+              f"${win:.2f}.")
+        print(f"  Below the {MIN_RETURN_PCT:.0f}% floor, so not placing. The window is"
+              f" effectively decided; try nearer its open.")
         return 1
 
     # Derived from the WINDOW, not the clock, so the retries below reuse one
@@ -133,8 +141,9 @@ def main():
         fresh = live.current_entry(ticker, side)
         if fresh is not None:
             entry = fresh
-        if entry >= 97.0:
-            status, detail = "SKIPPED", f"re-quoted at {entry:.1f}c; window decided"
+        if (100.0 - entry) / entry * 100.0 < MIN_RETURN_PCT:
+            status, detail = "SKIPPED", (f"re-quoted at {entry:.1f}c, pays under "
+                                         f"{MIN_RETURN_PCT:.0f}%")
             break
         print(f"  ...not listed yet, retry {tries}/16 at {entry:.0f}c")
         status, detail, n, cost, oid = live.place(ts, symbol, side, ticker, entry, stake)
