@@ -859,6 +859,65 @@ def exchange_index():
     return 0
 
 
+
+def fills():
+    """What did the orders actually DO -- rest, fill, and at what price?
+
+    "PLACED" only means Kalshi accepted the order. A resting limit that never
+    fills is a bet that was not made, and a fill at a worse price than the
+    signal quoted is slippage the backtest never paid. Positions read flat
+    seconds after placing, which could be either. This reads the record.
+    """
+    print("=" * 62)
+    print("ORDERS AND FILLS")
+    print("=" * 62)
+
+    code, body, err = _get("/portfolio/orders", {"limit": 20})
+    print(f"\n  ORDERS ({code})")
+    if code == 200 and isinstance(body, dict):
+        for o in (body.get("orders") or [])[:12]:
+            print(f"    {str(o.get('ticker'))[:28]:28s} {str(o.get('action')):5s} "
+                  f"{str(o.get('book_side')):4s} status={str(o.get('status')):10s} "
+                  f"price={o.get('yes_price_dollars') or o.get('price')} "
+                  f"placed={str(o.get('created_time'))[11:19]} "
+                  f"remaining={o.get('remaining_count_fp') or o.get('remaining_count')}")
+    else:
+        print(f"    {err or body}")
+
+    code, body, err = _get("/portfolio/fills", {"limit": 20})
+    print(f"\n  FILLS ({code})")
+    if code == 200 and isinstance(body, dict):
+        fl = body.get("fills") or []
+        if not fl:
+            print("    none -- nothing has actually traded")
+        for f in fl[:12]:
+            print(f"    {str(f.get('ticker'))[:28]:28s} {str(f.get('action')):5s} "
+                  f"{str(f.get('side')):4s} count={f.get('count_fp') or f.get('count')} "
+                  f"price={f.get('yes_price_dollars') or f.get('price')} "
+                  f"at={str(f.get('created_time'))[11:19]}")
+    else:
+        print(f"    {err or body}")
+
+    code, body, err = _get("/portfolio/positions")
+    print(f"\n  POSITIONS ({code})")
+    if code == 200 and isinstance(body, dict):
+        mp = body.get("market_positions") or []
+        if not mp:
+            print("    no open market positions")
+        for pos in mp[:12]:
+            print(f"    {str(pos.get('ticker'))[:28]:28s} "
+                  f"position={pos.get('position_fp') or pos.get('position')} "
+                  f"exposure={pos.get('market_exposure_dollars')}")
+    else:
+        print(f"    {err or body}")
+
+    code, body, err = _get("/portfolio/balance")
+    if code == 200 and isinstance(body, dict):
+        print(f"\n  BALANCE  {body.get('balance')} (cents)")
+    print("=" * 62)
+    return 0
+
+
 def ticker_form():
     """Does the order endpoint want the MARKET ticker or the EVENT ticker?
 
@@ -967,6 +1026,12 @@ def find_order_endpoint():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--find-market-url":
         sys.exit(find_market_url())
+    if len(sys.argv) > 1 and sys.argv[1] == "--fills":
+        for _s in ("pss", "pkcs1v15"):
+            SCHEME = _s
+            if _get("/portfolio/balance")[0] == 200:
+                break
+        sys.exit(fills())
     if len(sys.argv) > 1 and sys.argv[1] == "--exchange-index":
         for _s in ("pss", "pkcs1v15"):
             SCHEME = _s
