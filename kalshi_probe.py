@@ -1095,7 +1095,87 @@ def find_order_endpoint():
     return 0
 
 
+def settlements():
+    """What Kalshi actually PAID, which is the only real scoreboard.
+
+    The dashboard has been grading live bets with the predictor's own
+    "CVD Correct?" column, which answers a different question: did the coin's
+    spot price move up or down from the moment the signal fired. A Kalshi
+    15-minute contract does not settle on that. It settles on whether the coin
+    is above or below a FIXED STRIKE at the close, and that strike is set when
+    the market opens, not where spot happened to be when we sampled it.
+
+    Those two questions agree only when the strike sits exactly at our sample
+    price. Every cent of gap between them is a bet that can settle the opposite
+    way to how we graded it -- which is how a page can report +$44 while the
+    account is flat.
+
+    This reads the settlements ledger and the balance: ground truth, no join,
+    no inference.
+    """
+    print("=" * 62)
+    print("SETTLEMENTS -- what Kalshi actually paid")
+    print("=" * 62)
+
+    code, body, err = _get("/portfolio/balance")
+    if code == 200 and isinstance(body, dict):
+        bal = body.get("balance_dollars") or body.get("balance")
+        print(f"\n  BALANCE: {bal}")
+    else:
+        print(f"\n  BALANCE unavailable: {err or body}")
+
+    code, body, err = _get("/portfolio/settlements", {"limit": 200})
+    print(f"\n  SETTLEMENTS ({code})")
+    if code != 200 or not isinstance(body, dict):
+        print(f"    {err or body}")
+        return 1
+    st = body.get("settlements") or []
+    if not st:
+        print("    none returned")
+        return 0
+
+    print(f"    {len(st)} row(s), newest first\n")
+    hdr = (f"    {'ticker':30s} {'side':5s} {'n':>4s} {'cost$':>8s} "
+           f"{'paid$':>8s} {'net$':>8s}  when")
+    print(hdr)
+    tot_cost = tot_paid = 0.0
+    for s_ in st:
+        tk = str(s_.get("ticker"))[:30]
+        side = str(s_.get("market_result") or s_.get("side") or "")[:5]
+        n = s_.get("yes_count_fp") or s_.get("yes_count") or 0
+        no_n = s_.get("no_count_fp") or s_.get("no_count") or 0
+        cost = _money(s_, ("yes_total_cost_dollars", "no_total_cost_dollars",
+                           "cost_dollars", "total_cost_dollars"))
+        paid = _money(s_, ("revenue_dollars", "payout_dollars", "revenue"))
+        tot_cost += cost; tot_paid += paid
+        print(f"    {tk:30s} {side:5s} {str(n or no_n):>4s} {cost:8.2f} "
+              f"{paid:8.2f} {paid - cost:8.2f}  {str(s_.get('settled_time'))[:19]}")
+    print(f"\n    TOTAL cost {tot_cost:.2f} paid {tot_paid:.2f} "
+          f"NET {tot_paid - tot_cost:+.2f}")
+    print("=" * 62)
+    return 0
+
+
+def _money(d, keys):
+    """First of `keys` that parses as a number, else 0.0."""
+    for k in keys:
+        v = d.get(k)
+        if v in (None, ""):
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--settlements":
+        for _s in ("pss", "pkcs1v15"):
+            SCHEME = _s
+            if _get("/portfolio/balance")[0] == 200:
+                break
+        sys.exit(settlements())
     if len(sys.argv) > 1 and sys.argv[1] == "--find-market-url":
         sys.exit(find_market_url())
     if len(sys.argv) > 1 and sys.argv[1] == "--order-types":
