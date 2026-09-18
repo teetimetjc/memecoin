@@ -57,14 +57,20 @@ jobs:
           # with numbers instead of instinct. Adds ~10 minutes to each run,
           # and runs after the alert so it can never delay it.
           MEASURE_MIDWINDOW: "1"
-          # BETTING IS OFF. The history is priced at the ~35 second quote, but
-          # a live order cannot reach the book until the order host lists the
-          # market three to four minutes later, by which time the price has
-          # absorbed part of the move the signal predicts. Until that gap is
-          # measured against outcomes, a live bet is not the bet the backtest
-          # describes. Set back to "1" once the data says the edge survives.
-          LIVE_TRADING: "0"
+          # BETTING IS LIVE. Turned on 18 Sep after the exchange_index bug was
+          # found and a real order filled at the 35-second entry: SOL DOWN,
+          # 10 contracts at 45.8c against a 47c quote, on the correct side
+          # (confirmed "Sold Yes" in the app).
+          #
+          # $5 a bet, every qualifying signal, no per-window cap.
+          #
+          # TO STOP IT: run the "Control" workflow with action: halt. That is
+          # one action from a phone and takes effect on the next window. It
+          # does not need a code change and it does not need me.
+          LIVE_TRADING: "1"
           ALLOW_LIVE_TRADING: "1"
+          # Confirmed against a real fill: DOWN sends an ask, which opens a
+          # NO position. Kalshi's own order history reads "Sold Yes".
           LIVE_ALLOW_DOWN: "1"
           # OFF. This measured whether the edge survived the 3-4 minute entry a
           # BOT would have been stuck with. Bets are now placed by hand from
