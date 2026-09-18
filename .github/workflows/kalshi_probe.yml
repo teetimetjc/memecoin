@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "credentials | find-order-endpoint | listing-timeline | min-order"
+        description: "credentials | find-order-endpoint | listing-timeline | min-order | why-blocked | find-market-url"
         required: false
         default: "credentials"
 
@@ -42,5 +42,7 @@ jobs:
             find-order-endpoint) python kalshi_probe.py --find-order-endpoint ;;
             listing-timeline)    python kalshi_probe.py --listing-timeline ;;
             min-order)           python kalshi_probe.py --min-order ;;
+            why-blocked)         python kalshi_probe.py --why-blocked ;;
+            find-market-url)     python kalshi_probe.py --find-market-url ;;
             *)                   python kalshi_probe.py ;;
           esac
