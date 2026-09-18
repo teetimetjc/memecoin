@@ -227,11 +227,11 @@ def send(signals, boundary, targets=None):
 
 
 # --- regression: URLs verified against links copied from the real app -------
-# Three magnitudes, which between them pin the rule: BTC in the tens of
-# thousands, XRP near a dollar, DOGE in fractions of a cent. DOGE is the one
-# that catches a naive formatter -- 0.0842487 must become 00842487, keeping
-# the leading zero -- and a wrong link here looks plausible and 404s, with no
-# symptom until a tap lands wrong mid-window.
+# All five coins, each checked against a link copied from the real app, across
+# four orders of magnitude: BTC in the tens of thousands down to DOGE in
+# fractions of a cent. DOGE is the one that catches a naive formatter --
+# 0.0842487 must become 00842487, keeping the leading zero -- and a wrong link
+# looks perfectly plausible, 404ing only when tapped mid-window.
 KNOWN_URLS = [
     ("BTC", "KXBTC15M-26SEP172230-30", 76697.45,
      "https://kalshi.com/markets/kxbtc15m/btc-15-min--7669745-target/"
@@ -247,6 +247,9 @@ KNOWN_URLS = [
     ("SOL", "KXSOL15M-26SEP180015-15", 104.4697,
      "https://kalshi.com/markets/kxsol15m/sol-15-min--1044697-target/"
      "KXSOL15M-26SEP180015"),
+    ("ETH", "KXETH15M-26SEP180015-15", 2476.26,
+     "https://kalshi.com/markets/kxeth15m/eth-15-min--247626-target/"
+     "KXETH15M-26SEP180015"),
 ]
 
 
