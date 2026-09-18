@@ -543,16 +543,28 @@ KALSHI_SERIES = {
 
 # --- PUSHOVER ---
 
-def send_pushover(title, message):
+def send_pushover(title, message, url=None, url_title=None, html=False):
+    """Send a notification. `url` becomes a tappable button under the message.
+
+    html=True lets the body carry <a href> links, which is how a multi-bet
+    alert can offer one link per coin -- Pushover's own url field holds only a
+    single link, and a window can name several bets.
+    """
     token = os.environ.get("PUSHOVER_APP_TOKEN")
     user  = os.environ.get("PUSHOVER_USER_KEY")
     if not token or not user:
         print("  [Pushover] Skipped -- PUSHOVER_APP_TOKEN or PUSHOVER_USER_KEY not set")
         return
+    payload = {"token": token, "user": user, "title": title, "message": message}
+    if url:
+        payload["url"] = url
+        payload["url_title"] = url_title or "Open"
+    if html:
+        payload["html"] = 1
     try:
         r = requests.post(
             "https://api.pushover.net/1/messages.json",
-            data={"token": token, "user": user, "title": title, "message": message},
+            data=payload,
             timeout=10,
         )
         r.raise_for_status()

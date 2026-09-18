@@ -59,6 +59,34 @@ QUIET_START = int(os.environ.get("ALERT_HOUR_START", "7"))    # inclusive
 QUIET_END = int(os.environ.get("ALERT_HOUR_END", "22"))       # exclusive
 
 
+# A tappable link per bet. Kalshi's site answers 429 to datacenter IPs, so
+# the URL shape could not be verified from here or from CI -- and a link that
+# 404s at 35 seconds into a window is worse than no link, because it spends
+# the seconds the bet needed. So it is a template, unset by default: no
+# KALSHI_URL_TEMPLATE means no links, and the alert is exactly as it was.
+#
+# Placeholders: {ticker} {event} {series} {coin}
+URL_TEMPLATE = os.environ.get("KALSHI_URL_TEMPLATE", "").strip()
+
+SERIES = {"BTC": "KXBTC15M", "ETH": "KXETH15M", "SOL": "KXSOL15M",
+          "XRP": "KXXRP15M", "DOGE": "KXDOGE15M"}
+
+
+def market_url(coin, ticker):
+    """A link to this market, or "" when no template is configured."""
+    if not URL_TEMPLATE or not ticker:
+        return ""
+    try:
+        return URL_TEMPLATE.format(
+            ticker=ticker,
+            event=ticker.rsplit("-", 1)[0],
+            series=SERIES.get(coin, ""),
+            coin=coin.lower(),
+        )
+    except (KeyError, IndexError):
+        return ""            # a malformed template must not break the alert
+
+
 def enabled():
     return os.environ.get("BET_ALERTS", "").strip() == "1"
 
@@ -79,7 +107,7 @@ def _stake():
 
 
 def build(signals, boundary, targets=None):
-    """(title, message) for this window, or (None, None) if nothing qualifies.
+    """(title, message, top_bet), or (None, None, None) if nothing qualifies.
 
     `signals` = [(ts, symbol, side, ticker, entry_cents)]
     `targets` = {symbol: strike price} so the message can name the market.
@@ -111,10 +139,11 @@ def build(signals, boundary, targets=None):
             "contracts": contracts,
             "cost": contracts * limit / 100.0,
             "strike": targets.get(symbol),
+            "url": market_url(coin, ticker),
         })
 
     if not bets:
-        return None, None
+        return None, None, None
 
     bets.sort(key=lambda b: b["entry"])          # cheapest first: best EV first
     title = (f"{len(bets)} bet{'' if len(bets) == 1 else 's'} "
@@ -131,13 +160,18 @@ def build(signals, boundary, targets=None):
             lines.append(f"   win if {b['coin']} is {above_below} {strike}")
         lines.append(f"   tap \"{b['buy'].title()}\" · pay up to {b['limit']}c")
         lines.append(f"   {b['contracts']} contracts (${b['cost']:.2f})")
+        if b["url"]:
+            # Pushover's own url field holds ONE link and a window can name
+            # several bets, so each coin gets an inline link and the top bet
+            # also gets the button.
+            lines.append(f"   <a href=\"{b['url']}\">open {b['coin']} market</a>")
         lines.append("")
 
     if skips:
         lines.append("skip: " + ", ".join(skips))
     lines.append(f"closes {close_local:%-I:%M%p}".replace("AM", "am").replace("PM", "pm")
                  + " — don't bet after that")
-    return title, "\n".join(lines).strip()
+    return title, "\n".join(lines).strip(), bets[0]
 
 
 def send(signals, boundary, targets=None):
@@ -150,11 +184,14 @@ def send(signals, boundary, targets=None):
             print(f"  [alert] {local:%H:%M} local is outside "
                   f"{QUIET_START:02d}:00-{QUIET_END:02d}:00; no notification.")
             return False
-        title, message = build(signals, boundary, targets)
+        title, message, top = build(signals, boundary, targets)
         if not title:
             print("  [alert] nothing qualifies this window; no notification sent.")
             return False
-        P.send_pushover(title, message)
+        P.send_pushover(title, message,
+                        url=top.get("url") or None,
+                        url_title=f"Open {top['coin']} market" if top.get("url") else None,
+                        html=bool(URL_TEMPLATE))
         print(f"  [alert] sent -- {title}")
         return True
     except Exception as e:
