@@ -776,6 +776,89 @@ def find_market_url():
     return 0
 
 
+
+def exchange_index():
+    """Are the 15-minute crypto markets on a different EXCHANGE INDEX?
+
+    A non-crypto order filled from this runner with the same key and the same
+    code path, while every crypto 15-minute order returns market_not_found. So
+    it is not location, not the key's scope and not the account -- it is
+    something specific to these markets.
+
+    The order body hardcodes "exchange_index": 0. But each market carries its
+    own exchange_index, and /exchange/status reports exchange_index_statuses --
+    plural. If these markets live on a different index, the order endpoint
+    looks for the ticker on exchange 0, does not find it there, and says
+    market_not_found. Which is exactly what it says.
+
+    This reads the index off each market and retries with the right one.
+    Count 0.01 at 1c, so a fill costs about a cent.
+    """
+    import uuid
+    print("=" * 62)
+    print("EXCHANGE INDEX PROBE")
+    print("=" * 62)
+
+    def first_open(series):
+        hh = _sign("GET", "/trade-api/v2/markets", SCHEME)
+        r = requests.get(NEW_HOST + "/trade-api/v2/markets",
+                         params={"series_ticker": series, "limit": 1, "status": "open"},
+                         headers=hh, timeout=15)
+        ms = r.json().get("markets", []) if r.ok else []
+        return ms[0] if ms else None
+
+    print("\n  WHAT INDEX IS EACH MARKET ON?")
+    markets = {}
+    for series in ("KXBTC15M", "KXETH15M", "KXHIGHNY"):
+        m = first_open(series)
+        if not m:
+            print(f"     {series:10s} no open market")
+            continue
+        markets[series] = m
+        print(f"     {series:10s} {str(m.get('ticker'))[:26]:26s} "
+              f"exchange_index={m.get('exchange_index')!r}")
+
+    code, body, err = _get("/exchange/status")
+    if code == 200 and isinstance(body, dict):
+        for st in body.get("exchange_index_statuses", []) or []:
+            print(f"     exchange {st.get('exchange_index')!r}: "
+                  f"{st.get('description')!r} active={st.get('exchange_active')}")
+
+    print("\n  ORDER THE CRYPTO MARKET WITH EACH INDEX")
+    m = markets.get("KXBTC15M")
+    if not m:
+        print("     no open crypto market to test")
+        return 1
+    native = m.get("exchange_index")
+    tries = []
+    for idx in (native, 0, 1, 2):
+        if idx is not None and idx not in tries:
+            tries.append(idx)
+    for idx in tries:
+        body_ = {
+            "ticker": m["ticker"],
+            "client_order_id": str(uuid.uuid4()),
+            "side": "bid", "count": "0.01", "price": "0.0100",
+            "time_in_force": "good_till_canceled",
+            "self_trade_prevention_type": "taker_at_cross",
+            "post_only": False, "cancel_order_on_pause": False,
+            "reduce_only": False, "subaccount": 0, "exchange_index": idx,
+        }
+        hd = _sign("POST", "/trade-api/v2/portfolio/events/orders", SCHEME)
+        hd["Content-Type"] = "application/json"
+        try:
+            rr = requests.post(ORDER_URL, json=body_, headers=hd, timeout=15)
+            tag = " <-- the market's own index" if idx == native else ""
+            print(f"     exchange_index={idx!r:6} -> {rr.status_code} {rr.text[:120]}{tag}")
+            if rr.status_code in (200, 201):
+                print(f"\n  FOUND IT: crypto orders need exchange_index={idx!r}")
+                break
+        except Exception as e:
+            print(f"     exchange_index={idx!r:6} -> failed {str(e)[:60]}")
+    print("=" * 62)
+    return 0
+
+
 def ticker_form():
     """Does the order endpoint want the MARKET ticker or the EVENT ticker?
 
@@ -884,6 +967,12 @@ def find_order_endpoint():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--find-market-url":
         sys.exit(find_market_url())
+    if len(sys.argv) > 1 and sys.argv[1] == "--exchange-index":
+        for _s in ("pss", "pkcs1v15"):
+            SCHEME = _s
+            if _get("/portfolio/balance")[0] == 200:
+                break
+        sys.exit(exchange_index())
     if len(sys.argv) > 1 and sys.argv[1] == "--why-blocked":
         for _s in ("pss", "pkcs1v15"):
             SCHEME = _s
