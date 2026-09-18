@@ -69,11 +69,22 @@ jobs:
           #
           # $5 a bet, every qualifying signal, no per-window cap.
           #
-          # TO STOP IT: run the "Control" workflow with action: halt. That is
-          # one action from a phone and takes effect on the next window. It
-          # does not need a code change and it does not need me.
-          LIVE_TRADING: "1"
-          ALLOW_LIVE_TRADING: "1"
+          # HALTED 2026-09-18 at the user's instruction, after re-scoring the
+          # forward test the way Kalshi actually settles. Every "Correct?"
+          # column graded whether spot finished above or below the SAMPLE
+          # price; Kalshi pays on whether it finished above or below the
+          # STRIKE. 10.1% of 1,478 signals were graded wrong, and correcting
+          # them turns +$803 into -$402. The cheap-entry edge the strategy was
+          # built on inverts outright: under 40c goes 47.6% -> 30.8%.
+          #
+          # Measured edge against the price paid is +0.77pp, 95% CI -4.15 to
+          # +5.68 -- zero, against a book that grades out well calibrated.
+          # See grade_check.py, which reproduces all of it from an export.
+          #
+          # Do NOT set this back to "1" until a rule has been shown to beat
+          # the market's own price on the STRIKE question. Nothing has.
+          LIVE_TRADING: "0"
+          ALLOW_LIVE_TRADING: "0"
           # Confirmed against a real fill: DOWN sends an ask, which opens a
           # NO position. Kalshi's own order history reads "Sold Yes".
           LIVE_ALLOW_DOWN: "1"
