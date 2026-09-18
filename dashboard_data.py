@@ -257,6 +257,21 @@ def _why(note):
         return "book fetch failed"
     if "only $" in n:
         return "not enough depth for $10"
+    # These notes quote the price that triggered them, so the raw text makes a
+    # separate bucket per cent -- "entry 51c...", "entry 52c...", thirteen
+    # categories describing four reasons. Group by the RULE, not the number.
+    if "cut" in n and ("entry" in n or "re-quoted" in n):
+        return "too expensive (50¢ cut)"
+    if "floor" in n:
+        return "too cheap (20¢ floor)"
+    if "never listed" in n or "not listed" in n:
+        return "market never listed in time"
+    if "filled nothing" in n or "partial" in n:
+        return "order filled nothing"
+    if "exchange index" in n:
+        return "could not read the exchange index"
+    if "down needs" in n or "ask-side mapping" in n:
+        return "DOWN betting was switched off"
     return n[:40]
 
 
