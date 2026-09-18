@@ -1549,7 +1549,10 @@ def run_predictions():
     # telling someone to bet a window that is already half over is worse than
     # no alert. The signals are ~35 seconds old here, which is exactly the
     # entry the history is priced at.
-    if live_sigs and alert.enabled():
+    # Only when the bot is NOT betting. Once it is, the alert comes after the
+    # orders and reports what was placed -- see below. Telling someone to place
+    # a bet the bot is about to place itself is how a window gets bet twice.
+    if live_sigs and alert.enabled() and not live.enabled():
         alert.send(live_sigs, boundary, live_targets)
 
     # CASH-OUT PRICES. Read-only. Samples what each bet could be SOLD for at
@@ -1578,7 +1581,9 @@ def run_predictions():
     # re-checks all of it rather than trusting this call site.
     if live_sigs and live.enabled():
         try:
-            live.run_window(client, live_sigs)
+            _rows = live.run_window(client, live_sigs)
+            if alert.enabled():
+                alert.send_result(_rows or [], boundary)
         except Exception as e:
             # An unhandled error in the code that spends money is exactly the
             # case the halt switch exists for. Stop, notify, wait for a human.

@@ -271,3 +271,67 @@ def selftest():
 if __name__ == "__main__":
     import sys
     sys.exit(selftest())
+
+
+# --- when the BOT is the one betting --------------------------------------
+# The alert above tells a person what to place. Once live betting is on, that
+# same message would get the same bet placed twice -- once by the bot, once by
+# whoever read the alert and acted on it. So when the bot bets, the alert
+# reports what it DID, in the past tense, with nothing that reads like an
+# instruction.
+#
+# It is sent AFTER the orders, from the rows they returned, so it can never
+# announce a bet that was rejected.
+
+def build_result(rows, boundary):
+    """(title, message) describing what was actually placed, or (None, None)."""
+    placed = [r for r in rows if r[8] == "PLACED"]
+    failed = [r for r in rows if r[8] == "FAILED"]
+    skipped = [r for r in rows if r[8] == "SKIPPED"]
+    if not placed and not failed:
+        return None, None            # a window with nothing to do is not news
+
+    close_local = (boundary + timedelta(minutes=15)).astimezone(LOCAL_TZ)
+    when = f"{close_local:%-I:%M%p}".replace("AM", "am").replace("PM", "pm")
+    spent = sum(float(r[7] or 0) for r in placed)
+    title = (f"Placed {len(placed)} · ${spent:.2f} · close {when}"
+             if placed else f"{len(failed)} order(s) FAILED")
+
+    lines = []
+    for r in placed:
+        coin = str(r[1]).replace("USDT", "")
+        lines.append(f"{coin} {r[2]} at {r[4]}c · {r[6]} contracts (${float(r[7]):.2f})")
+    if failed:
+        lines.append("")
+        for r in failed:
+            coin = str(r[1]).replace("USDT", "")
+            lines.append(f"FAILED {coin}: {str(r[10])[:70]}")
+    if skipped:
+        lines.append("")
+        lines.append(f"not bet: {len(skipped)} (price or no market)")
+    lines.append("")
+    lines.append(f"window closes {when}")
+    return title, "\n".join(lines).strip()
+
+
+def send_result(rows, boundary):
+    """Report what the bot placed. Never raises."""
+    import predictor as P
+    from datetime import datetime, timezone
+    try:
+        if not rows:
+            return False
+        # Quiet hours apply to routine "placed" notices, but a FAILED order is
+        # something a person needs to know about whatever time it is.
+        anything_failed = any(r[8] == "FAILED" for r in rows)
+        if not anything_failed and not in_hours(datetime.now(timezone.utc)):
+            return False
+        title, message = build_result(rows, boundary)
+        if not title:
+            return False
+        P.send_pushover(title, message)
+        print(f"  [alert] result sent -- {title}")
+        return True
+    except Exception as e:
+        print(f"  [alert] result skipped: {e}")
+        return False
