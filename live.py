@@ -62,8 +62,19 @@ ORDER_URL = ORDER_HOST + "/trade-api/v2/portfolio/events/orders"
 #          costs nothing that a day of data will not replace.
 ALLOW_DOWN = os.environ.get("LIVE_ALLOW_DOWN", "").strip() == "1"
 
-# The slice the evidence supports. Entries at or above this are not bet.
+# The slice the evidence supports. Entries outside this band are not bet.
+#
+# The ceiling is the strategy's price cut: 50-60c measures -$1.32 a bet.
+#
+# THE FLOOR EXISTS BECAUSE THERE WAS NONE. Live, the bot bought contracts at
+# 3-5c -- 97-to-3 longshots -- because "under 50c" is trivially true of 3c. The
+# cheapest entry in all 1,297 graded bets is 13c, and NOT ONE is under 10c, so
+# those trades extrapolated straight off the end of the tested range.
+#
+# 20c is inside the measured data with room to spare, and it caps position size
+# for free: at 20c a $5 stake buys 25 contracts, where at 3c it bought 165.
 MAX_ENTRY = 50.0
+MIN_ENTRY = 20.0
 
 # How far above the quoted price we are willing to pay. One cent covers the
 # ordinary tick of movement between reading the book and the order landing;
@@ -203,6 +214,10 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
         return "SKIPPED", "no usable entry price", 0, 0.0, ""
     if entry_cents >= MAX_ENTRY:
         return "SKIPPED", f"entry {entry_cents:.0f}c is at or above the {MAX_ENTRY:.0f}c cut", 0, 0.0, ""
+    if entry_cents < MIN_ENTRY:
+        return ("SKIPPED",
+                f"entry {entry_cents:.1f}c is below the {MIN_ENTRY:.0f}c floor "
+                f"(cheapest bet in the history is 13c)", 0, 0.0, "")
 
     if side == "DOWN" and not ALLOW_DOWN:
         return ("SKIPPED",
