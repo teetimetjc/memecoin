@@ -224,3 +224,37 @@ def send(signals, boundary, targets=None):
     except Exception as e:
         print(f"  [alert] skipped: {e}")
         return False
+
+
+# --- regression: URLs verified against links copied from the real app -------
+# Two is enough to pin the rule, and they are the two extremes: BTC has the
+# largest strikes and DOGE the smallest, where the leading zero in 0.0842487
+# -> 00842487 is the part a naive formatter would drop.
+KNOWN_URLS = [
+    ("BTC", "KXBTC15M-26SEP172230-30", 76697.45,
+     "https://kalshi.com/markets/kxbtc15m/btc-15-min--7669745-target/"
+     "KXBTC15M-26SEP172230"),
+    ("DOGE", "KXDOGE15M-26SEP180015-15", 0.0842487,
+     "https://kalshi.com/markets/kxdoge15m/doge-15-min--00842487-target/"
+     "KXDOGE15M-26SEP180015"),
+]
+
+
+def selftest():
+    bad = 0
+    for coin, ticker, strike, want in KNOWN_URLS:
+        got = market_url(coin, ticker, strike)
+        ok = got == want
+        bad += 0 if ok else 1
+        print(f"  {'PASS' if ok else 'FAIL'}  {coin}")
+        if not ok:
+            print(f"        got  {got}")
+            print(f"        want {want}")
+    print("  URL rule matches every known-real link."
+          if not bad else f"  {bad} link(s) no longer match.")
+    return bad
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(selftest())
