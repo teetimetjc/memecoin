@@ -918,6 +918,78 @@ def fills():
     return 0
 
 
+
+def order_types():
+    """Which time_in_force does Kalshi accept, and which one dies unfilled?
+
+    Our orders are good_till_canceled. A GTC limit that misses the book rests
+    there -- one sat at 58c against a 2.90c market -- so the log says PLACED,
+    the phone alert says a bet was made, and nothing was actually bought. On a
+    15-minute market an order that does not fill at once should cease to exist.
+
+    SAFE: every probe is priced at 1c on the YES side, which no seller will
+    hit, so nothing can fill. The only thing being read is which values the
+    endpoint ACCEPTS, and what happens to an order that cannot trade.
+    """
+    import uuid
+    print("=" * 62)
+    print("ORDER TYPE PROBE  (1c bids -- cannot fill)")
+    print("=" * 62)
+    hh = _sign("GET", "/trade-api/v2/markets", SCHEME)
+    r = requests.get(NEW_HOST + "/trade-api/v2/markets",
+                     params={"series_ticker": "KXBTC15M", "limit": 1, "status": "open"},
+                     headers=hh, timeout=15)
+    ms = r.json().get("markets", []) if r.ok else []
+    if not ms:
+        print("  no open BTC market to test with")
+        return 1
+    m = ms[0]
+    print(f"  market {m.get('ticker')}  bid={m.get('yes_bid_dollars')} "
+          f"ask={m.get('yes_ask_dollars')}  exchange_index={m.get('exchange_index')}\n")
+
+    placed = []
+    for tif in ("good_till_canceled", "immediate_or_cancel", "fill_or_kill",
+                "fill_and_kill", "ioc", "fok", "expire_at_close"):
+        body = {
+            "ticker": m["ticker"],
+            "client_order_id": str(uuid.uuid4()),
+            "side": "bid", "count": "0.01", "price": "0.0100",
+            "time_in_force": tif,
+            "self_trade_prevention_type": "taker_at_cross",
+            "post_only": False, "cancel_order_on_pause": False,
+            "reduce_only": False, "subaccount": 0,
+            "exchange_index": m.get("exchange_index", 0),
+        }
+        hd = _sign("POST", "/trade-api/v2/portfolio/events/orders", SCHEME)
+        hd["Content-Type"] = "application/json"
+        try:
+            rr = requests.post(ORDER_URL, json=body, headers=hd, timeout=15)
+            ok = rr.status_code in (200, 201)
+            if ok:
+                try:
+                    placed.append((tif, rr.json().get("order_id")))
+                except Exception:
+                    pass
+            print(f"  {tif:22s} -> {rr.status_code} {rr.text[:100]}")
+        except Exception as e:
+            print(f"  {tif:22s} -> failed {str(e)[:60]}")
+
+    # An accepted value is only useful if an unfillable order does NOT linger.
+    if placed:
+        print("\n  DID THE ACCEPTED ONES SURVIVE? (resting = wrong for us)")
+        code, body, err = _get("/portfolio/orders", {"limit": 30})
+        resting = {}
+        if code == 200 and isinstance(body, dict):
+            for o in body.get("orders") or []:
+                resting[o.get("order_id")] = o.get("status")
+        for tif, oid in placed:
+            st = resting.get(oid, "gone")
+            verdict = "RESTS (bad)" if st in ("resting", "open") else f"{st} (good)"
+            print(f"  {tif:22s} {verdict}")
+    print("=" * 62)
+    return 0
+
+
 def ticker_form():
     """Does the order endpoint want the MARKET ticker or the EVENT ticker?
 
@@ -1026,6 +1098,12 @@ def find_order_endpoint():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--find-market-url":
         sys.exit(find_market_url())
+    if len(sys.argv) > 1 and sys.argv[1] == "--order-types":
+        for _s in ("pss", "pkcs1v15"):
+            SCHEME = _s
+            if _get("/portfolio/balance")[0] == 200:
+                break
+        sys.exit(order_types())
     if len(sys.argv) > 1 and sys.argv[1] == "--fills":
         for _s in ("pss", "pkcs1v15"):
             SCHEME = _s
