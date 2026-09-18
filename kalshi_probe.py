@@ -1135,23 +1135,15 @@ def settlements():
         return 0
 
     print(f"    {len(st)} row(s), newest first\n")
-    hdr = (f"    {'ticker':30s} {'side':5s} {'n':>4s} {'cost$':>8s} "
-           f"{'paid$':>8s} {'net$':>8s}  when")
-    print(hdr)
-    tot_cost = tot_paid = 0.0
-    for s_ in st:
-        tk = str(s_.get("ticker"))[:30]
-        side = str(s_.get("market_result") or s_.get("side") or "")[:5]
-        n = s_.get("yes_count_fp") or s_.get("yes_count") or 0
-        no_n = s_.get("no_count_fp") or s_.get("no_count") or 0
-        cost = _money(s_, ("yes_total_cost_dollars", "no_total_cost_dollars",
-                           "cost_dollars", "total_cost_dollars"))
-        paid = _money(s_, ("revenue_dollars", "payout_dollars", "revenue"))
-        tot_cost += cost; tot_paid += paid
-        print(f"    {tk:30s} {side:5s} {str(n or no_n):>4s} {cost:8.2f} "
-              f"{paid:8.2f} {paid - cost:8.2f}  {str(s_.get('settled_time'))[:19]}")
-    print(f"\n    TOTAL cost {tot_cost:.2f} paid {tot_paid:.2f} "
-          f"NET {tot_paid - tot_cost:+.2f}")
+    # Print the RAW fields. The first pass at this guessed which keys held the
+    # cost and the payout and guessed wrong -- payouts came back as 1000.00 for
+    # a $10 contract, i.e. cents, and a NO position's cost sits under a
+    # different key than a YES position's. Guessing is what produced the
+    # fabricated P&L in the first place, so this prints what the API returns
+    # and lets the arithmetic be checked rather than trusted.
+    import json as _json
+    for s_ in st[:24]:
+        print("    " + _json.dumps(s_, sort_keys=True))
     print("=" * 62)
     return 0
 
