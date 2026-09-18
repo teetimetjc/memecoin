@@ -52,11 +52,16 @@ jobs:
           # graded; they just do not buzz.
           ALERT_HOUR_START: "7"
           ALERT_HOUR_END: "22"
-          # CASH-OUT DATA. Read-only: samples what each bet could be SOLD for
-          # at +5 and +10 minutes, so the early-exit question can be settled
-          # with numbers instead of instinct. Adds ~10 minutes to each run,
-          # and runs after the alert so it can never delay it.
-          MEASURE_MIDWINDOW: "1"
+          # CASH-OUT DATA -- OFF. It sleeps until +10 minutes, which made every
+          # run take ten minutes instead of ninety seconds, and while it sat
+          # ahead of the betting step it pushed every bet ten minutes into its
+          # window. The ordering is fixed, but the sleep still delays every
+          # answer about what a window did, and 163 rows already say the
+          # hold-versus-sell difference is nowhere near significant.
+          #
+          # Getting bets placed at the right second, and being able to see the
+          # result within a minute, matters more than finishing that study.
+          MEASURE_MIDWINDOW: "0"
           # BETTING IS LIVE. Turned on 18 Sep after the exchange_index bug was
           # found and a real order filled at the 35-second entry: SOL DOWN,
           # 10 contracts at 45.8c against a 47c quote, on the correct side
