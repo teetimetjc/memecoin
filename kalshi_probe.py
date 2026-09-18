@@ -715,6 +715,67 @@ def why_blocked():
     return 0
 
 
+
+def find_market_url():
+    """Which kalshi.com URL actually opens a given 15-minute market?
+
+    A phone alert is far more useful if tapping it lands on the market rather
+    than on a search box, but the URL shape is not documented anywhere we can
+    reach, and a link that 404s at 35 seconds into a window is worse than no
+    link at all -- it burns the seconds the bet needed.
+
+    So try the plausible shapes against a REAL open market and report which
+    return 200 and where they redirect. Purely read-only GETs against the
+    public website.
+    """
+    print("=" * 62)
+    print("MARKET URL PROBE -- what link opens this market?")
+    print("=" * 62)
+    hh = _sign("GET", "/trade-api/v2/markets", SCHEME)
+    r = requests.get(NEW_HOST + "/trade-api/v2/markets",
+                     params={"series_ticker": "KXBTC15M", "limit": 1, "status": "open"},
+                     headers=hh, timeout=15)
+    ms = r.json().get("markets", []) if r.ok else []
+    if not ms:
+        print("  no open BTC market to test with")
+        return 1
+    m = ms[0]
+    tk = m.get("ticker", "")
+    evt = m.get("event_ticker") or tk.rsplit("-", 1)[0]
+    ser = "KXBTC15M"
+    print(f"  market {tk}")
+    print(f"  event  {evt}\n")
+
+    cands = [
+        f"https://kalshi.com/markets/{tk}",
+        f"https://kalshi.com/markets/{tk.lower()}",
+        f"https://kalshi.com/events/{evt}",
+        f"https://kalshi.com/events/{evt.lower()}",
+        f"https://kalshi.com/markets/{ser.lower()}",
+        f"https://kalshi.com/markets/{ser.lower()}/{evt.lower()}",
+        f"https://kalshi.com/markets/kxbtcd",
+        f"https://kalshi.com/crypto",
+    ]
+    ua = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"}
+    for u in cands:
+        try:
+            rr = requests.get(u, timeout=15, allow_redirects=True, headers=ua)
+            note = ""
+            if rr.url.rstrip("/") != u.rstrip("/"):
+                note = f"  -> redirected to {rr.url}"
+            # A soft 404 renders 200 with a not-found page, so look for the
+            # ticker in the body as well as trusting the status code.
+            body = rr.text[:400000]
+            hit = "TICKER IN PAGE" if (tk in body or evt in body) else ""
+            print(f"  {rr.status_code}  {len(body):7d}b  {hit:15s} {u}{note}")
+        except Exception as e:
+            print(f"  ERR  {u}  {str(e)[:60]}")
+    print()
+    print("  Use the shortest URL that is 200 AND has the ticker in the page.")
+    print("=" * 62)
+    return 0
+
+
 def ticker_form():
     """Does the order endpoint want the MARKET ticker or the EVENT ticker?
 
@@ -821,6 +882,8 @@ def find_order_endpoint():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--find-market-url":
+        sys.exit(find_market_url())
     if len(sys.argv) > 1 and sys.argv[1] == "--why-blocked":
         for _s in ("pss", "pkcs1v15"):
             SCHEME = _s
