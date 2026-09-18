@@ -516,7 +516,22 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
   const TZ = "America/Chicago";
   const CT = new Intl.DateTimeFormat("en-US",
     {timeZone:TZ, hour:"numeric", hour12:false});
-  const asDate = ts => new Date(ts.replace(" ","T")+":00Z");
+  // Two tabs write timestamps two ways: Predictions as "2026-09-11 14:45" and
+  // Live Bets as "2026-09-18 15:30 UTC". The trailing UTC made the old parser
+  // build "2026-09-11T14:45 UTC:00Z", an Invalid Date, and Intl throws on
+  // those -- which killed the whole script and blanked every chart. It only
+  // surfaced once real bets existed, because the live panel returns early when
+  // there are none, so the page worked right up until it mattered.
+  const asDate = ts => {
+    const s = String(ts == null ? "" : ts).trim().replace(/\s+UTC$/i, "");
+    return new Date(s.replace(" ", "T") + ":00Z");
+  };
+  // One malformed cell must never blank the dashboard. A stamp that cannot be
+  // parsed renders as nothing and the rest of the page still draws.
+  const safeFmt = (fmt, ts) => {
+    const d = asDate(ts);
+    return isNaN(d.getTime()) ? "" : fmt.format(d);
+  };
   const CT_PARTS = new Intl.DateTimeFormat("en-CA",
     {timeZone:TZ, year:"numeric", month:"2-digit", day:"2-digit"});
   const CT_STAMP = new Intl.DateTimeFormat("en-US",
@@ -526,8 +541,8 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     {timeZone:TZ, month:"short", day:"numeric"});
   // Central calendar date for a UTC stamp -- days must break at midnight CT,
   // not at 00:00 UTC, or "by day" is somebody else's day.
-  const ctDate = ts => CT_PARTS.format(asDate(ts));
-  const ctStamp = ts => CT_STAMP.format(asDate(ts));
+  const ctDate = ts => safeFmt(CT_PARTS, ts);
+  const ctStamp = ts => safeFmt(CT_STAMP, ts);
   function hours(){
     const HR = Array.from({length:24},(_,h)=>({h,n:0,w:0,net:0,lon:0,lonet:0}));
     for(let k=0;k<V.n;k++){
