@@ -1555,10 +1555,33 @@ def run_predictions():
     if live_sigs and alert.enabled() and not live.enabled():
         alert.send(live_sigs, boundary, live_targets)
 
-    # CASH-OUT PRICES. Read-only. Samples what each bet could be SOLD for at
-    # +5 and +10 minutes, so whether to take Kalshi's early exit can be decided
-    # from data rather than instinct. AFTER the alert, because it sleeps ten
-    # minutes and the alert is time-critical.
+    # LIVE ORDERS. FIRST of the steps that touch Kalshi, because the two
+    # measurement steps below SLEEP -- the cash-out sampler until +10 minutes.
+    # Running them ahead of this put every bet ten minutes into its window
+    # instead of the ~35 seconds the entire history is priced at. That is not
+    # merely a worse entry, it is the adversely selected one: by ten minutes
+    # the price has already moved toward the eventual winner.
+    #
+    # Every signal row is on the sheet by this point, so a failure here still
+    # cannot cost collection. run_window re-checks both switches, the Control
+    # tab and the price band rather than trusting this call site.
+    if live_sigs and live.enabled():
+        try:
+            _rows = live.run_window(client, live_sigs)
+            if alert.enabled():
+                alert.send_result(_rows or [], boundary)
+        except Exception as e:
+            # An unhandled error in the code that spends money is exactly the
+            # case the halt switch exists for. Stop, notify, wait for a human.
+            print(f"  [live] ERROR: {e}")
+            try:
+                control.halt(client, f"Unhandled error while placing orders: {e}")
+            except Exception:
+                pass
+
+    # CASH-OUT PRICES. Read-only, and LAST, because it sleeps until +10
+    # minutes. Everything time-critical -- the alert, and above all the orders
+    # -- must be finished before this starts.
     if live_sigs and midwindow.enabled():
         try:
             midwindow.measure(client, live_sigs, boundary)
@@ -1574,24 +1597,6 @@ def run_predictions():
             decay.measure(client, live_sigs, boundary)
         except Exception as e:
             print(f"  [decay] skipped: {e}")
-
-    # LIVE ORDERS. Last, after every signal row is safely on the sheet, so a
-    # failure here can never cost collection. Requires both switches, the
-    # Control tab on RUNNING, and an entry under the price cut -- run_window
-    # re-checks all of it rather than trusting this call site.
-    if live_sigs and live.enabled():
-        try:
-            _rows = live.run_window(client, live_sigs)
-            if alert.enabled():
-                alert.send_result(_rows or [], boundary)
-        except Exception as e:
-            # An unhandled error in the code that spends money is exactly the
-            # case the halt switch exists for. Stop, notify, wait for a human.
-            print(f"  [live] ERROR: {e}")
-            try:
-                control.halt(client, f"Unhandled error while placing orders: {e}")
-            except Exception:
-                pass
 
     if written == 0:
         sys.exit(
