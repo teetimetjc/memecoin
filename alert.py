@@ -65,23 +65,50 @@ QUIET_END = int(os.environ.get("ALERT_HOUR_END", "22"))       # exclusive
 # the seconds the bet needed. So it is a template, unset by default: no
 # KALSHI_URL_TEMPLATE means no links, and the alert is exactly as it was.
 #
-# Placeholders: {ticker} {event} {series} {coin}
-URL_TEMPLATE = os.environ.get("KALSHI_URL_TEMPLATE", "").strip()
+# Placeholders: {ticker} {event} {series} {series_lower} {coin} {slug}
+#
+# A real link, copied from the app, looks like:
+#   kalshi.com/markets/kxbtc15m/btc-15-min--7669745-target/KXBTC15M-26SEP172230
+# so the default is that shape. The slug's digits are the strike with its
+# decimal point removed -- 76,697.45 becomes 7669745 -- which is the one part
+# that has to be computed rather than read off the ticker.
+DEFAULT_TEMPLATE = "https://kalshi.com/markets/{series_lower}/{slug}/{event}"
+URL_TEMPLATE = os.environ.get("KALSHI_URL_TEMPLATE", DEFAULT_TEMPLATE).strip()
 
 SERIES = {"BTC": "KXBTC15M", "ETH": "KXETH15M", "SOL": "KXSOL15M",
           "XRP": "KXXRP15M", "DOGE": "KXDOGE15M"}
 
 
-def market_url(coin, ticker):
-    """A link to this market, or "" when no template is configured."""
+def strike_slug(coin, strike):
+    """The slug segment, e.g. btc-15-min--7669745-target, or "" if unknown."""
+    if strike in (None, ""):
+        return ""
+    try:
+        # repr-free formatting: 76697.45 -> "76697.45", 0.081395 -> "0.081395".
+        # %r or str() on a float can produce scientific notation for small
+        # values, which would silently build a wrong link.
+        txt = f"{float(strike):.10f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return ""
+    digits = txt.replace(".", "").replace("-", "")
+    return f"{coin.lower()}-15-min--{digits}-target" if digits else ""
+
+
+def market_url(coin, ticker, strike=None):
+    """A link to this market, or "" when it cannot be built confidently."""
     if not URL_TEMPLATE or not ticker:
         return ""
+    slug = strike_slug(coin, strike)
+    if "{slug}" in URL_TEMPLATE and not slug:
+        return ""            # no strike means no honest link; send none
     try:
         return URL_TEMPLATE.format(
             ticker=ticker,
             event=ticker.rsplit("-", 1)[0],
             series=SERIES.get(coin, ""),
+            series_lower=SERIES.get(coin, "").lower(),
             coin=coin.lower(),
+            slug=slug,
         )
     except (KeyError, IndexError):
         return ""            # a malformed template must not break the alert
@@ -139,7 +166,7 @@ def build(signals, boundary, targets=None):
             "contracts": contracts,
             "cost": contracts * limit / 100.0,
             "strike": targets.get(symbol),
-            "url": market_url(coin, ticker),
+            "url": market_url(coin, ticker, targets.get(symbol)),
         })
 
     if not bets:
