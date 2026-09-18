@@ -244,6 +244,9 @@ KNOWN_URLS = [
     ("XRP", "KXXRP15M-26SEP180015-15", 1.3238,
      "https://kalshi.com/markets/kxxrp15m/xrp-15-min--13238-target/"
      "KXXRP15M-26SEP180015"),
+    ("SOL", "KXSOL15M-26SEP180015-15", 104.4697,
+     "https://kalshi.com/markets/kxsol15m/sol-15-min--1044697-target/"
+     "KXSOL15M-26SEP180015"),
 ]
 
 
