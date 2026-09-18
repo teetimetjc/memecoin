@@ -650,19 +650,19 @@ def why_blocked():
         except Exception as e:
             print(f"     {url} failed: {str(e)[:60]}")
 
+    # _get already prepends /trade-api/v2 and returns THREE values.
     print("\n  2. IS THE EXCHANGE OPEN")
-    for path in ("/trade-api/v2/exchange/status", "/trade-api/v2/exchange/schedule"):
-        code, body = _get(path)
-        print(f"     {path.split('/v2')[1]:22s} {code} {str(body)[:110]}")
+    for path in ("/exchange/status", "/exchange/schedule"):
+        code, body, err = _get(path)
+        print(f"     {path:20s} {code} {err or str(body)[:110]}")
 
     print("\n  3. WHAT CAN THE KEY DO")
-    for path in ("/trade-api/v2/portfolio/balance",
-                 "/trade-api/v2/portfolio/orders",
-                 "/trade-api/v2/portfolio/positions",
-                 "/trade-api/v2/portfolio/fills"):
-        code, body = _get(path)
+    for path in ("/portfolio/balance", "/portfolio/orders",
+                 "/portfolio/positions", "/portfolio/fills"):
+        code, body, err = _get(path)
         verdict = "ok" if code == 200 else "DENIED"
-        print(f"     {path.split('/portfolio/')[1]:12s} {code} {verdict}  {str(body)[:80]}")
+        print(f"     {path.split('/portfolio/')[1]:12s} {code} {verdict}  "
+              f"{err or str(body)[:80]}")
 
     print("\n  4. DOES A NON-CRYPTO MARKET FAIL THE SAME WAY")
     # One crypto market and one from another series, same request shape.
