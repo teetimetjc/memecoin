@@ -44,5 +44,6 @@ jobs:
             min-order)           python kalshi_probe.py --min-order ;;
             why-blocked)         python kalshi_probe.py --why-blocked ;;
             find-market-url)     python kalshi_probe.py --find-market-url ;;
+            exchange-index)      python kalshi_probe.py --exchange-index ;;
             *)                   python kalshi_probe.py ;;
           esac
