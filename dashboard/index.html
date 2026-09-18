@@ -162,6 +162,15 @@ tbody tr.pick:hover td{background:var(--accent-soft)}
 .hourlab{font-family:"IBM Plex Mono",monospace; font-size:10px; fill:var(--muted)}
 tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-size:.75rem}
 @media (prefers-reduced-motion:reduce){*{transition:none!important; animation:none!important}}
+/* --- mode switch ---
+   Hiding by CSS, not by the `hidden` attribute: several panels already own
+   their own `hidden` (they appear once their data exists), and a mode toggle
+   that wrote the same attribute would either resurrect an empty panel or
+   permanently bury a full one. display:none from a body-level flag leaves
+   every panel's own visibility logic untouched. */
+body[data-mode="live"] [data-view="sim"],
+body[data-mode="sim"]  [data-view="live"]{display:none!important}
+#modeRow .seg button[aria-pressed="true"][data-mode="live"]{background:var(--gain)}
 </style>
 
 <div class="wrap">
@@ -172,7 +181,17 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       excluded: they chose the rule's threshold and direction, so they can't also grade it.</p>
   </header>
 
-  <div class="viewbar" style="flex-direction:column; align-items:stretch; gap:12px">
+  <!-- The one switch that changes what the page IS, rather than how it is
+       sliced. Everything below "Collected" is a simulation priced off the
+       sheet; everything below "Real money" is the brokerage account. Mixing
+       them on one screen invited reading a simulated curve as a balance, so
+       they are now two views and only one is on screen at a time. -->
+  <div class="viewrow" id="modeRow">
+    <span class="lbl">Showing</span>
+    <div class="seg" id="modeSeg" role="group" aria-label="Collected data or real money"></div>
+  </div>
+
+  <div class="viewbar" data-view="sim" style="flex-direction:column; align-items:stretch; gap:12px">
     <div class="viewrow">
       <span class="lbl">Price</span>
       <div class="seg" id="priceSeg" role="group" aria-label="Which signals to include"></div>
@@ -196,12 +215,12 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     <span class="viewnote" id="viewNote"></span>
   </div>
 
-  <div class="divider" id="liveDiv" hidden>
+  <div class="divider" id="liveDiv" data-view="live" hidden>
     <h2>Real money</h2>
     <span class="d" id="liveNote"></span>
   </div>
 
-  <section class="panel" id="livePanel" hidden style="border-color:var(--accent)">
+  <section class="panel" id="livePanel" data-view="live" hidden style="border-color:var(--accent)">
     <div class="phead">
       <h2>Live bets</h2>
       <span class="note">actually placed on Kalshi · $5 flat on entries under 50&cent;</span>
@@ -214,9 +233,34 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     <div class="legend" id="liveFoot"></div>
   </section>
 
-  <section class="stats" id="stats"></section>
+  <section class="panel" id="liveEqPanel" data-view="live" hidden>
+    <div class="phead">
+      <h2>Account profit</h2>
+      <span class="note">running total after each settled bet &mdash; real dollars, in the order they happened</span>
+    </div>
+    <div class="plot">
+      <svg id="liveEq" viewBox="0 0 1000 300" role="img"
+        aria-label="Cumulative real-money profit"></svg>
+    </div>
+    <div class="legend" id="liveEqFoot"></div>
+  </section>
 
-  <section class="panel">
+  <section class="panel" id="liveLogPanel" data-view="live" hidden>
+    <div class="phead">
+      <h2>Every bet</h2>
+      <span class="note">one row per order that filled &mdash; open bets carry no result yet</span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>When (CT)</th><th>Coin</th><th>Call</th><th>Paid</th>
+        <th>Contracts</th><th>Stake</th><th>Result</th><th>Running</th></tr></thead>
+      <tbody id="livelog"></tbody>
+    </table></div>
+    <div class="legend" id="liveLogFoot"></div>
+  </section>
+
+  <section class="stats" id="stats" data-view="sim"></section>
+
+  <section class="panel" data-view="sim">
     <div class="phead">
       <h2>Cumulative profit</h2>
       <span class="note">running total after each settled bet</span>
@@ -244,7 +288,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     </div>
   </section>
 
-  <section class="panel">
+  <section class="panel" data-view="sim">
     <div class="phead">
       <h2>Drawdown</h2>
       <span class="note">how far below the previous high-water mark, same x-axis</span>
@@ -254,7 +298,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     </div>
   </section>
 
-  <section class="panel">
+  <section class="panel" data-view="sim">
     <div class="phead"><h2>By coin</h2>
       <span class="note" id="coinNote"></span></div>
     <div class="tablewrap"><table>
@@ -264,7 +308,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     </table></div>
   </section>
 
-  <section class="panel">
+  <section class="panel" data-view="sim">
     <div class="phead"><h2>By day</h2><span class="note" id="dayNote">$10 flat on every signal</span></div>
     <div class="tablewrap"><table>
       <thead><tr><th>Day</th><th>Bets</th><th>Hit&nbsp;%</th><th>Day P&amp;L</th><th>Running</th></tr></thead>
@@ -272,12 +316,12 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     </table></div>
   </section>
 
-  <div class="divider" id="dryDiv" hidden>
+  <div class="divider" id="dryDiv" hidden data-view="sim">
     <h2>Could we actually get this price?</h2>
     <span class="d" id="dryNote"></span>
   </div>
 
-  <section class="panel" id="dryPanel" hidden>
+  <section class="panel" id="dryPanel" hidden data-view="sim">
     <div class="phead">
       <h2>Dry run: intended orders</h2>
       <span class="note">the order each signal would send, priced against the live book — nothing is placed</span>
@@ -286,7 +330,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     <div class="legend" id="dryFoot"></div>
   </section>
 
-  <section class="panel" id="decayPanel" hidden>
+  <section class="panel" id="decayPanel" hidden data-view="sim">
     <div class="phead">
       <h2>Entry delay: what the wait costs</h2>
       <span class="note">every number on this page is priced ~35s into the window · a live order cannot go in for ~4 minutes</span>
@@ -295,7 +339,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     <div class="legend" id="decayFoot"></div>
   </section>
 
-  <section class="panel" id="cashPanel" hidden>
+  <section class="panel" id="cashPanel" hidden data-view="sim">
     <div class="phead">
       <h2>Cash out early, or hold?</h2>
       <span class="note">same bets, same outcomes, three exits &mdash; priced at the bid you could actually sell into</span>
@@ -308,14 +352,14 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     <div class="legend" id="cashFoot"></div>
   </section>
 
-  <div class="divider">
+  <div class="divider" data-view="sim">
     <h2>When they fire</h2>
     <span class="d" id="clockNote">the same signals, placed on your clock</span>
   </div>
 
-  <section class="verdict" id="verdict"></section>
+  <section class="verdict" id="verdict" data-view="sim"></section>
 
-  <section class="panel">
+  <section class="panel" data-view="sim">
     <div class="phead">
       <h2>Signals per hour</h2>
       <span class="note">US Central · shaded band is 11pm–7am</span>
@@ -324,7 +368,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       aria-label="Number of signals by hour of day, Central Time"></svg></div>
   </section>
 
-  <section class="panel">
+  <section class="panel" data-view="sim">
     <div class="phead">
       <h2>Profit per hour</h2>
       <span class="note">above the line made money, below lost it</span>
@@ -333,7 +377,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       aria-label="Profit and loss by hour of day, Central Time"></svg></div>
   </section>
 
-  <section class="panel">
+  <section class="panel" data-view="sim">
     <div class="phead"><h2>Hour by hour</h2><span class="note">◓ marks overnight hours</span></div>
     <div class="tablewrap"><table>
       <thead><tr><th>Hour (CT)</th><th>Signals</th><th>Share</th><th>Hit&nbsp;%</th>
@@ -342,7 +386,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     </table></div>
   </section>
 
-  <section class="foot">
+  <section class="foot" data-view="sim">
     <p id="footNote" hidden><strong>The dollar figures in these notes are written for
       $10 flat.</strong> The panels above follow the stake you picked; this commentary does not.</p>
     <p><strong>The firing rate is close to flat.</strong> Every hour gets between 17 and 40 of the
@@ -962,6 +1006,36 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
     });
   }
 
+  // ---- mode switch -----------------------------------------------------
+  // "sim" is the script's collected record priced at $10 a bet; "live" is the
+  // Kalshi account. They answer different questions and must never be summed,
+  // so the page shows one at a time. Default is sim: it holds 1,500 bets and
+  // the account holds single digits, and the bigger sample is the honest
+  // first impression.
+  let mode = "sim";
+  const hasLive = () => !!(D.live && D.live.placed);
+  function drawModeSeg(){
+    const row = document.getElementById("modeRow"),
+          seg = document.getElementById("modeSeg");
+    if(!row || !seg) return;
+    if(!hasLive()){ row.hidden = true; mode = "sim"; document.body.dataset.mode = "sim"; return; }
+    row.hidden = false;
+    const L = D.live;
+    const opts = [
+      {v:"sim",  label:`Collected data · ${ALL.toLocaleString()} bets`},
+      {v:"live", label:`Real money · ${L.placed} bet${L.placed===1?"":"s"}`},
+    ];
+    seg.innerHTML = opts.map(o=>
+      `<button data-mode="${o.v}" aria-pressed="${String(mode===o.v)}">${o.label}</button>`).join("");
+    [...seg.querySelectorAll("button")].forEach(b=>{
+      b.addEventListener("click",()=>{
+        const m=b.getAttribute("data-mode");
+        if(mode!==m){ mode=m; renderAll(); window.scrollTo({top:0,behavior:"instant"}); }
+      });
+    });
+    document.body.dataset.mode = mode;
+  }
+
   // ---- live bets -------------------------------------------------------
   // Real money, so it sits above everything else and ignores the filters.
   // The rest of this page is a simulation you can slice; this is what the
@@ -1009,8 +1083,117 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       + `after Kalshi's fee, and only for bets that have settled — an open bet `
       + `is counted as staked, never as a win or a loss.</span>`
       + (why.length ? `<span>Not bet: ${why.map(([k,v])=>`<b>${v}</b> ${k}`).join(" · ")}.</span>` : "")
-      + `<span>This panel ignores the filters above: it is what the account did, `
-      + `not a view you can slice.</span>`;
+      + `<span>Nothing here can be filtered: it is what the account did, not a `
+      + `view you can slice.</span>`;
+  }
+
+  // ---- real money: the account, bet by bet ------------------------------
+  // The settled bets only. An open bet has no result, and drawing it flat
+  // would read as "broke even" when the truth is "not known yet" -- so it is
+  // named under the chart instead of plotted on it.
+  function liveSettled(){
+    return ((D.live && D.live.bets) || []).filter(b => b.net != null);
+  }
+
+  function drawLiveEq(){
+    const panel = document.getElementById("liveEqPanel"),
+          svg = document.getElementById("liveEq");
+    if(!panel || !svg) return;
+    const B = liveSettled();
+    // Older data files predate the per-bet list. Hide rather than render an
+    // empty chart that would read as "no bets settled" when seven have.
+    panel.hidden = !hasLive() || !(D.live && D.live.bets);
+    if(panel.hidden) return;
+    if(!B.length){
+      svg.innerHTML = "";
+      document.getElementById("liveEqFoot").innerHTML =
+        `<span>Nothing has settled yet. The line starts at the first closed market.</span>`;
+      return;
+    }
+    const q=[]; let eq=0, peak=0, maxDD=0;
+    for(const b of B){
+      eq = Math.round((eq + b.net)*100)/100;
+      peak = Math.max(peak, eq);
+      maxDD = Math.min(maxDD, Math.round((eq-peak)*100)/100);
+      q.push(eq);
+    }
+    const H=300, m={t:18,r:64,b:34,l:60}, iw2=W-m.l-m.r, ih2=H-m.t-m.b;
+    let lo=Math.min(0,...q), hi=Math.max(0,...q);
+    const pad=(hi-lo)*0.12||2; lo-=pad; hi+=pad;
+    const Y=v=>m.t+(hi-v)/(hi-lo)*ih2;
+    const Xl=i=>m.l+(B.length<2?iw2/2:(i/(B.length-1))*iw2);
+    let s="";
+    niceTicks(lo,hi,4).forEach(v=>{
+      s+=`<line x1="${m.l}" y1="${Y(v).toFixed(1)}" x2="${W-m.r}" y2="${Y(v).toFixed(1)}"
+           stroke="var(--grid)" stroke-width="1"/>`;
+      s+=`<text class="axis" x="${m.l-9}" y="${(Y(v)+3.6).toFixed(1)}" text-anchor="end">${fmt(v)}</text>`;
+    });
+    s+=`<line x1="${m.l}" y1="${Y(0).toFixed(1)}" x2="${W-m.r}" y2="${Y(0).toFixed(1)}"
+         stroke="var(--muted)" stroke-width="1.25" opacity=".55"/>`;
+    let pts="";
+    for(let i=0;i<B.length;i++) pts+=`${Xl(i).toFixed(1)},${Y(q[i]).toFixed(1)} `;
+    if(B.length>1){
+      s+=`<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2.2"
+           stroke-linejoin="round" stroke-linecap="round"/>`;
+    }
+    // Few enough bets that each one is worth a dot you can count.
+    for(let i=0;i<B.length;i++){
+      s+=`<circle cx="${Xl(i).toFixed(1)}" cy="${Y(q[i]).toFixed(1)}" r="4.5"
+           fill="${B[i].w?"var(--gain)":"var(--loss)"}" stroke="var(--surface)" stroke-width="1.5">
+           <title>${B[i].s} ${B[i].d} · ${fmt(B[i].net)}</title></circle>`;
+      s+=`<text class="daylab" x="${Xl(i).toFixed(1)}" y="${H-10}" text-anchor="middle">${B[i].s}</text>`;
+    }
+    const ey=Y(q[q.length-1]);
+    s+=`<text class="axis" x="${(Xl(B.length-1)+10).toFixed(1)}" y="${(ey+4).toFixed(1)}"
+         fill="var(--accent)" font-weight="600">${fmt(q[q.length-1])}</text>`;
+    svg.innerHTML=s;
+
+    const open = ((D.live.bets)||[]).filter(b=>b.open).length;
+    document.getElementById("liveEqFoot").innerHTML =
+      `<span>Green dots won, red lost. Worst fall from a peak `
+      + `<b class="neg">${fmt(maxDD)}</b>.</span>`
+      + (open ? `<span><b>${open}</b> bet${open===1?"":"s"} still open — not on this `
+          + `line, because ${open===1?"it has":"they have"} no result yet.</span>` : "")
+      + `<span>${B.length} settled bet${B.length===1?"":"s"} is far too few to judge a `
+      + `strategy by. This is a record of what happened, not evidence.</span>`;
+  }
+
+  function drawLiveLog(){
+    const panel = document.getElementById("liveLogPanel"),
+          body = document.getElementById("livelog");
+    if(!panel || !body) return;
+    panel.hidden = !hasLive() || !(D.live && D.live.bets);
+    if(panel.hidden) return;
+    const B = (D.live && D.live.bets) || [];
+    if(!B.length){
+      body.innerHTML = `<tr><td colspan="8">No orders have filled yet.</td></tr>`;
+      document.getElementById("liveLogFoot").innerHTML = "";
+      return;
+    }
+    let eq=0;
+    // Newest first is how you check "what did it just do", so build the running
+    // total in time order and then reverse for display.
+    const rows = B.map(b=>{
+      let run = null;
+      if(b.net != null){ eq = Math.round((eq + b.net)*100)/100; run = eq; }
+      return {b, run};
+    }).reverse();
+    body.innerHTML = rows.map(({b,run})=>{
+      const res = b.net == null
+        ? `<span class="hint" style="color:var(--muted)">open</span>`
+        : `<span class="${b.w?"pos":"neg"}">${b.w?"won ":"lost "}${fmt(b.net)}</span>`;
+      return `<tr><td>${ctStamp(b.t)}</td><td>${b.s}</td><td>${b.d}</td>`
+        + `<td>${b.e.toFixed(0)}¢</td><td>${(+b.n).toLocaleString()}</td>`
+        + `<td>$${b.cost.toFixed(2)}</td><td>${res}</td>`
+        + `<td>${run==null?"—":`<span class="${run>=0?"pos":"neg"}">${fmt(run)}</span>`}</td></tr>`;
+    }).join("");
+    const F = Object.entries((D.live && D.live.fail_why) || {});
+    document.getElementById("liveLogFoot").innerHTML =
+      `<span>Newest first. "Paid" is the limit price the order was sent at — the `
+      + `fill can be a cent or two better, so these P&amp;L figures run slightly `
+      + `conservative.</span>`
+      + (F.length ? `<span>${D.live.failed} order${D.live.failed===1?"":"s"} never `
+          + `reached the book: ${F.map(([k,v])=>`<b>${v}</b> ${k}`).join(" · ")}.</span>` : "");
   }
 
   // ---- entry delay -----------------------------------------------------
@@ -1225,6 +1408,18 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
 
   function drawSubline(){
     const el=document.getElementById("subline"); if(!el) return;
+    const h1=document.querySelector("h1");
+    if(mode==="live"){
+      const L=D.live;
+      if(h1) h1.textContent="What the account actually did";
+      el.innerHTML = `<strong>${L.placed}</strong> order${L.placed===1?"":"s"} placed with real `
+        + `money since <strong>${ctStamp(L.first)}</strong>, $5 a bet on entries under 50¢. `
+        + `Nothing on this view is simulated: every row is a fill on Kalshi. `
+        + `Switch to <strong>Collected data</strong> above for the ${ALL.toLocaleString()}-bet `
+        + `record the strategy was built on. All times Central.`;
+      return;
+    }
+    if(h1) h1.textContent="Every v6 signal, one bet at a time";
     const first=ctStamp(D.t[0]), last=ctStamp(D.t[ALL-1]);
     const built = D.built ? ` Data refreshed ${ctStamp(D.built.replace(" UTC",""))}.` : "";
     el.innerHTML = `<strong>${ALL.toLocaleString()}</strong> bets from <strong>${first}</strong> `
@@ -1235,10 +1430,14 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
 
   function renderAll(){
     V=buildView();
+    drawModeSeg();
+    document.body.dataset.mode = mode;
     drawSubline(); drawPriceSeg(); drawEraSeg(); drawCoinSeg();
     drawStakeSeg(); drawRuleSeg();
     const eb=document.getElementById("eyebrow");
-    if(eb) eb.textContent = `Kalshi · 15-minute crypto · $${stake} flat`;
+    if(eb) eb.textContent = mode==="live"
+      ? "Kalshi · 15-minute crypto · live account"
+      : `Kalshi · 15-minute crypto · $${stake} flat · simulated`;
     const dn=document.getElementById("dayNote");
     if(dn) dn.textContent = `$${stake} flat on every signal`;
     const fn=document.getElementById("footNote");
@@ -1262,7 +1461,7 @@ tbody tr.night td:first-child::after{content:" \25D3"; color:var(--muted); font-
       if(!isAll()) showSplit=false;
       splitBtn.setAttribute("aria-pressed", String(showSplit));
     }
-    drawLive();
+    drawLive(); drawLiveEq(); drawLiveLog();
     drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawDry(); drawDecay(); drawCash(); drawClock();
   }
   const bandBtn=document.getElementById("bandBtn");

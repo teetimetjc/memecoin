@@ -310,6 +310,11 @@ def build_live(live_rows, pred_rows):
     open_stake = 0.0
     by_coin = {}
     skip_why = {}
+    fail_why = {}
+    # Every placed order, in order, so the real-money view can show the account
+    # bet by bet rather than only in aggregate. Seven settled bets is a number
+    # you read one row at a time; a summary tile hides which one went wrong.
+    bets = []
     first = last = ""
     for r in live_rows[1:]:
         st = lc(r, "Status")
@@ -320,6 +325,8 @@ def build_live(live_rows, pred_rows):
             continue
         if st == "FAILED":
             failed += 1
+            k = _why(lc(r, "Detail"))
+            fail_why[k] = fail_why.get(k, 0) + 1
             continue
         if st != "PLACED":
             continue
@@ -336,16 +343,24 @@ def build_live(live_rows, pred_rows):
             continue
         staked += cost
 
+        c = sym.replace("USDT", "")
+        row = {"t": ts, "s": c, "d": lc(r, "Side"), "n": n,
+               "cost": round(cost, 2), "e": round(limit_c, 1)}
+
         won = outcome.get((ts, sym))
         if won is None:
             open_stake += cost          # still running; no result yet
+            row["open"] = 1
+            bets.append(row)
             continue
         settled += 1
         wins += 1 if won else 0
         # Kalshi's fee is 7% of stake x (1 - price), charged at trade time.
         net = (n if won else 0.0) - cost - _fee(n, limit_c / 100.0)
         pnl += net
-        c = sym.replace("USDT", "")
+        row["w"] = 1 if won else 0
+        row["net"] = round(net, 2)
+        bets.append(row)
         b = by_coin.setdefault(c, {"n": 0, "w": 0, "net": 0.0})
         b["n"] += 1; b["w"] += 1 if won else 0; b["net"] += net
 
@@ -358,6 +373,8 @@ def build_live(live_rows, pred_rows):
         "coins": {k: {"n": v["n"], "w": v["w"], "net": round(v["net"], 2)}
                   for k, v in sorted(by_coin.items())},
         "skip_why": dict(sorted(skip_why.items(), key=lambda kv: -kv[1])),
+        "fail_why": dict(sorted(fail_why.items(), key=lambda kv: -kv[1])),
+        "bets": bets,
     }
 
 
