@@ -158,6 +158,37 @@ def current_entry(ticker, side):
     return px if (px and 0 < px < 100) else None
 
 
+# Each market names the exchange it trades on, and they are not all the same:
+# the 15-minute crypto markets are on index 2 while other series sit on 0. An
+# order sent to the wrong index is looked up on an exchange that does not carry
+# that ticker, and comes back market_not_found -- which is literally true and
+# reads exactly like a missing market. Hours were spent chasing hosts, paths,
+# ticker forms, listing delays and geography because of one hardcoded 0.
+#
+# So it is READ, never assumed, and a market whose index cannot be read is
+# skipped rather than sent with a guess. Guessing is what caused this.
+_INDEX_CACHE = {}
+
+
+def market_exchange_index(ticker):
+    """The exchange this market trades on, or None if it cannot be read."""
+    if ticker in _INDEX_CACHE:
+        return _INDEX_CACHE[ticker]
+    import predictor as P
+    idx = None
+    try:
+        hdrs = P._kalshi_headers("GET", f"/trade-api/v2/markets/{ticker}")
+        r = requests.get(f"{ORDER_HOST}/trade-api/v2/markets/{ticker}",
+                         headers=hdrs or {}, timeout=10)
+        if r.ok:
+            idx = (r.json().get("market") or {}).get("exchange_index")
+    except Exception:
+        idx = None
+    if idx is not None:
+        _INDEX_CACHE[ticker] = idx
+    return idx
+
+
 def place(ts, symbol, side, ticker, entry_cents, stake):
     """Send ONE limit order. Returns (status, detail, contracts, cost, order_id).
 
@@ -176,6 +207,11 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
     if side == "DOWN" and not ALLOW_DOWN:
         return ("SKIPPED",
                 "DOWN needs the ask-side mapping confirmed against a real fill",
+                0, 0.0, "")
+
+    exch = market_exchange_index(ticker)
+    if exch is None:
+        return ("SKIPPED", "could not read the market's exchange index",
                 0, 0.0, "")
 
     limit_c = min(99.0, math.ceil(entry_cents + SLIP_BUFFER_CENTS))
@@ -204,7 +240,7 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
         "cancel_order_on_pause": False,
         "reduce_only": False,
         "subaccount": 0,
-        "exchange_index": 0,
+        "exchange_index": exch,
     }
     hdrs = P._kalshi_headers("POST", "/trade-api/v2/portfolio/events/orders")
     if not hdrs:
