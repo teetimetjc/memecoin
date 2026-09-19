@@ -16,6 +16,7 @@ import os, sys, json, math, time, argparse, requests
 import alert
 import control
 import midwindow
+import path
 import decay
 import dryrun
 import live
@@ -1597,6 +1598,19 @@ def run_predictions():
             decay.measure(client, live_sigs, boundary)
         except Exception as e:
             print(f"  [decay] skipped: {e}")
+
+    # PRICE PATH. Dead last, because it sleeps almost the whole window. It
+    # samples EVERY coin's market rather than only the ones a rule fired on:
+    # the setup it is meant to measure is defined by the price path itself,
+    # so filtering to this window's signals would inherit their selection.
+    #
+    # Nothing above depends on it, and every signal row is already on the
+    # sheet, so a failure here cannot cost collection.
+    if path.enabled():
+        try:
+            path.measure(client, boundary)
+        except Exception as e:
+            print(f"  [path] skipped: {e}")
 
     if written == 0:
         sys.exit(
