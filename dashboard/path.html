@@ -151,6 +151,8 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
       <div id="bandChips" style="display:flex;flex-wrap:wrap;gap:7px"></div></div>
     <div class="frow"><span class="lbl">Sell at</span>
       <div id="takeChips" style="display:flex;flex-wrap:wrap;gap:7px"></div></div>
+    <div class="frow"><span class="lbl">Stake</span>
+      <div id="stakeChips" style="display:flex;flex-wrap:wrap;gap:7px"></div></div>
   </div>
 
   <section class="rail" id="sel"></section>
@@ -176,7 +178,7 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     </div>
     <div class="tablewrap"><table>
       <thead><tr><th>Paid</th><th>Setups</th><th>Reached target</th>
-        <th>Settled wins</th><th>EV / trade</th></tr></thead>
+        <th>Settled wins</th><th>Risked</th><th>P&amp;L</th></tr></thead>
       <tbody id="bandBody"></tbody>
     </table></div>
     <div class="legend" id="bandFoot"></div>
@@ -189,7 +191,7 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     </div>
     <div class="tablewrap"><table>
       <thead><tr><th>Coin</th><th>Setups</th><th>Reached target</th>
-        <th>Settled wins</th><th>EV / trade</th></tr></thead>
+        <th>Settled wins</th><th>Risked</th><th>P&amp;L</th></tr></thead>
       <tbody id="coinBody"></tbody>
     </table></div>
   </section>
@@ -302,10 +304,13 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
   // at 3x, so the arithmetic has to follow the filter. Mirrors hedge.py
   // exactly -- entry pays the ask, exit sells into the bid, fee charged both
   // times, and a target that never arrives is held to settlement.
-  const STAKE = 10;
+  // Kalshi's fee is ceil(0.07 x contracts x p x (1-p)) to the CENT, and a
+  // ceiling does not scale: $20 comes out a shade better than twice $10 and
+  // $5 a shade worse than half, so each stake is priced from scratch rather
+  // than multiplied out of the $10 figure.
   const fee = (n,p) => Math.ceil(0.07*n*p*(1-p)*100)/100;
-  function priceTrade(tr, take){
-    const e = tr.e/100, n = STAKE/e, cost = STAKE + fee(n,e);
+  function priceTrade(tr, take, stake){
+    const e = tr.e/100, n = stake/e, cost = stake + fee(n,e);
     const target = tr.e*take;
     if(target < 100){
       for(let k=1;k<tr.p.length;k++){
@@ -326,7 +331,8 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
   const COINS = [...new Set(ALL.map(t=>t.s))].sort();
   const BANDS = D.bands || [[0,20],[20,30],[30,40],[40,45]];
   const TAKES = D.take || [1.5,2.0,3.0];
-  let coin = "ALL", band = "ALL", take = 2.0;
+  let coin = "ALL", band = "ALL", take = 2.0, stake = 10;
+  const STAKES = [5, 10, 20];
   const inBand = (t,b) => t.e >= b[0] && t.e < b[1];
   const bandLab = b => b[0] === 0 ? `under ${b[1]}\u00A2` : `${b[0]}\u2013${b[1]}\u00A2`;
   function view(){
@@ -338,14 +344,16 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
   function stats(rows){
     let hit=0, settled=0, wins=0, net=0, priced=0;
     for(const t of rows){
-      const r = priceTrade(t, take);
+      const r = priceTrade(t, take, stake);
       if(!r) continue;
       priced++; net += r.net;
       if(r.hit) hit++;
       if(t.w != null){ settled++; if(t.w) wins++; }
     }
-    return {n: rows.length, priced, hit, settled, wins,
-            net, ev: priced ? net/priced : null};
+    return {n: rows.length, priced, hit, settled, wins, net,
+            risked: priced * stake,
+            ev: priced ? net/priced : null,
+            roi: priced ? net/(priced*stake)*100 : null};
   }
 
   // ---- chips -----------------------------------------------------------
@@ -369,6 +377,9 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     chips(document.getElementById("takeChips"),
       TAKES.map(t=>({v:String(t),label:`${t}\u00D7`})),
       v=>Math.abs(take-parseFloat(v))<1e-9, v=>{take=parseFloat(v);});
+    chips(document.getElementById("stakeChips"),
+      STAKES.map(x=>({v:String(x),label:`$${x}`})),
+      v=>stake===+v, v=>{stake=+v;});
   }
 
   // ---- the paths -------------------------------------------------------
@@ -432,14 +443,17 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
   const money = v => (v>=0?"+":"\u2212") + "$" + Math.abs(v).toFixed(2);
   function row(label, rows, sel){
     const st = stats(rows);
-    if(!st.n) return `<tr><td>${label}</td><td>0</td><td>\u2014</td><td>\u2014</td><td>\u2014</td></tr>`;
+    if(!st.n) return `<tr><td>${label}</td><td>0</td><td>\u2014</td><td>\u2014</td>`
+      + `<td>\u2014</td><td>\u2014</td></tr>`;
     const evTxt = st.ev == null ? "\u2014"
-      : `<span style="color:var(--${st.ev>=0?"up":"down"})">${money(st.ev)}</span>`;
+      : `<span style="color:var(--${st.net>=0?"up":"down"})">${money(st.net)}</span>`
+        + `<span style="color:var(--muted)"> ${money(st.ev)}/ea</span>`;
     return `<tr${sel?' style="background:var(--signal-soft)"':''}>`
       + `<td>${label}</td><td>${st.n}</td>`
       + `<td>${pct(st.hit,st.n).toFixed(0)}%<span style="color:var(--muted)"> ${st.hit}/${st.n}</span></td>`
       + `<td>${st.settled ? pct(st.wins,st.settled).toFixed(0)+"%" : "\u2014"}`
       + `<span style="color:var(--muted)"> ${st.wins}/${st.settled}</span></td>`
+      + `<td>${st.priced ? "$"+st.risked.toLocaleString() : "\u2014"}</td>`
       + `<td>${evTxt}</td></tr>`;
   }
   function drawTables(rows){
@@ -448,7 +462,7 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
           band!=="ALL" && +band===i)).join("");
     document.getElementById("bandBody").innerHTML = byBand;
     document.getElementById("bandNote").textContent =
-      `${coin==="ALL"?"all five coins":coin} \u00B7 selling at ${take}\u00D7`;
+      `${coin==="ALL"?"all five coins":coin} \u00B7 $${stake} a bet \u00B7 selling at ${take}\u00D7`;
     document.getElementById("bandFoot").innerHTML =
       `<span><b>Reached target</b> is how often the cheap side touched `
       + `${take}\u00D7 what it cost. <b>Settled wins</b> is how the ones that `
@@ -470,8 +484,10 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     el.innerHTML =
       tile("Showing", `${st.n}`)
     + tile(`Reached ${take}\u00D7`, st.n ? `${pct(st.hit,st.n).toFixed(0)}%` : "\u2014")
-    + tile("EV / trade", st.ev==null ? "\u2014" : money(st.ev))
-    + tile("Total", st.priced ? money(st.net) : "\u2014");
+    + tile("Risked", st.priced ? `$${st.risked.toLocaleString()}` : "\u2014")
+    + tile("Profit / loss", st.priced ? money(st.net) : "\u2014")
+    + tile("Per trade", st.ev==null ? "\u2014" : money(st.ev))
+    + tile("Return", st.roi==null ? "\u2014" : `${st.roi>=0?"+":"\u2212"}${Math.abs(st.roi).toFixed(1)}%`);
   }
 
   function render(){
