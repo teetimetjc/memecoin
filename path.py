@@ -122,8 +122,23 @@ def measure(client, boundary, spots=None):
     bids = {t: [] for _, t, _ in mk}
     asks = {t: [] for _, t, _ in mk}
 
-    for i in range(COUNT):
-        target = FIRST + i * STEP
+    # Only sample the offsets that are still AHEAD. A run dispatched mid-window
+    # cannot go back and price +30s, and appending whatever it finds would
+    # write a series that claims to start at +30s when it really starts at
+    # +7min -- every later analysis would read those prices at the wrong point
+    # in the window. So late starts produce a shorter, correctly labelled
+    # series, and the offset actually used is stored rather than assumed.
+    now = (datetime.now(timezone.utc) - boundary).total_seconds()
+    sched = [FIRST + i * STEP for i in range(COUNT)]
+    sched = [t for t in sched if t > now - 5]
+    if not sched:
+        print("  [path] window already past the last sample point; nothing to do")
+        return
+    if sched[0] != FIRST:
+        print(f"  [path] started late: first sample at +{sched[0]}s, "
+              f"{len(sched)} of {COUNT} points")
+
+    for target in sched:
         wait = target - (datetime.now(timezone.utc) - boundary).total_seconds()
         if wait > 0:
             time.sleep(min(wait, STEP + 5))
@@ -137,13 +152,13 @@ def measure(client, boundary, spots=None):
         got = sum(1 for v in asks[ticker] if v != "")
         rows.append([
             boundary.strftime("%Y-%m-%d %H:%M UTC"), symbol, ticker, strike,
-            spots.get(symbol, ""), FIRST, STEP, got,
+            spots.get(symbol, ""), sched[0], STEP, got,
             ",".join(str(v) for v in bids[ticker]),
             ",".join(str(v) for v in asks[ticker]),
-            "" if got == COUNT else f"{COUNT - got} sample(s) unpriced",
+            "" if got == len(sched) else f"{len(sched) - got} sample(s) unpriced",
         ])
     print(f"  [path] {len(rows)} market(s), "
-          f"{sum(r[7] for r in rows)}/{COUNT * len(rows)} samples priced")
+          f"{sum(r[7] for r in rows)}/{len(sched) * len(rows)} samples priced")
 
     import predictor as P
     try:

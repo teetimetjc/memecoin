@@ -45,7 +45,11 @@ PRED_H = []   # filled from predictor.ALL_HEADERS at run time
 
 # The grid. Deliberately small: every extra combination is another lottery
 # ticket in the search for a false positive.
-ENTRY_AT = (1, 3, 5)              # sample index: +60s, +120s, +180s
+# In SECONDS into the window, not sample index. A run dispatched late starts
+# its series further in, so an index would mean a different moment on
+# different rows -- and comparing +60s on one window to +7min on another is
+# exactly the kind of quiet mismatch that produced the last false edge.
+ENTRY_AT = (60, 120, 180)
 MAX_ENTRY = (15.0, 25.0, 35.0)    # cents -- how cheap counts as cheap
 TAKE = (1.5, 2.0, 3.0)            # sell at this multiple of what was paid
 
@@ -96,11 +100,14 @@ def load(path_rows, pred_rows, headers):
         asks = [_f(x) for x in str(cell(r, "Yes Asks")).split(",")]
         if len(bids) < 6 or len(asks) < 6:
             continue
-        out.append({"ts": ts, "sym": sym, "above": up, "bids": bids, "asks": asks})
+        first = _f(cell(r, "First Offset s")) or 30.0
+        step = _f(cell(r, "Step s")) or 30.0
+        out.append({"ts": ts, "sym": sym, "above": up, "bids": bids,
+                    "asks": asks, "first": first, "step": step})
     return out
 
 
-def trade(row, entry_i, max_entry, take):
+def trade(row, entry_s, max_entry, take):
     """One window, one rule. Returns net P&L at $10, or None if no entry.
 
     Both sides are considered, and the CHEAP one is the setup: a market that
@@ -109,6 +116,13 @@ def trade(row, entry_i, max_entry, take):
     real opportunity, so it is skipped.
     """
     bids, asks = row["bids"], row["asks"]
+    # Which sample IS the requested moment. A row that began after it simply
+    # has no entry there and is skipped, rather than silently using its first
+    # available price as though it were that moment.
+    off = (entry_s - row["first"]) / row["step"]
+    if off < 0 or abs(off - round(off)) > 0.01:
+        return None
+    entry_i = int(round(off))
     if entry_i >= len(asks):
         return None
     yes_ask, yes_bid = asks[entry_i], bids[entry_i]
@@ -147,10 +161,10 @@ def trade(row, entry_i, max_entry, take):
     return round((n if won else 0.0) - cost, 4)
 
 
-def score(rows, entry_i, max_entry, take):
+def score(rows, entry_s, max_entry, take):
     nets, keys = [], []
     for r in rows:
-        v = trade(r, entry_i, max_entry, take)
+        v = trade(r, entry_s, max_entry, take)
         if v is None:
             continue
         nets.append(v)
@@ -193,17 +207,17 @@ def run(path_rows, pred_rows, headers):
                 s = score(tr, ei, me, tk)
                 if not s or s["n"] < 20:
                     continue
-                grid.append({"entry_i": ei, "max_entry": me, "take": tk, **s})
+                grid.append({"entry_s": ei, "max_entry": me, "take": tk, **s})
                 if best is None or s["ev"] > best["ev"]:
-                    best = {"entry_i": ei, "max_entry": me, "take": tk, **s}
+                    best = {"entry_s": ei, "max_entry": me, "take": tk, **s}
     if not best:
         return {"error": "no combination produced enough trades", "rows": len(rows)}
 
-    held = score(te, best["entry_i"], best["max_entry"], best["take"])
+    held = score(te, best["entry_s"], best["max_entry"], best["take"])
     out = {
         "rows": len(rows), "windows": len(wins), "cut": cut,
         "n_train": len(tr), "n_test": len(te), "tested": len(grid),
-        "best": {k: best[k] for k in ("entry_i", "max_entry", "take")},
+        "best": {k: best[k] for k in ("entry_s", "max_entry", "take")},
         "train": {k: best[k] for k in ("n", "windows", "ev", "ci", "total")},
         "holdout": held,
     }
@@ -322,7 +336,7 @@ def main():
           f" (split {res['cut']})")
     b = res["best"]
     print(f"\n  BEST ON TRAIN of {res['tested']} combinations:")
-    print(f"    enter at +{(b['entry_i']+1)*30}s · only if under {b['max_entry']:.0f}c"
+    print(f"    enter at +{b['entry_s']:.0f}s · only if under {b['max_entry']:.0f}c"
           f" · sell at {b['take']:.1f}x")
     t = res["train"]
     print(f"    train   EV ${t['ev']:+.3f}/trade over {t['n']} trades")
