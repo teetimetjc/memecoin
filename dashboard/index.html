@@ -176,7 +176,7 @@ body[data-mode="sim"]  [data-view="live"]{display:none!important}
 <div class="wrap">
   <header>
     <p class="eyebrow" id="eyebrow">Kalshi · 15-minute crypto · $10 flat</p>
-    <h1>Every v6 signal, one bet at a time</h1>
+    <h1>The edge was a scoring bug</h1>
     <p class="sub" id="subline">Every fire of the CVD rule since it went live. Earlier rows are
       excluded: they chose the rule's threshold and direction, so they can't also grade it.</p>
   </header>
@@ -223,7 +223,7 @@ body[data-mode="sim"]  [data-view="live"]{display:none!important}
   <section class="panel" id="livePanel" data-view="live" hidden style="border-color:var(--accent)">
     <div class="phead">
       <h2>Live bets</h2>
-      <span class="note">actually placed on Kalshi · $5 flat on entries under 50&cent;</span>
+      <span class="note">actually placed on Kalshi · $5 flat · betting is now halted</span>
     </div>
     <div class="stats" id="liveStats" style="border:0;border-radius:0"></div>
     <div class="tablewrap"><table>
@@ -394,33 +394,34 @@ body[data-mode="sim"]  [data-view="live"]{display:none!important}
       and the rule keys off order flow, not a US schedule. Which means the hourly profit swings
       are <strong>sample size, not skill</strong>. Twenty-four hours is twenty-four chances to
       find a dramatic-looking one; don’t schedule around them.</p>
-    <p><strong>The grey band is the point, and it just got wider.</strong> These 853 bets are
-      really only <strong>298 independent windows</strong>: the rule reads the same market-wide
-      flow on five tapes that move together, so it often bets all five coins the same way and
-      they win or lose as one. Correcting for that, a rule with no edge could plausibly land
-      anywhere within <strong>±$1,431</strong> — not the ±$665 the raw bet count implies. The
-      blue line at +$521 sits well inside.</p>
-    <p><strong>Why a losing hit rate can still profit.</strong> On 14 Sep the rule hit 49.0% and
-      made +$191. Bets are not all the same size of swing: $10 at 33¢ buys 30 contracts and
-      returns about $20 if it lands, while $10 at 67¢ buys 15 and returns about $5. Across all
-      853 bets the average win pays <strong>+$10.86</strong> and the average loss costs
-      <strong>−$10.36</strong>, so the true breakeven is about <strong>48.8%</strong> — not the
-      49.6¢ average entry price. Comparing hit rate to the average price is the wrong test;
-      P&amp;L is the test.</p>
-    <p>That said, the EV interval is still −$1.06 to +$2.29 per bet. Losing money remains
-      inside the range.</p>
-    <p><strong>What splits the curve.</strong> The rule hits about 52% no matter what it pays, so
-      it earns wherever the market charges less than that and loses wherever it charges more.
-      Skipping entries at 60¢ or more lifts the total from <em>+$546</em> to <em>+$963</em>
-      while staking $1,880 less, and it improves <strong>every one of the five coins</strong> —
-      BTC flips from a loss to a gain. That consistency is the stronger argument: a real effect
-      should show up on every tape, and it does. At 65¢ you are paying for a 64% chance from a
-      rule that delivers about 51%. Nothing here is a recommendation to bet.</p>
-    <p><strong>One trap the coin buttons make easy.</strong> Whichever coin looks best will look
-      convincing. Pooling all 825 under-60¢ bets and dealing them at random into five fake
-      “coins”, the best of the five averages <strong>24% ROI</strong> by luck alone — and beats
-      the real leader in more than 40% of runs. Best-of-five is not evidence. Use the buttons to
-      check that the price effect holds everywhere, not to pick a coin.</p>
+    <p><strong>This page used to report a profit. It was wrong.</strong> Every panel decided
+      who won by asking whether the coin finished above or below where it sat when the signal
+      fired. Kalshi does not pay on that. It pays on whether the coin finished above or below a
+      <strong>fixed strike</strong>, set when the market opened. The two questions disagree on
+      about <strong>10%</strong> of bets, and correcting it turns a reported <em>+$849</em> into
+      a real <strong>loss</strong>.</p>
+    <p><strong>The error flattered cheap bets most, which is exactly where the "edge" was.</strong>
+      A contract is cheap <em>because</em> the strike is far away — the market charges 31¢ for
+      DOWN because falling that far is genuinely unlikely. Grading it against the sample price
+      turned that long shot back into a coin flip on paper. So the finding that under-40¢ entries
+      were the profitable slice was the bug at its loudest: scored properly they hit about
+      <strong>32%</strong>, not the 48% this page used to show, and they are the
+      <em>worst</em> bucket rather than the best.</p>
+    <p><strong>The market is priced about right, which is the real finding.</strong> Bucketed by
+      Kalshi's own quoted probability, outcomes track price closely — contracts at 30–40¢ win
+      about 34% of the time, at 60–70¢ about 60%, at 70–80¢ about 76%. A book that is that well
+      calibrated has nothing sitting on the table. The rule's measured edge against the price
+      paid is <strong>+0.77pp, 95% CI −4.15 to +5.68</strong> per bet, clustered by window:
+      indistinguishable from zero.</p>
+    <p><strong>The grey band still matters.</strong> These bets are far fewer independent events
+      than they look: the rule reads the same market-wide flow on five tapes that move together,
+      so it often bets all five coins the same way and they win or lose as one. The envelope
+      widens for that. The curve sits inside it — which was never evidence of an edge, only the
+      absence of a contradiction.</p>
+    <p><strong>What is still worth keeping.</strong> The collected data is fine — prices, order
+      flow, timestamps, the market's own quotes. Only the scoring was wrong, and it is fixed
+      here and in <code>grade_check.py</code>, which reproduces the whole correction from an
+      export. Live betting is halted. Nothing on this page is a recommendation to bet.</p>
   </section>
 </div>
 
@@ -1419,7 +1420,7 @@ body[data-mode="sim"]  [data-view="live"]{display:none!important}
         + `record the strategy was built on. All times Central.`;
       return;
     }
-    if(h1) h1.textContent="Every v6 signal, one bet at a time";
+    if(h1) h1.textContent="The edge was a scoring bug";
     const first=ctStamp(D.t[0]), last=ctStamp(D.t[ALL-1]);
     const built = D.built ? ` Data refreshed ${ctStamp(D.built.replace(" UTC",""))}.` : "";
     el.innerHTML = `<strong>${ALL.toLocaleString()}</strong> bets from <strong>${first}</strong> `
