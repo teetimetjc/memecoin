@@ -74,12 +74,27 @@ def build(rows):
         entry = num(r, "K Up%") if side == "UP" else num(r, "K Down%")
         if not entry or entry <= 0:
             continue
+        # WHO WON, decided the way Kalshi settles it.
+        #
+        # "CVD Correct?" answers a different question: did spot finish above
+        # or below where it sat when the signal fired. Kalshi pays on whether
+        # the coin finished above or below a FIXED STRIKE ("K Target"), set
+        # when the market opened. The two disagree on about 10% of rows, and
+        # not neutrally -- a contract is cheap BECAUSE the strike is far away,
+        # so grading against the sample price turns a long shot back into a
+        # coin flip and manufactures an edge exactly where the bets are
+        # cheapest. Scoring this page off that column reported +$849 on a
+        # strategy that actually loses. See grade_check.py.
+        target, evalpx = num(r, "K Target"), num(r, "Price at Eval")
+        if not target or not evalpx:
+            continue
+        won = (evalpx > target) if side == "UP" else (evalpx < target)
         mask = 0
         for bit, ch in enumerate(live):
             if cell(r, f"{ch['name']} Call") in ("UP", "DOWN"):
                 mask |= (1 << bit)
         sig.append((ts, cell(r, "Symbol").replace("USDT", ""), side, entry,
-                    cell(r, "CVD Correct?") == "Yes", mask))
+                    won, mask))
 
     if not sig:
         raise SystemExit("FAILED: no graded champion signals found.")
@@ -241,6 +256,36 @@ def build_dry(rows):
 
 # Free-text notes bucketed into the few causes that need different fixes. The
 # raw note stays in the sheet; this is only what the dashboard needs to show.
+def _above_map(pred_rows):
+    """(timestamp, symbol) -> did the coin finish ABOVE Kalshi's strike.
+
+    This is the market's own YES/NO, so a bet's OWN side turns it into a win
+    or a loss: UP holds YES and wins above the strike, DOWN holds NO and wins
+    below it. Every builder here used to read "CVD Correct?" instead, which
+    answers whether spot finished above or below where it sat when the signal
+    fired -- a different question that disagrees on about 10% of rows and
+    flatters cheap bets specifically. See grade_check.py.
+    """
+    pi = {h: i for i, h in enumerate(P.ALL_HEADERS)}
+
+    def n(r, k):
+        i = pi.get(k, -1)
+        if not (0 <= i < len(r)):
+            return None
+        try:
+            return float(r[i])
+        except (TypeError, ValueError):
+            return None
+
+    out = {}
+    for r in pred_rows[1:]:
+        target, evalpx = n(r, "K Target"), n(r, "Price at Eval")
+        if not target or not evalpx:
+            continue
+        out[(r[pi["Timestamp"]], r[pi["Symbol"]])] = evalpx > target
+    return out
+
+
 def _why(note):
     n = (note or "").strip().lower()
     if not n:
@@ -313,11 +358,17 @@ def build_live(live_rows, pred_rows):
         i = pi.get(k, -1)
         return r[i] if 0 <= i < len(r) else ""
 
-    outcome = {}
-    for r in pred_rows[1:]:
-        res = pc(r, "CVD Correct?")
-        if res in ("Yes", "No"):
-            outcome[(pc(r, "Timestamp"), pc(r, "Symbol"))] = (res == "Yes")
+    # Same correction as the simulated side: a live bet won if the coin
+    # finished the window on the right side of KALSHI'S STRIKE, not on the
+    # right side of where spot sat when the signal fired. Joining to
+    # "CVD Correct?" reported +$75.90 on an account that was down $3.
+    def _n(r, k):
+        try:
+            return float(pc(r, k))
+        except (TypeError, ValueError):
+            return None
+
+    above = _above_map(pred_rows)
 
     placed = skipped = failed = 0
     settled = wins = 0
@@ -362,7 +413,8 @@ def build_live(live_rows, pred_rows):
         row = {"t": ts, "s": c, "d": lc(r, "Side"), "n": n,
                "cost": round(cost, 2), "e": round(limit_c, 1)}
 
-        won = outcome.get((ts, sym))
+        up = above.get((ts, sym))
+        won = None if up is None else (up if lc(r, "Side") == "UP" else not up)
         if won is None:
             open_stake += cost          # still running; no result yet
             row["open"] = 1
@@ -418,12 +470,7 @@ def build_decay(decay_rows, pred_rows):
         i = di.get(k, -1)
         return r[i] if 0 <= i < len(r) else ""
 
-    pi = {h: i for i, h in enumerate(P.ALL_HEADERS)}
-    outcome = {}
-    for r in pred_rows[1:]:
-        res = r[pi["CVD Correct?"]] if pi.get("CVD Correct?", -1) < len(r) else ""
-        if res in ("Yes", "No"):
-            outcome[(r[pi["Timestamp"]], r[pi["Symbol"]])] = (res == "Yes")
+    above = _above_map(pred_rows)
 
     logged = quoted = 0
     drifts = []
@@ -451,7 +498,8 @@ def build_decay(decay_rows, pred_rows):
             if late < 50.0:
                 still_eligible += 1
 
-        won = outcome.get((ts, sym))
+        up = above.get((ts, sym))
+        won = None if up is None else (up if dc(r, "Side") == "UP" else not up)
         if won is None:
             continue                      # window not graded yet
         n_pairs += 1
@@ -514,12 +562,7 @@ def build_cashout(mid_rows, pred_rows):
         i = mi.get(k, -1)
         return r[i] if 0 <= i < len(r) else ""
 
-    pi = {h: i for i, h in enumerate(P.ALL_HEADERS)}
-    outcome = {}
-    for r in pred_rows[1:]:
-        res = r[pi["CVD Correct?"]] if pi.get("CVD Correct?", -1) < len(r) else ""
-        if res in ("Yes", "No"):
-            outcome[(r[pi["Timestamp"]], r[pi["Symbol"]])] = (res == "Yes")
+    above = _above_map(pred_rows)
 
     logged = 0
     n = {"hold": 0, "m5": 0, "m10": 0}
@@ -537,7 +580,8 @@ def build_cashout(mid_rows, pred_rows):
             continue
         if not (0 < entry < 100):
             continue
-        won = outcome.get((ts, sym))
+        up = above.get((ts, sym))
+        won = None if up is None else (up if mc(r, "Side") == "UP" else not up)
         if won is None:
             continue                       # not graded yet
 
