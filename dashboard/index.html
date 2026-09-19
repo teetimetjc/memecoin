@@ -642,11 +642,12 @@ body[data-mode="sim"]  [data-view="live"]{display:none!important}
     if(isAll()){
       tiles.push(
         ["Paid under 40¢", fmt0(band(0,40)[0]),
-          `${band(0,40)[1]} bets · the only slice proven to win`, band(0,40)[0]>=0?"pos":"neg"],
+          `${band(0,40)[1]} bets · long shots — the market is usually right`,
+          band(0,40)[0]>=0?"pos":"neg"],
         ["Paid 40–60¢", fmt0(band(40,60)[0]),
-          `${band(40,60)[1]} bets · roughly a coin flip`, band(40,60)[0]>=0?"pos":"neg"],
+          `${band(40,60)[1]} bets · near coin flips`, band(40,60)[0]>=0?"pos":"neg"],
         ["Paid 60¢ or more", fmt0(band(60,999)[0]),
-          `${band(60,999)[1]} bets · proven to lose — must hit 64%, hits 51%`,
+          `${band(60,999)[1]} bets · favourites — they win about as often as priced`,
           band(60,999)[0]>=0?"pos":"neg"]);
     } else {
       // Count only what the PRICE filter dropped, within the selected coin.
