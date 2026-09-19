@@ -313,9 +313,8 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
         return selftest()
     import predictor as P
-    client = P._get_client()
-    sh = client.open_by_key(P.SPREADSHEET_ID)
-    rows = sh.worksheet(P.SHEET_NAME).get_all_values()
+    # Same accessor the dashboard uses, so both read the tab the same way.
+    rows = P.open_pred_sheet(P._get_client()).get_all_values()
     res = run(rows, P.ALL_HEADERS)
     print("=" * 66)
     print("v7 -- can anything beat Kalshi's own price on the STRIKE question?")
