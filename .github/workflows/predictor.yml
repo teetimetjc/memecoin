@@ -45,7 +45,11 @@ jobs:
           # priced -- so the bot names the bets and a human places them in the
           # Kalshi app. Fires ~35 seconds into the window, which is the entry
           # the whole history is priced at.
-          BET_ALERTS: "1"
+          # OFF alongside live betting. An alert that names a bet is a
+          # prompt to place one by hand, and there is no longer a reason to
+          # place one: the edge it was naming does not survive being scored
+          # the way Kalshi settles. Silent collection continues.
+          BET_ALERTS: "0"
           ALERT_STAKE: "5"
           ALERT_TZ: "America/Chicago"
           # Waking hours only. Overnight windows are still collected and
