@@ -108,7 +108,22 @@ tbody td:first-child{font-family:"Source Sans 3",sans-serif}
 .prose p{margin:0}
 .prose b{color:var(--ink); font-weight:600}
 hr{border:0; border-top:1px solid var(--rule); margin:0}
+/* ---- filters --------------------------------------------------------- */
+.filters{display:flex; flex-direction:column; gap:9px}
+.frow{display:flex; flex-wrap:wrap; align-items:center; gap:7px}
+.frow .lbl{font-family:"JetBrains Mono",monospace; font-size:.63rem;
+  letter-spacing:.13em; text-transform:uppercase; color:var(--muted);
+  min-width:74px}
+.chip{font-family:"JetBrains Mono",monospace; font-size:.75rem;
+  color:var(--muted); background:var(--panel); border:1px solid var(--rule);
+  border-radius:2px; padding:6px 12px; cursor:pointer; line-height:1}
+.chip[aria-pressed="true"]{background:var(--signal); border-color:var(--signal);
+  color:var(--panel); font-weight:700}
+.chip:focus-visible{outline:2px solid var(--signal); outline-offset:2px}
+.chip .c{opacity:.6; margin-left:5px}
+.empty{padding:26px 20px; color:var(--muted); font-size:.92rem}
 @media (max-width:620px){
+  .frow .lbl{min-width:100%}
   body{padding-inline:16px}
   .rail div{flex:1 1 50%; border-bottom:1px solid var(--rule)}
 }
@@ -129,6 +144,17 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     <p id="verdictText"></p>
   </div>
 
+  <div class="filters" id="filters">
+    <div class="frow"><span class="lbl">Coin</span>
+      <div id="coinChips" style="display:flex;flex-wrap:wrap;gap:7px"></div></div>
+    <div class="frow"><span class="lbl">Paid</span>
+      <div id="bandChips" style="display:flex;flex-wrap:wrap;gap:7px"></div></div>
+    <div class="frow"><span class="lbl">Sell at</span>
+      <div id="takeChips" style="display:flex;flex-wrap:wrap;gap:7px"></div></div>
+  </div>
+
+  <section class="rail" id="sel"></section>
+
   <section class="panel">
     <div class="phead">
       <h2>Every cheap side, from the moment it got cheap</h2>
@@ -145,15 +171,27 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
 
   <section class="panel">
     <div class="phead">
-      <h2>How often it bounces</h2>
-      <span class="note" id="setupNote"></span>
+      <h2>By price paid</h2>
+      <span class="note" id="bandNote"></span>
     </div>
     <div class="tablewrap"><table>
-      <thead><tr><th>Entry under</th><th>Setups</th><th>Touched 1.5×</th>
-        <th>Touched 2×</th><th>Touched 3×</th></tr></thead>
-      <tbody id="setupBody"></tbody>
+      <thead><tr><th>Paid</th><th>Setups</th><th>Reached target</th>
+        <th>Settled wins</th><th>EV / trade</th></tr></thead>
+      <tbody id="bandBody"></tbody>
     </table></div>
-    <div class="legend" id="setupFoot"></div>
+    <div class="legend" id="bandFoot"></div>
+  </section>
+
+  <section class="panel">
+    <div class="phead">
+      <h2>By coin</h2>
+      <span class="note">same rule on each tape &middot; tap a row to isolate it</span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Coin</th><th>Setups</th><th>Reached target</th>
+        <th>Settled wins</th><th>EV / trade</th></tr></thead>
+      <tbody id="coinBody"></tbody>
+    </table></div>
   </section>
 
   <section class="panel">
@@ -258,93 +296,189 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
         + `has been shown either way.` : "");
   }
 
+  // ---- one trade, priced the way it would really fill ------------------
+  // Kept in the page rather than baked into the payload, because the reader
+  // is choosing the take-profit: the same trade pays differently at 1.5x and
+  // at 3x, so the arithmetic has to follow the filter. Mirrors hedge.py
+  // exactly -- entry pays the ask, exit sells into the bid, fee charged both
+  // times, and a target that never arrives is held to settlement.
+  const STAKE = 10;
+  const fee = (n,p) => Math.ceil(0.07*n*p*(1-p)*100)/100;
+  function priceTrade(tr, take){
+    const e = tr.e/100, n = STAKE/e, cost = STAKE + fee(n,e);
+    const target = tr.e*take;
+    if(target < 100){
+      for(let k=1;k<tr.p.length;k++){
+        const v = tr.p[k];
+        if(v == null) continue;
+        if(v >= target){
+          const x = v/100;
+          return {net: n*x - cost - fee(n,x), hit:true};
+        }
+      }
+    }
+    if(tr.w == null) return null;          // open: no result to book
+    return {net: (tr.w ? n : 0) - cost, hit:false};
+  }
+
+  // ---- filter state ----------------------------------------------------
+  const ALL = D.trades || [];
+  const COINS = [...new Set(ALL.map(t=>t.s))].sort();
+  const BANDS = D.bands || [[0,20],[20,30],[30,40],[40,45]];
+  const TAKES = D.take || [1.5,2.0,3.0];
+  let coin = "ALL", band = "ALL", take = 2.0;
+  const inBand = (t,b) => t.e >= b[0] && t.e < b[1];
+  const bandLab = b => b[0] === 0 ? `under ${b[1]}\u00A2` : `${b[0]}\u2013${b[1]}\u00A2`;
+  function view(){
+    return ALL.filter(t =>
+      (coin === "ALL" || t.s === coin) &&
+      (band === "ALL" || inBand(t, BANDS[band])));
+  }
+
+  function stats(rows){
+    let hit=0, settled=0, wins=0, net=0, priced=0;
+    for(const t of rows){
+      const r = priceTrade(t, take);
+      if(!r) continue;
+      priced++; net += r.net;
+      if(r.hit) hit++;
+      if(t.w != null){ settled++; if(t.w) wins++; }
+    }
+    return {n: rows.length, priced, hit, settled, wins,
+            net, ev: priced ? net/priced : null};
+  }
+
+  // ---- chips -----------------------------------------------------------
+  function chips(el, opts, isOn, onPick){
+    el.innerHTML = opts.map(o =>
+      `<button class="chip" data-v="${o.v}" aria-pressed="${String(isOn(o.v))}">`
+      + `${o.label}${o.count!=null?`<span class="c">${o.count}</span>`:""}</button>`).join("");
+    [...el.querySelectorAll("button")].forEach(btn=>{
+      btn.addEventListener("click",()=>{ onPick(btn.getAttribute("data-v")); render(); });
+    });
+  }
+  function drawChips(){
+    chips(document.getElementById("coinChips"),
+      [{v:"ALL",label:"All",count:ALL.length}].concat(COINS.map(c=>
+        ({v:c,label:c,count:ALL.filter(t=>t.s===c).length}))),
+      v=>coin===v, v=>{coin=v;});
+    chips(document.getElementById("bandChips"),
+      [{v:"ALL",label:"Any price",count:ALL.length}].concat(BANDS.map((b,i)=>
+        ({v:String(i),label:bandLab(b),count:ALL.filter(t=>inBand(t,b)).length}))),
+      v=>String(band)===v, v=>{band = v==="ALL"?"ALL":+v;});
+    chips(document.getElementById("takeChips"),
+      TAKES.map(t=>({v:String(t),label:`${t}\u00D7`})),
+      v=>Math.abs(take-parseFloat(v))<1e-9, v=>{take=parseFloat(v);});
+  }
+
   // ---- the paths -------------------------------------------------------
   // Each line is one market's CHEAP side, indexed to what it cost, so the
-  // 2x line is a single horizontal rule rather than 40 different levels.
-  (function(){
+  // take-profit is a single horizontal rule rather than 40 different levels.
+  function drawPaths(rows){
     const svg = document.getElementById("paths");
-    const P = (D.paths||[]).filter(p => p.entry > 0 && p.p && p.p.length > 2);
     const note = document.getElementById("chartNote");
-    if(!P.length){ note.textContent = "no qualifying setups yet"; return; }
-
-    const W=1000, H2=420, m={t:18,r:54,b:40,l:52};
+    const P = rows.filter(p => p.e > 0 && p.p && p.p.length > 2);
+    if(!P.length){
+      svg.innerHTML = "";
+      note.textContent = "no setups match this filter";
+      return;
+    }
+    const W=1000, H2=420, m={t:18,r:56,b:40,l:52};
     const iw=W-m.l-m.r, ih=H2-m.t-m.b;
     const maxK = Math.max(...P.map(p=>p.p.length));
-    const step = P[0].step || 30;
-    // Multiple of entry, clipped: a line that runs to 5x squashes the rest.
-    const TOP = 4;
+    const step = D.step || 30;
+    const TOP = Math.max(take + 1, 3);
     const X = k => m.l + (maxK<2?0:(k/(maxK-1))*iw);
-    const Y = v => m.t + (TOP-v)/(TOP-0)*ih;
+    const Y = v => m.t + (TOP-v)/TOP*ih;
 
     let s = "";
-    for(const mult of [1,2,3,4]){
+    for(let mult=1; mult<=TOP; mult++){
       s += `<line x1="${m.l}" y1="${Y(mult).toFixed(1)}" x2="${W-m.r}" y2="${Y(mult).toFixed(1)}"
              stroke="var(--grid)" stroke-width="1"/>`;
       s += `<text class="axis" x="${m.l-10}" y="${(Y(mult)+4).toFixed(1)}"
-             text-anchor="end">${mult}×</text>`;
+             text-anchor="end">${mult}\u00D7</text>`;
     }
-    // The take-profit line the whole idea turns on.
-    s += `<line x1="${m.l}" y1="${Y(2).toFixed(1)}" x2="${W-m.r}" y2="${Y(2).toFixed(1)}"
+    s += `<line x1="${m.l}" y1="${Y(take).toFixed(1)}" x2="${W-m.r}" y2="${Y(take).toFixed(1)}"
            stroke="var(--signal)" stroke-width="1.5" stroke-dasharray="5 4"/>`;
-    s += `<text class="axis" x="${W-m.r+8}" y="${(Y(2)+4).toFixed(1)}"
+    s += `<text class="axis" x="${W-m.r+8}" y="${(Y(take)+4).toFixed(1)}"
            fill="var(--signal)" font-weight="700">sell</text>`;
 
     let touched = 0;
     for(const p of P){
-      const pts = [];
-      let hit = false;
+      const pts = []; let hit = false;
       for(let k=0;k<p.p.length;k++){
         const v = p.p[k];
         if(v == null) continue;
-        const mult = Math.min(v / p.entry, TOP);
-        if(v / p.entry >= 2) hit = true;
-        pts.push(`${X(k).toFixed(1)},${Y(mult).toFixed(1)}`);
+        if(k > 0 && v/p.e >= take) hit = true;
+        pts.push(`${X(k).toFixed(1)},${Y(Math.min(v/p.e, TOP)).toFixed(1)}`);
       }
       if(pts.length < 2) continue;
       if(hit) touched++;
       s += `<polyline points="${pts.join(" ")}" fill="none"
              stroke="${hit?"var(--up)":"var(--track)"}"
              stroke-width="${hit?1.6:1.2}" stroke-linejoin="round"
-             opacity="${hit?0.85:0.42}"/>`;
+             opacity="${hit?0.85:0.4}"/>`;
     }
-    // x axis in minutes from the entry read
     for(let k=0;k<maxK;k+=4){
-      const mins = (D.entry_s + k*step)/60;
       s += `<text class="axis" x="${X(k).toFixed(1)}" y="${H2-14}"
-             text-anchor="middle">${mins.toFixed(0)}m</text>`;
+             text-anchor="middle">${((D.entry_s + k*step)/60).toFixed(0)}m</text>`;
     }
-    s += `<text class="axis" x="${m.l}" y="${H2-2}" text-anchor="start"
-           fill="var(--muted)">minutes into the 15-minute window</text>`;
+    s += `<text class="axis" x="${m.l}" y="${H2-2}" text-anchor="start">minutes into the window</text>`;
     svg.innerHTML = s;
-    note.textContent = `${P.length} markets · ${touched} reached 2×`;
-  })();
+    note.textContent = `${P.length} setups \u00B7 ${touched} reached ${take}\u00D7`;
+  }
 
-  // ---- bounce table ----------------------------------------------------
-  (function(){
-    const S = D.setup || {};
-    const keys = Object.keys(S).sort((a,b)=>+a-+b);
-    const body = document.getElementById("setupBody");
-    const maxN = Math.max(...keys.map(k=>S[k].n), 1);
-    body.innerHTML = keys.map(k=>{
-      const v = S[k];
-      const cell = t => {
-        const hit = (v.touch||{})[t] || 0;
-        return `<td>${v.n ? pct(hit,v.n).toFixed(0)+"%" : "—"}`
-             + `<span style="color:var(--muted)"> ${hit}/${v.n}</span></td>`;
-      };
-      const w = Math.round(v.n/maxN*60);
-      return `<tr><td>${k}¢</td>`
-        + `<td><span class="bar" style="width:${w}px"></span>${v.n}</td>`
-        + cell("1.5") + cell("2.0") + cell("3.0") + `</tr>`;
-    }).join("") || `<tr><td colspan="5">No setups recorded yet.</td></tr>`;
+  // ---- tables ----------------------------------------------------------
+  const money = v => (v>=0?"+":"\u2212") + "$" + Math.abs(v).toFixed(2);
+  function row(label, rows, sel){
+    const st = stats(rows);
+    if(!st.n) return `<tr><td>${label}</td><td>0</td><td>\u2014</td><td>\u2014</td><td>\u2014</td></tr>`;
+    const evTxt = st.ev == null ? "\u2014"
+      : `<span style="color:var(--${st.ev>=0?"up":"down"})">${money(st.ev)}</span>`;
+    return `<tr${sel?' style="background:var(--signal-soft)"':''}>`
+      + `<td>${label}</td><td>${st.n}</td>`
+      + `<td>${pct(st.hit,st.n).toFixed(0)}%<span style="color:var(--muted)"> ${st.hit}/${st.n}</span></td>`
+      + `<td>${st.settled ? pct(st.wins,st.settled).toFixed(0)+"%" : "\u2014"}`
+      + `<span style="color:var(--muted)"> ${st.wins}/${st.settled}</span></td>`
+      + `<td>${evTxt}</td></tr>`;
+  }
+  function drawTables(rows){
+    const byBand = BANDS.map((b,i)=>
+      row(bandLab(b), ALL.filter(t=>inBand(t,b) && (coin==="ALL"||t.s===coin)),
+          band!=="ALL" && +band===i)).join("");
+    document.getElementById("bandBody").innerHTML = byBand;
+    document.getElementById("bandNote").textContent =
+      `${coin==="ALL"?"all five coins":coin} \u00B7 selling at ${take}\u00D7`;
+    document.getElementById("bandFoot").innerHTML =
+      `<span><b>Reached target</b> is how often the cheap side touched `
+      + `${take}\u00D7 what it cost. <b>Settled wins</b> is how the ones that `
+      + `never touched it ended up \u2014 the half that decides whether the `
+      + `first column is worth anything.</span>`;
 
-    document.getElementById("setupNote").textContent =
-      `read at +${(D.entry_s/60).toFixed(0)} minutes · only one side cheap`;
-    document.getElementById("setupFoot").innerHTML =
-      `<span>A setup is a market where exactly one side is priced under the `
-      + `threshold — if both are, the book is simply wide and there is no `
-      + `opportunity in it.</span>`;
-  })();
+    document.getElementById("coinBody").innerHTML = COINS.map(c=>
+      row(c, ALL.filter(t=>t.s===c && (band==="ALL"||inBand(t,BANDS[band]))),
+          coin===c)).join("");
+    [...document.getElementById("coinBody").querySelectorAll("tr")].forEach((tr,i)=>{
+      tr.style.cursor = "pointer";
+      tr.addEventListener("click",()=>{ coin = (coin===COINS[i])?"ALL":COINS[i]; render(); });
+    });
+  }
+
+  function drawSel(rows){
+    const st = stats(rows);
+    const el = document.getElementById("sel");
+    el.innerHTML =
+      tile("Showing", `${st.n}`)
+    + tile(`Reached ${take}\u00D7`, st.n ? `${pct(st.hit,st.n).toFixed(0)}%` : "\u2014")
+    + tile("EV / trade", st.ev==null ? "\u2014" : money(st.ev))
+    + tile("Total", st.priced ? money(st.net) : "\u2014");
+  }
+
+  function render(){
+    drawChips();
+    const rows = view();
+    drawSel(rows); drawPaths(rows); drawTables(rows);
+  }
 
   // ---- what it paid ----------------------------------------------------
   (function(){
@@ -380,5 +514,7 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
             for six weeks.</p>
        </div>`;
   })();
+
+  render();
 })();
 </script>

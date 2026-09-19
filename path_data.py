@@ -31,10 +31,10 @@ import hedge
 
 OUT_DEFAULT = "dashboard/path_data.js"
 
-# Thresholds shown on the page. Kept small and fixed: this panel is
-# descriptive, and a wide sweep here would be the first step toward picking
-# the flattering cell and calling it a finding.
-CHEAP = (20.0, 30.0, 40.0)
+# Entry price BANDS, not thresholds. "Under 30c" contains every 20c setup,
+# so comparing the two compares a set with a subset of itself -- which is
+# exactly the comparison the page is asked to make.
+BANDS = ((0, 20), (20, 30), (30, 40), (40, 45))
 TAKE = (1.5, 2.0, 3.0)
 ENTRY_S = 120.0                     # two minutes in
 
@@ -77,68 +77,58 @@ def build(path_rows, pred_rows, headers):
     if not series:
         return {"error": "Path tab has no usable rows yet"}
 
-    # THE SETUP, and whether it bounces. Both computed from prices only, so
-    # they are available before a single window has settled.
-    setup = {}
-    for cheap in CHEAP:
-        hits = {t: 0 for t in TAKE}
-        n = 0
-        for s in series:
-            off = (ENTRY_S - s["first"]) / s["step"]
-            if off < 0 or abs(off - round(off)) > 0.01:
-                continue
-            i = int(round(off))
-            if i >= len(s["asks"]):
-                continue
-            ya, yb = s["asks"][i], s["bids"][i]
-            if ya is None or yb is None:
-                continue
-            no_ask = 100.0 - yb
-            cheap_yes, cheap_no = ya <= cheap, no_ask <= cheap
-            if cheap_yes == cheap_no:
-                continue                 # neither side cheap, or the book is wide
-            n += 1
-            entry = ya if cheap_yes else no_ask
-            # Highest price this side was ever bid at, after entry.
-            peak = 0.0
-            for k in range(i + 1, len(s["bids"])):
-                b, a = s["bids"][k], s["asks"][k]
-                if b is None or a is None:
-                    continue
-                peak = max(peak, b if cheap_yes else (100.0 - a))
-            for t in TAKE:
-                if entry > 0 and peak >= entry * t:
-                    hits[t] += 1
-        setup[str(int(cheap))] = {
-            "n": n,
-            "touch": {str(t): hits[t] for t in TAKE},
-        }
+    # Did each coin finish above its strike? The market's own YES/NO, so a
+    # trade on either side resolves from it.
+    ph = {h: i for i, h in enumerate(headers) if h}
+    above = {}
+    for r in pred_rows[1:]:
+        tgt = _f(r[ph["K Target"]]) if ph.get("K Target", -1) < len(r) else None
+        ev = _f(r[ph["Price at Eval"]]) if ph.get("Price at Eval", -1) < len(r) else None
+        if tgt and ev:
+            ts = str(r[ph["Timestamp"]]).replace(" UTC", "").strip()
+            above[(ts, r[ph["Symbol"]])] = ev > tgt
 
-    # A sample of paths for the chart, as the CHEAP side's own price so every
-    # line starts low and the question "did it come back" is the shape.
-    shown = []
-    for s in series[-60:]:
-        off = (ENTRY_S - s["first"]) / s["step"]
+    # ONE ROW PER TRADEABLE SETUP, and the filtering happens in the page.
+    #
+    # The page needs to slice by coin and by entry price, and cumulative
+    # buckets cannot answer the question that prompted it: "under 30c"
+    # contains every 20c bet, so comparing the two compares a set with a
+    # subset of itself. Bands are what the reader means, and bands are only
+    # honest if the underlying trades travel with the payload rather than
+    # being pre-aggregated into whatever cuts were guessed here.
+    #
+    # So each setup ships with its entry price, the cheap side's own price
+    # series from the entry onward, and -- once its window has settled -- the
+    # outcome, which is what a take-profit that never triggers falls back on.
+    trades = []
+    for s_ in series:
+        off = (ENTRY_S - s_["first"]) / s_["step"]
         if off < 0 or abs(off - round(off)) > 0.01:
             continue
         i = int(round(off))
-        if i >= len(s["asks"]):
+        if i >= len(s_["asks"]):
             continue
-        ya, yb = s["asks"][i], s["bids"][i]
+        ya, yb = s_["asks"][i], s_["bids"][i]
         if ya is None or yb is None:
             continue
         no_ask = 100.0 - yb
-        cheap_yes = ya <= no_ask
+        cheap_yes, cheap_no = ya <= 45.0, no_ask <= 45.0
+        if cheap_yes == cheap_no:
+            continue                    # neither cheap, or the book is wide
         entry = ya if cheap_yes else no_ask
-        if entry > 45.0:
-            continue                      # not the setup; keep the chart legible
+        if entry <= 0:
+            continue
         pts = []
-        for k in range(i, len(s["bids"])):
-            b, a = s["bids"][k], s["asks"][k]
+        for k in range(i, len(s_["bids"])):
+            b, a = s_["bids"][k], s_["asks"][k]
             pts.append(None if (b is None or a is None)
                        else round(b if cheap_yes else (100.0 - a), 1))
-        shown.append({"sym": s["sym"], "ts": s["ts"], "entry": round(entry, 1),
-                      "t0": ENTRY_S, "step": s["step"], "p": pts})
+        trades.append({
+            "s": s_["sym"], "t": s_["ts"], "e": round(entry, 1),
+            "y": 1 if cheap_yes else 0,
+            "w": above.get((s_["ts"], s_["sym"] + "USDT")),
+            "p": pts,
+        })
 
     out = {
         "built": None,
@@ -146,10 +136,9 @@ def build(path_rows, pred_rows, headers):
         "rows": coverage,
         "full_start": full,
         "entry_s": ENTRY_S,
-        "cheap": [int(c) for c in CHEAP],
+        "bands": [list(b) for b in BANDS],
         "take": list(TAKE),
-        "setup": setup,
-        "paths": shown[-40:],
+        "trades": trades,
     }
     # The money question, with its holdout discipline intact.
     out["hedge"] = hedge.run(path_rows, pred_rows, headers)
