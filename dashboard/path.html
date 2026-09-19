@@ -1,0 +1,384 @@
+<title>The Bounce Test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Source+Sans+3:wght@400;600&display=swap">
+<style>
+:root{
+  --ground:#F2F4F3; --panel:#FFFFFF; --ink:#141A19; --muted:#5C6866;
+  --rule:#DCE2E0; --grid:#E9EDEC;
+  --signal:#B8621B; --signal-soft:#B8621B18;
+  --up:#1F6F52; --down:#9E3B36;
+  --track:#8FA09C; --track-soft:#8FA09C26;
+  --shadow:0 1px 1px #141a1908, 0 6px 20px #141a190a;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0F1413; --panel:#161D1C; --ink:#E6EDEA; --muted:#8FA09C;
+    --rule:#26302E; --grid:#1D2625;
+    --signal:#E8934A; --signal-soft:#E8934A22;
+    --up:#4FB68B; --down:#D97A72;
+    --track:#6D7E7A; --track-soft:#6D7E7A2E;
+    --shadow:0 1px 1px #00000050, 0 6px 20px #00000038;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0F1413; --panel:#161D1C; --ink:#E6EDEA; --muted:#8FA09C;
+  --rule:#26302E; --grid:#1D2625;
+  --signal:#E8934A; --signal-soft:#E8934A22;
+  --up:#4FB68B; --down:#D97A72;
+  --track:#6D7E7A; --track-soft:#6D7E7A2E;
+  --shadow:0 1px 1px #00000050, 0 6px 20px #00000038;
+}
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:"Source Sans 3",system-ui,-apple-system,sans-serif;
+  font-size:15px; line-height:1.6;
+  padding-inline:20px; padding-block:36px 72px;
+}
+.wrap{max-width:1000px; margin-inline:auto; display:flex; flex-direction:column; gap:30px}
+.mono{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,monospace}
+
+h1{
+  font-family:Archivo,system-ui,sans-serif; font-weight:700;
+  font-size:clamp(1.9rem,5vw,2.7rem); line-height:1.08; letter-spacing:-.022em;
+  margin:0 0 14px; text-wrap:balance;
+}
+h2{font-family:Archivo,system-ui,sans-serif; font-weight:600; font-size:1.05rem;
+  margin:0; letter-spacing:-.008em}
+.eyebrow{
+  font-family:"JetBrains Mono",monospace; font-size:.68rem; font-weight:500;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--signal);
+  margin:0 0 12px;
+}
+.lede{margin:0; max-width:64ch; color:var(--muted); font-size:1.02rem}
+.lede b{color:var(--ink); font-weight:600}
+
+/* ---- status rail: the state of collection, not a stat brag ---------- */
+.rail{display:flex; flex-wrap:wrap; gap:0; border:1px solid var(--rule);
+  border-radius:3px; background:var(--panel); overflow:hidden}
+.rail div{flex:1 1 130px; padding:13px 16px; border-right:1px solid var(--rule)}
+.rail div:last-child{border-right:0}
+.rail .k{font-family:"JetBrains Mono",monospace; font-size:.63rem; letter-spacing:.13em;
+  text-transform:uppercase; color:var(--muted); display:block}
+.rail .v{font-family:"JetBrains Mono",monospace; font-size:1.25rem; font-weight:700;
+  font-variant-numeric:tabular-nums; letter-spacing:-.02em; display:block; margin-top:3px}
+
+/* ---- panels --------------------------------------------------------- */
+.panel{background:var(--panel); border:1px solid var(--rule); border-radius:3px;
+  box-shadow:var(--shadow)}
+.phead{display:flex; flex-wrap:wrap; align-items:baseline; gap:8px 16px;
+  padding:16px 20px 13px; border-bottom:1px solid var(--rule)}
+.phead .note{font-size:.85rem; color:var(--muted); margin-right:auto}
+.pbody{padding:18px 20px}
+figure{margin:0; padding:10px 8px 0}
+svg{display:block; width:100%; height:auto; overflow:visible}
+.axis{font-family:"JetBrains Mono",monospace; font-size:11px; fill:var(--muted)}
+
+/* ---- verdict: a stripe, because state should read as form ----------- */
+.verdict{display:flex; gap:16px; align-items:flex-start;
+  border-left:4px solid var(--signal); background:var(--signal-soft);
+  padding:16px 18px; border-radius:2px}
+.verdict .tag{font-family:"JetBrains Mono",monospace; font-weight:700;
+  font-size:.74rem; letter-spacing:.12em; color:var(--signal); white-space:nowrap;
+  padding-top:2px}
+.verdict p{margin:0; font-size:.94rem}
+
+table{border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums}
+th,td{padding:9px 14px; text-align:right; white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{font-family:"JetBrains Mono",monospace; font-size:.63rem; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--muted); font-weight:500;
+  border-bottom:1px solid var(--rule)}
+tbody td{font-family:"JetBrains Mono",monospace; font-size:.86rem;
+  border-bottom:1px solid var(--grid)}
+tbody tr:last-child td{border-bottom:none}
+tbody td:first-child{font-family:"Source Sans 3",sans-serif}
+.tablewrap{overflow-x:auto}
+.bar{display:inline-block; height:7px; border-radius:1px; background:var(--signal);
+  vertical-align:middle; margin-right:8px; min-width:2px}
+
+.legend{display:flex; flex-wrap:wrap; gap:7px 20px; padding:11px 20px 15px;
+  border-top:1px solid var(--rule); font-size:.8rem; color:var(--muted)}
+.legend span{display:inline-flex; align-items:center; gap:7px}
+.swatch{width:15px; height:3px; border-radius:2px; flex:none}
+
+.prose{font-size:.93rem; color:var(--muted); max-width:66ch;
+  display:flex; flex-direction:column; gap:11px}
+.prose p{margin:0}
+.prose b{color:var(--ink); font-weight:600}
+hr{border:0; border-top:1px solid var(--rule); margin:0}
+@media (max-width:620px){
+  body{padding-inline:16px}
+  .rail div{flex:1 1 50%; border-bottom:1px solid var(--rule)}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Kalshi · 15-minute crypto · 30-second sampling</p>
+    <h1>Does the cheap side come back?</h1>
+    <p class="lede" id="lede">Loading the collected paths…</p>
+  </header>
+
+  <section class="rail" id="rail"></section>
+
+  <div class="verdict" id="verdict">
+    <span class="tag" id="verdictTag">—</span>
+    <p id="verdictText"></p>
+  </div>
+
+  <section class="panel">
+    <div class="phead">
+      <h2>Every cheap side, from the moment it got cheap</h2>
+      <span class="note" id="chartNote"></span>
+    </div>
+    <figure><svg id="paths" viewBox="0 0 1000 420" role="img"
+      aria-label="Price of the cheap side of each market through the rest of its window"></svg></figure>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--track)"></i>one market's cheap side</span>
+      <span><i class="swatch" style="background:var(--up)"></i>touched 2× what it cost</span>
+      <span><i class="swatch" style="background:var(--signal)"></i>2× line, relative to each entry</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="phead">
+      <h2>How often it bounces</h2>
+      <span class="note" id="setupNote"></span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Entry under</th><th>Setups</th><th>Touched 1.5×</th>
+        <th>Touched 2×</th><th>Touched 3×</th></tr></thead>
+      <tbody id="setupBody"></tbody>
+    </table></div>
+    <div class="legend" id="setupFoot"></div>
+  </section>
+
+  <section class="panel">
+    <div class="phead">
+      <h2>What it would have paid</h2>
+      <span class="note">parameters chosen on earlier windows, scored once on later ones</span>
+    </div>
+    <div class="pbody" id="hedgeBody"></div>
+  </section>
+
+  <hr>
+
+  <section class="prose">
+    <p><b>A touch is not a profit.</b> The table above counts how often the cheap
+      side reached a multiple of what it cost — nothing more. A take-profit that
+      never triggers leaves the position held to settlement, and that is where a
+      strategy like this bleeds. Both halves have to be counted before the idea
+      means anything, which is what the panel above it is for.</p>
+    <p><b>Every price here is one you could actually get.</b> Entries pay the
+      ask, exits sell into the bid, and Kalshi's fee is charged twice — once
+      going in, once coming out. Using a mid price on either side would invent
+      an edge out of half a spread, and on contracts this cheap the spread is
+      most of the supposed profit.</p>
+    <p><b>Sampling every 30 seconds undercounts.</b> A level touched for ten
+      seconds between two samples is missed. So any touch rate on this page is a
+      floor, never an overstatement — but the same 30-second spacing also means
+      a real order would need to be resting at the level, not placed by hand
+      after noticing it.</p>
+    <p><b>This page shares no data with the v6 dashboard.</b> That one scored a
+      rule on who wins at settlement, and scored it wrongly for weeks. This is a
+      separate question with a separate payload: not who wins, but whether the
+      journey there is worth trading. Nothing here is a recommendation to bet.</p>
+  </section>
+</div>
+
+<script src="path_data.js"></script>
+<script>
+(function(){
+  const D = (typeof PD !== "undefined") ? PD : null;
+  const fmtInt = n => n.toLocaleString();
+  const pct = (a,b) => b ? (a/b*100) : 0;
+
+  // Central, because every other surface in this project reports Central.
+  const CT = new Intl.DateTimeFormat("en-US",
+    {timeZone:"America/Chicago", month:"short", day:"numeric",
+     hour:"numeric", minute:"2-digit", hour12:true, timeZoneName:"short"});
+  const stamp = ts => {
+    const d = new Date(String(ts||"").trim().replace(" UTC","").replace(" ","T")+":00Z");
+    return isNaN(d.getTime()) ? "" : CT.format(d);
+  };
+
+  const railEl = document.getElementById("rail");
+  const tile = (k,v) => `<div><span class="k">${k}</span><span class="v">${v}</span></div>`;
+
+  if(!D || D.error){
+    document.getElementById("lede").textContent =
+      D && D.error ? D.error : "No path data has been collected yet.";
+    railEl.innerHTML = tile("Status","waiting");
+    document.getElementById("verdictTag").textContent = "NO DATA";
+    document.getElementById("verdictText").textContent =
+      "Sampling has not produced a usable window yet.";
+    return;
+  }
+
+  // ---- header + rail ---------------------------------------------------
+  document.getElementById("lede").innerHTML =
+    `Every 15 minutes, all five coins, the order book read <b>every 30 seconds</b>. `
+    + `When a market lurches away from its strike early, one side gets cheap — `
+    + `this page asks whether that side recovers far enough, often enough, to sell `
+    + `back into at a profit before the window closes. `
+    + `A question about the <b>path</b>, not about who wins.`
+    + (D.built ? ` Refreshed ${stamp(D.built)}.` : "");
+
+  const fullPct = pct(D.full_start, D.rows);
+  railEl.innerHTML =
+    tile("Windows", fmtInt(D.windows))
+  + tile("Paths", fmtInt(D.rows))
+  + tile("From +30s", `${fullPct.toFixed(0)}%`)
+  + tile("Entry read at", `+${(D.entry_s/60).toFixed(0)}min`);
+
+  // ---- verdict ---------------------------------------------------------
+  // State reads as form, not just as a number: the stripe is the status.
+  const H = D.hedge || {};
+  const vt = document.getElementById("verdictTag"),
+        vx = document.getElementById("verdictText");
+  if(H.error || !H.holdout){
+    vt.textContent = "TOO EARLY";
+    vx.innerHTML = `<b>Not enough settled windows to price the idea yet.</b> `
+      + (H.error ? H.error.charAt(0).toUpperCase()+H.error.slice(1)+". " : "")
+      + `The bounce counts below are already meaningful; the money question needs `
+      + `windows that have closed, and enough of them to hold back a third for a `
+      + `test the parameters have never seen.`;
+  } else {
+    const h = H.holdout, ci = h.ci;
+    vt.textContent = H.verdict;
+    vx.innerHTML = `On windows the parameters never saw, this paid `
+      + `<b>${h.ev>=0?"+":"-"}$${Math.abs(h.ev).toFixed(3)}</b> a trade across `
+      + `${h.n} trades`
+      + (ci ? ` — 95% CI ${ci[0]>=0?"+":"-"}$${Math.abs(ci[0]).toFixed(2)} to `
+            + `${ci[1]>=0?"+":"-"}$${Math.abs(ci[1]).toFixed(2)}.` : ".")
+      + (H.verdict==="UNPROVEN" ? ` The interval still includes zero, so nothing `
+        + `has been shown either way.` : "");
+  }
+
+  // ---- the paths -------------------------------------------------------
+  // Each line is one market's CHEAP side, indexed to what it cost, so the
+  // 2x line is a single horizontal rule rather than 40 different levels.
+  (function(){
+    const svg = document.getElementById("paths");
+    const P = (D.paths||[]).filter(p => p.entry > 0 && p.p && p.p.length > 2);
+    const note = document.getElementById("chartNote");
+    if(!P.length){ note.textContent = "no qualifying setups yet"; return; }
+
+    const W=1000, H2=420, m={t:18,r:54,b:40,l:52};
+    const iw=W-m.l-m.r, ih=H2-m.t-m.b;
+    const maxK = Math.max(...P.map(p=>p.p.length));
+    const step = P[0].step || 30;
+    // Multiple of entry, clipped: a line that runs to 5x squashes the rest.
+    const TOP = 4;
+    const X = k => m.l + (maxK<2?0:(k/(maxK-1))*iw);
+    const Y = v => m.t + (TOP-v)/(TOP-0)*ih;
+
+    let s = "";
+    for(const mult of [1,2,3,4]){
+      s += `<line x1="${m.l}" y1="${Y(mult).toFixed(1)}" x2="${W-m.r}" y2="${Y(mult).toFixed(1)}"
+             stroke="var(--grid)" stroke-width="1"/>`;
+      s += `<text class="axis" x="${m.l-10}" y="${(Y(mult)+4).toFixed(1)}"
+             text-anchor="end">${mult}×</text>`;
+    }
+    // The take-profit line the whole idea turns on.
+    s += `<line x1="${m.l}" y1="${Y(2).toFixed(1)}" x2="${W-m.r}" y2="${Y(2).toFixed(1)}"
+           stroke="var(--signal)" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+    s += `<text class="axis" x="${W-m.r+8}" y="${(Y(2)+4).toFixed(1)}"
+           fill="var(--signal)" font-weight="700">sell</text>`;
+
+    let touched = 0;
+    for(const p of P){
+      const pts = [];
+      let hit = false;
+      for(let k=0;k<p.p.length;k++){
+        const v = p.p[k];
+        if(v == null) continue;
+        const mult = Math.min(v / p.entry, TOP);
+        if(v / p.entry >= 2) hit = true;
+        pts.push(`${X(k).toFixed(1)},${Y(mult).toFixed(1)}`);
+      }
+      if(pts.length < 2) continue;
+      if(hit) touched++;
+      s += `<polyline points="${pts.join(" ")}" fill="none"
+             stroke="${hit?"var(--up)":"var(--track)"}"
+             stroke-width="${hit?1.6:1.2}" stroke-linejoin="round"
+             opacity="${hit?0.85:0.42}"/>`;
+    }
+    // x axis in minutes from the entry read
+    for(let k=0;k<maxK;k+=4){
+      const mins = (D.entry_s + k*step)/60;
+      s += `<text class="axis" x="${X(k).toFixed(1)}" y="${H2-14}"
+             text-anchor="middle">${mins.toFixed(0)}m</text>`;
+    }
+    s += `<text class="axis" x="${m.l}" y="${H2-2}" text-anchor="start"
+           fill="var(--muted)">minutes into the 15-minute window</text>`;
+    svg.innerHTML = s;
+    note.textContent = `${P.length} markets · ${touched} reached 2×`;
+  })();
+
+  // ---- bounce table ----------------------------------------------------
+  (function(){
+    const S = D.setup || {};
+    const keys = Object.keys(S).sort((a,b)=>+a-+b);
+    const body = document.getElementById("setupBody");
+    const maxN = Math.max(...keys.map(k=>S[k].n), 1);
+    body.innerHTML = keys.map(k=>{
+      const v = S[k];
+      const cell = t => {
+        const hit = (v.touch||{})[t] || 0;
+        return `<td>${v.n ? pct(hit,v.n).toFixed(0)+"%" : "—"}`
+             + `<span style="color:var(--muted)"> ${hit}/${v.n}</span></td>`;
+      };
+      const w = Math.round(v.n/maxN*60);
+      return `<tr><td>${k}¢</td>`
+        + `<td><span class="bar" style="width:${w}px"></span>${v.n}</td>`
+        + cell("1.5") + cell("2.0") + cell("3.0") + `</tr>`;
+    }).join("") || `<tr><td colspan="5">No setups recorded yet.</td></tr>`;
+
+    document.getElementById("setupNote").textContent =
+      `read at +${(D.entry_s/60).toFixed(0)} minutes · only one side cheap`;
+    document.getElementById("setupFoot").innerHTML =
+      `<span>A setup is a market where exactly one side is priced under the `
+      + `threshold — if both are, the book is simply wide and there is no `
+      + `opportunity in it.</span>`;
+  })();
+
+  // ---- what it paid ----------------------------------------------------
+  (function(){
+    const el = document.getElementById("hedgeBody");
+    if(H.error || !H.holdout){
+      el.innerHTML = `<div class="prose"><p>Nothing priced yet. `
+        + `${H.rows!=null ? `<b>${H.rows}</b> paths have settled so far; ` : ""}`
+        + `the test holds back the most recent third of windows and needs enough `
+        + `trades on both sides of that line to say anything honest.</p>`
+        + `<p>Until then the panels above are frequencies, not money.</p></div>`;
+      return;
+    }
+    const b = H.best, t = H.train, h = H.holdout;
+    const money = v => `${v>=0?"+":"-"}$${Math.abs(v).toFixed(3)}`;
+    el.innerHTML =
+      `<div class="tablewrap"><table>
+        <thead><tr><th>Rule chosen on the earlier windows</th><th>Trades</th>
+          <th>EV / trade</th><th>95% CI</th></tr></thead>
+        <tbody>
+          <tr><td>train — where it was picked</td><td>${t.n}</td>
+            <td>${money(t.ev)}</td><td style="color:var(--muted)">not a result</td></tr>
+          <tr><td><b>holdout — never seen</b></td><td>${h.n}</td>
+            <td style="color:var(--${h.ev>=0?"up":"down"})">${money(h.ev)}</td>
+            <td>${h.ci ? money(h.ci[0])+" to "+money(h.ci[1]) : "—"}</td></tr>
+        </tbody></table></div>
+       <div class="prose" style="margin-top:14px">
+         <p>Enter at <b>+${(b.entry_s/60).toFixed(0)} min</b> when one side is under
+            <b>${b.max_entry.toFixed(0)}¢</b>, sell at <b>${b.take.toFixed(1)}×</b>.
+            Best of ${H.tested} combinations on the earlier windows.</p>
+         <p>Only the holdout row counts. The train row is shown so the gap between
+            them is visible — that gap is the size of the self-deception on offer,
+            and it is how the previous strategy on this project convinced everyone
+            for six weeks.</p>
+       </div>`;
+  })();
+})();
+</script>
