@@ -40,7 +40,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install requests gspread google-auth cryptography
+      - run: pip install requests gspread google-auth cryptography numpy
 
       - name: Build dashboard payload
         env:
