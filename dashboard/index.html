@@ -353,6 +353,24 @@ body[data-mode="sim"]  [data-view="live"]{display:none!important}
   </section>
 
   <div class="divider" data-view="sim">
+    <h2>v7 &mdash; asking the right question</h2>
+    <span class="d" id="v7Note"></span>
+  </div>
+
+  <section class="panel" id="v7Panel" data-view="sim" hidden>
+    <div class="phead">
+      <h2>Can anything beat the price?</h2>
+      <span class="note">v1&ndash;v6 forecast direction · v7 forecasts the contract, and is scored against Kalshi's own quote</span>
+    </div>
+    <div class="stats" id="v7Stats" style="border:0;border-radius:0"></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Feature</th><th>Correction to the market's log-odds</th></tr></thead>
+      <tbody id="v7body"></tbody>
+    </table></div>
+    <div class="legend" id="v7Foot"></div>
+  </section>
+
+  <div class="divider" data-view="sim">
     <h2>When they fire</h2>
     <span class="d" id="clockNote">the same signals, placed on your clock</span>
   </div>
@@ -1408,6 +1426,83 @@ body[data-mode="sim"]  [data-view="live"]{display:none!important}
       + whyTxt;
   }
 
+  // ---- v7 --------------------------------------------------------------
+  // The only panel that asks whether ANY of this is worth doing. Everything
+  // else scores a rule; this scores the rule against the price, which is the
+  // only benchmark that pays. Fitted as a correction to Kalshi's own
+  // log-odds, so a coefficient of zero reproduces the market exactly and is
+  // the null -- and judged on a time-split holdout, never a random one.
+  function drawV7(){
+    const V = D.v7, panel = document.getElementById("v7Panel"),
+          note = document.getElementById("v7Note");
+    if(!panel) return;
+    if(!V || V.error){
+      panel.hidden = true;
+      if(note) note.textContent = V && V.error ? V.error : "not run yet";
+      return;
+    }
+    panel.hidden = false;
+    if(note) note.textContent =
+      `${V.n.toLocaleString()} markets · trained on the first ${V.n_train.toLocaleString()}, `
+      + `scored on the last ${V.n_test.toLocaleString()}`;
+
+    const tile = (k,v,n,c) =>
+      `<div class="stat"><span class="k">${k}</span><span class="v ${c||""}">${v}</span>`
+      + `<span class="n">${n}</span></div>`;
+    // A better forecast has LOWER log-loss, so a positive gain is the model
+    // beating the market. Negative means the price forecasts better than we do.
+    const beats = V.ll_gain > 0;
+    const verdictClass = V.verdict==="EDGE" ? "pos"
+                       : V.verdict==="NOTHING" ? "neg" : "";
+    document.getElementById("v7Stats").innerHTML =
+      tile("Verdict", V.verdict,
+           V.bets ? `${V.bets} bets it would have taken` : "no bets qualified",
+           verdictClass)
+    + tile("Forecast vs price", `${V.ll_gain>=0?"+":""}${V.ll_gain.toFixed(4)}`,
+           beats ? "model predicts better than the market"
+                 : "the market predicts better than the model", beats?"pos":"neg")
+    + (V.edge_pp != null
+        ? tile("Edge over the price", `${V.edge_pp>=0?"+":""}${V.edge_pp.toFixed(2)}pp`,
+               `95% CI ${V.edge_ci[0].toFixed(2)} to ${V.edge_ci[1].toFixed(2)}`,
+               V.edge_ci[0] > 0 ? "pos" : "")
+        : tile("Edge over the price", "\u2014", "too few bets to measure", ""))
+    + (V.ev_bet != null
+        ? tile("EV per bet", `${V.ev_bet>=0?"+":""}$${Math.abs(V.ev_bet).toFixed(3)}`,
+               `95% CI $${V.ev_ci[0].toFixed(2)} to $${V.ev_ci[1].toFixed(2)}`
+               + ` · ${V.windows} windows`,
+               V.ev_ci[0] > 0 ? "pos" : "")
+        : tile("EV per bet", "\u2014", "too few bets to measure", ""));
+
+    const co = Object.entries(V.coefs||{}).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]));
+    const mx = Math.max(...co.map(([,v])=>Math.abs(v)), 0.001);
+    document.getElementById("v7body").innerHTML = co.map(([k,v])=>{
+      const w = Math.abs(v)/mx*100;
+      return `<tr><td>${k.replace(/_/g," ")}</td>`
+        + `<td><span style="display:inline-block;width:${w.toFixed(0)}px;height:8px;`
+        + `border-radius:2px;background:var(--${v>=0?"gain":"loss"});`
+        + `vertical-align:middle;margin-right:8px"></span>`
+        + `${v>=0?"+":""}${v.toFixed(4)}</td></tr>`;
+    }).join("");
+
+    document.getElementById("v7Foot").innerHTML =
+      `<span>Fitted as a <b>correction to Kalshi's own price</b>: every
+        coefficient at zero reproduces the market exactly, so beating a coin
+        flip counts for nothing and only beating the quote pays.</span>`
+      + `<span>Split by <b>time</b>, not at random — five coins in one window
+        share a market move and would otherwise sit on both sides of the
+        boundary. Intervals cluster by window for the same reason.</span>`
+      + (V.verdict === "EDGE"
+          ? `<span><b>An edge survived the holdout.</b> That is necessary, not
+             sufficient: it still has to survive going forward.</span>`
+          : V.verdict === "NOTHING"
+          ? `<span><b>Nothing here.</b> The interval sits below zero.</span>`
+          : `<span><b>Unproven.</b> The interval still includes zero, so no
+             edge has been shown${beats ? "" : " — and the market's own quote "
+             + "is the better forecast of the two"}. A total that looks
+             positive inside an interval this wide is noise, not a
+             finding.</span>`);
+  }
+
   function drawSubline(){
     const el=document.getElementById("subline"); if(!el) return;
     const h1=document.querySelector("h1");
@@ -1464,7 +1559,7 @@ body[data-mode="sim"]  [data-view="live"]{display:none!important}
       splitBtn.setAttribute("aria-pressed", String(showSplit));
     }
     drawLive(); drawLiveEq(); drawLiveLog();
-    drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawDry(); drawDecay(); drawCash(); drawClock();
+    drawStats(); drawEq(); drawDD(); drawCoins(); drawDays(); drawDry(); drawDecay(); drawCash(); drawV7(); drawClock();
   }
   const bandBtn=document.getElementById("bandBtn");
   bandBtn.addEventListener("click",()=>{

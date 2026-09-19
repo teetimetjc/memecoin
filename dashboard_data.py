@@ -698,6 +698,19 @@ def main():
     except Exception as e:
         print(f"  (cash-out summary skipped: {e})")
         data["cashout"] = None
+    # v7: can anything beat Kalshi's own price on the question it settles?
+    # Sits on the page because a null result that is never shown gets
+    # rediscovered as a hope six weeks later.
+    try:
+        import v7
+        data["v7"] = v7.run(rows, P.ALL_HEADERS)
+        V = data["v7"]
+        print(f"  v7: {V.get('verdict')} "
+              + (f"edge {V['edge_pp']:+.2f}pp, EV ${V['ev_bet']:+.3f}/bet"
+                 if "edge_pp" in V else V.get("error", "")))
+    except Exception as e:
+        print(f"  (v7 skipped: {e})")
+        data["v7"] = None
     import pathlib
     p = pathlib.Path(out)
     p.parent.mkdir(parents=True, exist_ok=True)
