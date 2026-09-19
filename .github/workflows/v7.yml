@@ -1,0 +1,37 @@
+name: v7
+
+# Asks whether anything can beat Kalshi's own price on the question Kalshi
+# actually settles: does the coin finish above the strike.
+#
+# READ-ONLY. It signs GETs for nothing and places nothing; it reads the
+# Predictions tab and prints a verdict. There is no schedule because this is
+# a question you ask deliberately, not a monitor.
+#
+# The selftest runs first and the job fails if it does not pass. A fitter
+# that cannot recover a planted edge cannot be trusted to report the absence
+# of one, and two earlier versions of this failed exactly that way.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  v7:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests gspread google-auth numpy
+
+      - name: Selftest
+        run: python v7.py --selftest
+
+      - name: Run v7
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python v7.py
