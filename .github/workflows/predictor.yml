@@ -99,6 +99,16 @@ jobs:
           # four minutes on every run. Set back to "1" if automated betting
           # ever becomes possible.
           MEASURE_ENTRY_DECAY: "0"
+          # PRICE PATH. On. Samples every coin's market every 30 seconds for
+          # the first 13.5 minutes of the window -- the data the cash-out
+          # idea needs and that nothing collected so far can provide.
+          #
+          # It makes this job run almost the full 15 minutes, so runs now
+          # overlap slightly. That is safe: the workflow declares no
+          # concurrency group, so a long run is neither cancelled nor able to
+          # block the next one, and the path sampling is the LAST thing the
+          # job does -- every signal row is written long before it starts.
+          MEASURE_PATH: "1"
         run: python predictor.py
       - name: Resolve outcomes
         env:
