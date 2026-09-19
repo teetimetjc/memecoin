@@ -331,14 +331,23 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
   const COINS = [...new Set(ALL.map(t=>t.s))].sort();
   const BANDS = D.bands || [[0,20],[20,30],[30,40],[40,45]];
   const TAKES = D.take || [1.5,2.0,3.0];
-  let coin = "ALL", band = "ALL", take = 2.0, stake = 10;
+  // Coin and price are SETS: the reader compares two or three at once, and
+  // a single-choice filter turns that into flicking back and forth and
+  // holding the numbers in your head. An empty set means "everything", so
+  // clearing the last chip lands back on All rather than on nothing.
+  let coinSel = new Set(), bandSel = new Set(), take = 2.0, stake = 10;
   const STAKES = [5, 10, 20];
+  const anyCoin = () => coinSel.size === 0;
+  const anyBand = () => bandSel.size === 0;
+  function toggle(set, v){
+    if(set.has(v)) set.delete(v); else set.add(v);
+  }
   const inBand = (t,b) => t.e >= b[0] && t.e < b[1];
   const bandLab = b => b[0] === 0 ? `under ${b[1]}\u00A2` : `${b[0]}\u2013${b[1]}\u00A2`;
   function view(){
     return ALL.filter(t =>
-      (coin === "ALL" || t.s === coin) &&
-      (band === "ALL" || inBand(t, BANDS[band])));
+      (anyCoin() || coinSel.has(t.s)) &&
+      (anyBand() || [...bandSel].some(i => inBand(t, BANDS[i]))));
   }
 
   function stats(rows){
@@ -366,14 +375,22 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     });
   }
   function drawChips(){
+    // Counts shown on each chip are for that chip ALONE, against the OTHER
+    // filter -- so "BTC 8" means eight BTC setups at the prices currently
+    // selected, and stays a useful number whatever else is picked.
+    const coinPool = t => anyBand() || [...bandSel].some(i => inBand(t, BANDS[i]));
+    const bandPool = t => anyCoin() || coinSel.has(t.s);
     chips(document.getElementById("coinChips"),
-      [{v:"ALL",label:"All",count:ALL.length}].concat(COINS.map(c=>
-        ({v:c,label:c,count:ALL.filter(t=>t.s===c).length}))),
-      v=>coin===v, v=>{coin=v;});
+      [{v:"ALL",label:"All",count:ALL.filter(coinPool).length}].concat(COINS.map(c=>
+        ({v:c,label:c,count:ALL.filter(t=>t.s===c && coinPool(t)).length}))),
+      v => v==="ALL" ? anyCoin() : coinSel.has(v),
+      v => { if(v==="ALL") coinSel.clear(); else toggle(coinSel, v); });
     chips(document.getElementById("bandChips"),
-      [{v:"ALL",label:"Any price",count:ALL.length}].concat(BANDS.map((b,i)=>
-        ({v:String(i),label:bandLab(b),count:ALL.filter(t=>inBand(t,b)).length}))),
-      v=>String(band)===v, v=>{band = v==="ALL"?"ALL":+v;});
+      [{v:"ALL",label:"Any price",count:ALL.filter(bandPool).length}].concat(
+        BANDS.map((b,i)=>({v:String(i), label:bandLab(b),
+          count:ALL.filter(t=>inBand(t,b) && bandPool(t)).length}))),
+      v => v==="ALL" ? anyBand() : bandSel.has(+v),
+      v => { if(v==="ALL") bandSel.clear(); else toggle(bandSel, +v); });
     chips(document.getElementById("takeChips"),
       TAKES.map(t=>({v:String(t),label:`${t}\u00D7`})),
       v=>Math.abs(take-parseFloat(v))<1e-9, v=>{take=parseFloat(v);});
@@ -458,11 +475,13 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
   }
   function drawTables(rows){
     const byBand = BANDS.map((b,i)=>
-      row(bandLab(b), ALL.filter(t=>inBand(t,b) && (coin==="ALL"||t.s===coin)),
-          band!=="ALL" && +band===i)).join("");
+      row(bandLab(b), ALL.filter(t=>inBand(t,b) && (anyCoin()||coinSel.has(t.s))),
+          bandSel.has(i))).join("");
     document.getElementById("bandBody").innerHTML = byBand;
+    const coinTxt = anyCoin() ? `all ${COINS.length} coins`
+      : [...coinSel].sort().join(", ");
     document.getElementById("bandNote").textContent =
-      `${coin==="ALL"?"all five coins":coin} \u00B7 $${stake} a bet \u00B7 selling at ${take}\u00D7`;
+      `${coinTxt} \u00B7 $${stake} a bet \u00B7 selling at ${take}\u00D7`;
     document.getElementById("bandFoot").innerHTML =
       `<span><b>Reached target</b> is how often the cheap side touched `
       + `${take}\u00D7 what it cost. <b>Settled wins</b> is how the ones that `
@@ -470,19 +489,24 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
       + `first column is worth anything.</span>`;
 
     document.getElementById("coinBody").innerHTML = COINS.map(c=>
-      row(c, ALL.filter(t=>t.s===c && (band==="ALL"||inBand(t,BANDS[band]))),
-          coin===c)).join("");
+      row(c, ALL.filter(t=>t.s===c &&
+            (anyBand() || [...bandSel].some(i=>inBand(t,BANDS[i])))),
+          coinSel.has(c))).join("");
     [...document.getElementById("coinBody").querySelectorAll("tr")].forEach((tr,i)=>{
       tr.style.cursor = "pointer";
-      tr.addEventListener("click",()=>{ coin = (coin===COINS[i])?"ALL":COINS[i]; render(); });
+      tr.addEventListener("click",()=>{ toggle(coinSel, COINS[i]); render(); });
     });
   }
 
   function drawSel(rows){
     const st = stats(rows);
     const el = document.getElementById("sel");
+    const coinTxt = anyCoin() ? "all coins" : [...coinSel].sort().join(" ");
+    const bandTxt = anyBand() ? "any price"
+      : [...bandSel].sort((a,b)=>a-b).map(i=>bandLab(BANDS[i])).join(" + ");
     el.innerHTML =
       tile("Showing", `${st.n}`)
+    + tile("Filter", `${coinTxt} \u00B7 ${bandTxt}`)
     + tile(`Reached ${take}\u00D7`, st.n ? `${pct(st.hit,st.n).toFixed(0)}%` : "\u2014")
     + tile("Risked", st.priced ? `$${st.risked.toLocaleString()}` : "\u2014")
     + tile("Profit / loss", st.priced ? money(st.net) : "\u2014")
