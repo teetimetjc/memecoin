@@ -1311,6 +1311,22 @@ def run_predictions():
     def secs_in():
         return round((datetime.now(timezone.utc) - boundary).total_seconds(), 1)
 
+    # PRICE PATH. Started HERE, before anything else, because it is the only
+    # consumer that cares about the first minute of the window -- the setup it
+    # exists to study is a market that has already lurched away from its
+    # strike, and that shows up early or not at all. Run at the end of the job
+    # it began at +90s every time and the front of every path was missing.
+    #
+    # It samples on its own thread and writes nothing until finish() is called
+    # on the main thread, so it cannot race the sheet writes below, and it
+    # swallows its own errors so it cannot take collection down.
+    _path = None
+    if path.enabled():
+        try:
+            _path = path.start(boundary)
+        except Exception as e:
+            print(f"  [path] could not start: {e}")
+
     # --- EARLY quote: hit Kalshi before anything else, while the new market is
     # still thin. This is the window v1/v2 never observed, because they slept
     # 30s first. The whole v3 hypothesis lives in this snapshot.
@@ -1606,9 +1622,9 @@ def run_predictions():
     #
     # Nothing above depends on it, and every signal row is already on the
     # sheet, so a failure here cannot cost collection.
-    if path.enabled():
+    if _path is not None:
         try:
-            path.measure(client, boundary)
+            path.finish(client, _path)
         except Exception as e:
             print(f"  [path] skipped: {e}")
 

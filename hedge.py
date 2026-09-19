@@ -41,6 +41,13 @@ import sys
 from collections import defaultdict
 
 SHEET = "Path"
+
+# The very first path run was dispatched eight minutes into its window and,
+# under the code of the moment, sampled as fast as it could to catch up and
+# then labelled the result "First Offset 30". Those five rows claim prices at
+# +30s that were really taken at +8min. They are unrecoverable, and a handful
+# of rows is not worth a repair, so they are named here and dropped.
+POISONED = {"2026-09-19 16:45"}
 PRED_H = []   # filled from predictor.ALL_HEADERS at run time
 
 # The grid. Deliberately small: every extra combination is another lottery
@@ -92,6 +99,8 @@ def load(path_rows, pred_rows, headers):
     out = []
     for r in path_rows[1:]:
         ts = str(cell(r, "Timestamp")).replace(" UTC", "").strip()
+        if ts in POISONED:
+            continue
         sym = cell(r, "Symbol")
         up = above.get((ts, sym))
         if up is None:

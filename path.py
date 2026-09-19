@@ -34,6 +34,7 @@ Read-only. Places nothing.
 """
 
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -111,54 +112,105 @@ def markets_for(boundary):
     return out
 
 
-def measure(client, boundary, spots=None):
-    """Walk the window, sampling every market every STEP seconds, then log."""
-    mk = markets_for(boundary)
-    if not mk:
-        print("  [path] no markets resolved for this window")
+class _Sampler(threading.Thread):
+    """Walks the window sampling every market, on its own thread.
+
+    WHY A THREAD. The first eight windows all started at +90 seconds, never
+    +30, because the sampler could not begin until the runner had booted, pip
+    had installed and the predictions had been written. A whole minute was
+    missing from the front of every path -- and the front is the part this
+    data exists to study, since the setup being tested is a market that has
+    already lurched away from its strike in the first minutes.
+
+    So sampling starts immediately and the rest of the job runs alongside it.
+    The thread only COLLECTS; the sheet write happens on the main thread at
+    the end, because two threads writing to one gspread client is a race
+    nobody needs.
+    """
+
+    daemon = True
+
+    def __init__(self, boundary):
+        super().__init__(name="path-sampler")
+        self.boundary = boundary
+        self.mk = []
+        self.bids = {}
+        self.asks = {}
+        self.sched = []
+        self.error = ""
+
+    def run(self):
+        try:
+            self.mk = markets_for(self.boundary)
+            if not self.mk:
+                self.error = "no markets resolved"
+                return
+            self.bids = {t: [] for _, t, _ in self.mk}
+            self.asks = {t: [] for _, t, _ in self.mk}
+
+            # Only offsets still AHEAD. A late start cannot go back and price
+            # +30s, and appending whatever it finds would write a series that
+            # claims to start at +30s while really starting minutes later --
+            # every later analysis would then read those prices at the wrong
+            # point in the window.
+            now = (datetime.now(timezone.utc) - self.boundary).total_seconds()
+            want = [FIRST + i * STEP for i in range(COUNT)]
+            self.sched = [t for t in want if t > now - 5]
+            if not self.sched:
+                self.error = "window already past the last sample point"
+                return
+
+            for target in self.sched:
+                wait = target - (datetime.now(timezone.utc) - self.boundary).total_seconds()
+                if wait > 0:
+                    time.sleep(min(wait, STEP + 5))
+                for _, ticker, _ in self.mk:
+                    b, a = _book(ticker)
+                    self.bids[ticker].append("" if b is None else b)
+                    self.asks[ticker].append("" if a is None else a)
+        except Exception as e:                      # never take the job down
+            self.error = str(e)
+
+
+def start(boundary):
+    """Begin sampling now. Returns the handle to hand back to finish()."""
+    s = _Sampler(boundary)
+    s.start()
+    return s
+
+
+def finish(client, sampler, spots=None):
+    """Wait for the walk to end, then write one row per market."""
+    if sampler is None:
+        return
+    # The walk ends at +13:30 by construction; the timeout is only a backstop
+    # against a hung request, and is generous enough never to truncate a
+    # healthy run.
+    sampler.join(timeout=16 * 60)
+    if sampler.is_alive():
+        print("  [path] sampler did not finish; not logging a partial series")
+        return
+    if sampler.error:
+        print(f"  [path] {sampler.error}")
+        return
+    if not sampler.mk or not sampler.sched:
         return
 
     spots = spots or {}
-    bids = {t: [] for _, t, _ in mk}
-    asks = {t: [] for _, t, _ in mk}
-
-    # Only sample the offsets that are still AHEAD. A run dispatched mid-window
-    # cannot go back and price +30s, and appending whatever it finds would
-    # write a series that claims to start at +30s when it really starts at
-    # +7min -- every later analysis would read those prices at the wrong point
-    # in the window. So late starts produce a shorter, correctly labelled
-    # series, and the offset actually used is stored rather than assumed.
-    now = (datetime.now(timezone.utc) - boundary).total_seconds()
-    sched = [FIRST + i * STEP for i in range(COUNT)]
-    sched = [t for t in sched if t > now - 5]
-    if not sched:
-        print("  [path] window already past the last sample point; nothing to do")
-        return
-    if sched[0] != FIRST:
-        print(f"  [path] started late: first sample at +{sched[0]}s, "
-              f"{len(sched)} of {COUNT} points")
-
-    for target in sched:
-        wait = target - (datetime.now(timezone.utc) - boundary).total_seconds()
-        if wait > 0:
-            time.sleep(min(wait, STEP + 5))
-        for _, ticker, _ in mk:
-            b, a = _book(ticker)
-            bids[ticker].append("" if b is None else b)
-            asks[ticker].append("" if a is None else a)
-
     rows = []
-    for symbol, ticker, strike in mk:
-        got = sum(1 for v in asks[ticker] if v != "")
+    for symbol, ticker, strike in sampler.mk:
+        asks = sampler.asks[ticker]
+        got = sum(1 for v in asks if v != "")
         rows.append([
-            boundary.strftime("%Y-%m-%d %H:%M UTC"), symbol, ticker, strike,
-            spots.get(symbol, ""), sched[0], STEP, got,
-            ",".join(str(v) for v in bids[ticker]),
-            ",".join(str(v) for v in asks[ticker]),
-            "" if got == len(sched) else f"{len(sched) - got} sample(s) unpriced",
+            sampler.boundary.strftime("%Y-%m-%d %H:%M UTC"), symbol, ticker, strike,
+            spots.get(symbol, ""), sampler.sched[0], STEP, got,
+            ",".join(str(v) for v in sampler.bids[ticker]),
+            ",".join(str(v) for v in asks),
+            "" if got == len(sampler.sched)
+            else f"{len(sampler.sched) - got} sample(s) unpriced",
         ])
-    print(f"  [path] {len(rows)} market(s), "
-          f"{sum(r[7] for r in rows)}/{len(sched) * len(rows)} samples priced")
+    print(f"  [path] {len(rows)} market(s) from +{sampler.sched[0]:.0f}s, "
+          f"{sum(r[7] for r in rows)}/{len(sampler.sched) * len(rows)} samples priced")
 
     import predictor as P
     try:
