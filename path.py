@@ -76,13 +76,22 @@ def _depth(ticker):
 
     Read from the order book, where a YES ask is the mirror of a NO bid -- so
     selling a YES position eats the YES bid, and selling a NO position eats
-    the NO bid, which is this market's YES ask side. Both numbers are kept
-    because the strategy trades whichever side came up cheap.
+    the NO bid, which is this market's YES ask side. Both are kept because
+    the strategy trades whichever side came up cheap.
 
-    Deliberately a SEPARATE call from the price read, and deliberately
-    fail-soft: prices are the data that already works, and a shape surprise
-    or a rate limit here must cost a blank size column, never a window of
-    collection.
+    THE SHAPE, confirmed from a live response rather than assumed:
+
+        {"orderbook_fp": {"yes_dollars": [["0.6500", "200.02"]],
+                          "no_dollars":  [["0.3400", "3325.85"]]}}
+
+    The first attempt guessed "orderbook" with integer cents and wrote
+    nothing but blanks for a full day. Both halves were wrong: the key is
+    "orderbook_fp", and price and size are STRINGS in dollars. The older
+    spellings are still accepted below in case the endpoint serves them.
+
+    Deliberately fail-soft: prices are the data that already works, so a
+    shape surprise or a rate limit here costs a blank size column, never a
+    window of collection.
     """
     import predictor as P
     try:
@@ -92,22 +101,21 @@ def _depth(ticker):
                          headers=hdrs, timeout=8)
         if not r.ok:
             return None, None
-        ob = (r.json() or {}).get("orderbook") or {}
+        body = r.json() or {}
+        ob = body.get("orderbook_fp") or body.get("orderbook") or {}
     except Exception:
         return None, None
 
     def top(side):
-        # Kalshi returns each side as [[price, count], ...] ascending, so the
-        # best bid is the LAST entry. The key has been spelled both ways
-        # across versions; try the plain one first and fall back.
-        lv = ob.get(side) or ob.get(f"{side}_dollars")
+        lv = ob.get(f"{side}_dollars") or ob.get(side)
         if not isinstance(lv, list) or not lv:
             return None
+        # Ascending by price, so the best bid is the LAST entry.
         best = lv[-1]
         if not isinstance(best, (list, tuple)) or len(best) < 2:
             return None
         try:
-            return float(best[1])
+            return round(float(best[1]), 2)
         except (TypeError, ValueError):
             return None
 
