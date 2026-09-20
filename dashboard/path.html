@@ -122,6 +122,13 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
 .chip:focus-visible{outline:2px solid var(--signal); outline-offset:2px}
 .chip .c{opacity:.6; margin-left:5px}
 .empty{padding:26px 20px; color:var(--muted); font-size:.92rem}
+#holdStats > div{flex:1 1 200px; padding:15px 18px; border-right:1px solid var(--rule)}
+#holdStats > div:last-child{border-right:0}
+#holdStats .k{font-family:"JetBrains Mono",monospace; font-size:.63rem;
+  letter-spacing:.13em; text-transform:uppercase; color:var(--muted); display:block}
+#holdStats .v{font-family:"JetBrains Mono",monospace; font-size:1.5rem; font-weight:700;
+  font-variant-numeric:tabular-nums; display:block; margin-top:4px; letter-spacing:-.02em}
+#holdStats .d{font-size:.8rem; color:var(--muted); display:block; margin-top:2px}
 @media (max-width:620px){
   .frow .lbl{min-width:100%}
   body{padding-inline:16px}
@@ -156,6 +163,16 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
   </div>
 
   <section class="rail" id="sel"></section>
+
+  <section class="panel" id="holdPanel" style="border-color:var(--signal)">
+    <div class="phead">
+      <h2>Does this filter still work on data it has not seen?</h2>
+      <span class="note" id="holdNote"></span>
+    </div>
+    <div class="stats" id="holdStats"
+      style="display:flex;flex-wrap:wrap;gap:0;border:0"></div>
+    <div class="legend" id="holdFoot"></div>
+  </section>
 
   <section class="panel">
     <div class="phead">
@@ -528,10 +545,121 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     + tile("Return", st.roi==null ? "\u2014" : `${st.roi>=0?"+":"\u2212"}${Math.abs(st.roi).toFixed(1)}%`);
   }
 
+  // ---- the only test that separates luck from an edge ------------------
+  // Any filter looks good on the data it was picked from -- try enough
+  // combinations and one of them will, by chance alone. So every selection
+  // is also scored on the LATER windows, which were collected after the
+  // earlier ones and cannot have influenced the choice. The cut is taken
+  // from ALL windows, not the filtered ones, so moving a chip never moves
+  // the goalposts.
+  const WINS = [...new Set(ALL.map(t => t.t))].sort();
+  const CUT = WINS.length > 6 ? WINS[Math.floor(WINS.length * 0.6)] : null;
+
+  function clusteredCI(rows){
+    const g = new Map();
+    let nb = 0, sum = 0;
+    for(const t of rows){
+      const r = priceTrade(t, take, stake);
+      if(!r) continue;
+      if(!g.has(t.t)) g.set(t.t, []);
+      g.get(t.t).push(r.net);
+      nb++; sum += r.net;
+    }
+    if(!nb) return null;
+    const m = sum/nb;
+    const cl = [...g.values()].map(a => a.reduce((x,y)=>x+y,0)/a.length);
+    if(cl.length < 2) return {m, lo:null, hi:null, n:nb};
+    let va = 0;
+    let i = 0;
+    for(const a of g.values()){ va += a.length*Math.pow(cl[i]-m,2); i++; }
+    va /= (cl.length - 1);
+    const half = 1.96*Math.sqrt(va/cl.length);
+    return {m, lo:m-half, hi:m+half, n:nb, windows:cl.length};
+  }
+
+  function drawHold(rows){
+    const panel = document.getElementById("holdPanel");
+    const el = document.getElementById("holdStats");
+    const note = document.getElementById("holdNote");
+    const foot = document.getElementById("holdFoot");
+    if(!CUT){ panel.hidden = true; return; }
+    panel.hidden = false;
+    const early = rows.filter(t => t.t < CUT);
+    const late  = rows.filter(t => t.t >= CUT);
+    const a = clusteredCI(early), b = clusteredCI(late);
+    note.textContent = `split at ${stamp(CUT)} \u00B7 `
+      + `${WINS.length} windows, the later ${WINS.length-Math.floor(WINS.length*0.6)} held back`;
+
+    const tile3 = (k,v,d,c) =>
+      `<div><span class="k">${k}</span><span class="v" style="color:var(--${c||"ink"})">${v}</span>`
+      + `<span class="d">${d}</span></div>`;
+
+    // THE CHECK THAT OUTRANKS THE HOLDOUT. A time split protects against a
+    // filter picked from the same data it is judged on. It does NOT protect
+    // against the market moving one way through both halves -- and buying
+    // the cheap side is, mechanically, a bet that the price comes back, so a
+    // sustained trend makes it look brilliant for a reason that has nothing
+    // to do with the idea.
+    //
+    // So the held-back windows are also asked: did they finish above their
+    // strike about half the time? A book near 50% is a fair test. Far from
+    // it, the result is mostly a direction, and it will reverse when the
+    // market does.
+    const settled = late.filter(t => t.w != null);
+    const above = settled.filter(t => t.y ? t.w : !t.w).length;
+    const abovePct = settled.length ? above/settled.length*100 : null;
+    const skewed = abovePct != null && Math.abs(abovePct - 50) > 8;
+
+    let verdict, vcol, why;
+    if(skewed && b && b.n >= 15){
+      verdict = "CAN'T TELL"; vcol = "";
+      why = `Over the held-back windows the coins finished above their strike `
+          + `only <b>${abovePct.toFixed(0)}%</b> of the time, where a balanced `
+          + `stretch would be near 50%. Buying the cheap side is a bet that `
+          + `price comes back, so a market trending one way makes this look `
+          + `good for a reason that is not the idea. The number to the left is `
+          + `mostly that trend, and it reverses when the market does.`;
+    } else if(!b || b.n < 15){
+      verdict = "NOT YET"; vcol = "muted";
+      why = `Only ${b ? b.n : 0} trades on the held-back windows. `
+          + `Nothing can be judged from that -- narrow the filter less, or wait.`;
+    } else if(b.lo != null && b.lo > 0){
+      verdict = "HELD UP"; vcol = "up";
+      why = `On windows this selection never saw, it still made money and the `
+          + `interval clears zero. That is the strongest thing this page can say `
+          + `-- and it is still one result, not a guarantee.`;
+    } else if(b.m <= 0){
+      verdict = "DECAYED"; vcol = "down";
+      why = `It made money on the earlier windows and lost on the later ones. `
+          + `That is what a filter picked by luck looks like.`;
+    } else {
+      verdict = "UNPROVEN"; vcol = "";
+      why = `Still positive on the held-back windows, but the interval includes `
+          + `zero, so the result is also consistent with no edge at all.`;
+    }
+
+    el.innerHTML =
+      tile3("Picked on these", a && a.n ? money(a.m) : "\u2014",
+            a && a.n ? `${a.n} trades \u00B7 not a result` : "no trades", "muted")
+    + tile3("Never seen", b && b.n ? money(b.m) : "\u2014",
+            b && b.n
+              ? (b.lo != null ? `${b.n} trades \u00B7 ${money(b.lo)} to ${money(b.hi)}`
+                              : `${b.n} trades`)
+              : "no trades",
+            b && b.n ? (b.m >= 0 ? "up" : "down") : "muted")
+    + tile3("Fair stretch?", abovePct == null ? "\u2014" : `${abovePct.toFixed(0)}%`,
+            "finished above strike \u00B7 50% is balanced",
+            skewed ? "down" : "up")
+    + tile3("Verdict", verdict, "what counts", vcol);
+    foot.innerHTML = `<span>${why}</span>`
+      + `<span>Only the middle number means anything. The left one is the data `
+      + `the filter was chosen from, and a filter always flatters itself there.</span>`;
+  }
+
   function render(){
     drawChips();
     const rows = view();
-    drawSel(rows); drawPaths(rows); drawTables(rows);
+    drawSel(rows); drawHold(rows); drawPaths(rows); drawTables(rows);
   }
 
   // ---- what it paid ----------------------------------------------------
