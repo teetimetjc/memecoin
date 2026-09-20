@@ -123,10 +123,16 @@ def build(path_rows, pred_rows, headers):
             b, a = s_["bids"][k], s_["asks"][k]
             pts.append(None if (b is None or a is None)
                        else round(b if cheap_yes else (100.0 - a), 1))
+        # "w" is whether THIS TRADE won at settlement -- already resolved for
+        # the side actually held, not the raw did-it-finish-above-the-strike
+        # flag. The page shipped with the raw flag and scored every NO trade
+        # by the YES question, which inflated its reported profit by about
+        # 2.7x. Resolving it here means the page cannot repeat that.
+        ab = above.get((s_["ts"], s_["sym"] + "USDT"))
         trades.append({
             "s": s_["sym"], "t": s_["ts"], "e": round(entry, 1),
             "y": 1 if cheap_yes else 0,
-            "w": above.get((s_["ts"], s_["sym"] + "USDT")),
+            "w": None if ab is None else (ab if cheap_yes else (not ab)),
             "p": pts,
         })
 

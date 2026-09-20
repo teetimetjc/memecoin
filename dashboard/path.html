@@ -322,7 +322,12 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
         }
       }
     }
-    if(tr.w == null) return null;          // open: no result to book
+    // tr.w is already resolved for the side this trade holds, so it is read
+    // straight. It was NOT always: the payload used to carry the raw
+    // did-it-finish-above-the-strike flag and this line used it as though it
+    // meant "we won", which scored every DOWN trade by the UP question and
+    // overstated the page's profit by roughly 2.7x.
+    if(tr.w == null) return null;          // still open: no result to book
     return {net: (tr.w ? n : 0) - cost, hit:false};
   }
 
