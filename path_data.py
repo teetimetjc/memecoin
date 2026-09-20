@@ -27,6 +27,7 @@ import json
 import sys
 from collections import defaultdict
 
+import bounce_rules
 import hedge
 
 OUT_DEFAULT = "dashboard/path_data.js"
@@ -134,6 +135,13 @@ def build(path_rows, pred_rows, headers):
             "y": 1 if cheap_yes else 0,
             "w": None if ab is None else (ab if cheap_yes else (not ab)),
             "p": pts,
+            # The RAW book, so a rule may pick a different entry moment than
+            # this file happened to read. Without these, any challenger that
+            # moves the entry time silently trades nothing and reports a
+            # clean zero -- which reads exactly like "tried it, no good".
+            "ya": s_["asks"], "yb": s_["bids"],
+            "f": s_["first"], "st": s_["step"],
+            "ab": ab,
         })
 
     out = {
@@ -148,6 +156,12 @@ def build(path_rows, pred_rows, headers):
     }
     # The money question, with its holdout discipline intact.
     out["hedge"] = hedge.run(path_rows, pred_rows, headers)
+    # Champion and challengers, each scored only on windows that closed after
+    # it was frozen. This is the part that cannot be tuned after the fact.
+    try:
+        out["rules"] = bounce_rules.build(trades)
+    except Exception as e:
+        out["rules"] = {"error": str(e)}
     return out
 
 

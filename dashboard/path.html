@@ -213,6 +213,19 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     </table></div>
   </section>
 
+  <section class="panel" id="rulePanel" hidden>
+    <div class="phead">
+      <h2>Champion and challengers</h2>
+      <span class="note" id="ruleNote"></span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Rule</th><th>What differs</th><th>Trades</th>
+        <th>P&amp;L</th><th>Per trade</th><th>vs champion</th></tr></thead>
+      <tbody id="ruleBody"></tbody>
+    </table></div>
+    <div class="legend" id="ruleFoot"></div>
+  </section>
+
   <section class="panel">
     <div class="phead">
       <h2>What it would have paid</h2>
@@ -661,6 +674,58 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     const rows = view();
     drawSel(rows); drawHold(rows); drawPaths(rows); drawTables(rows);
   }
+
+  // ---- champion and challengers ----------------------------------------
+  // The only panel here that cannot be tuned after the fact: every rule is
+  // frozen at a timestamp and scored ONLY on windows that closed later. The
+  // filters above do not touch it -- a rule judged on whatever slice the
+  // reader is looking at would be picked by the reader, which is the whole
+  // thing this is meant to prevent.
+  (function(){
+    const R = D.rules, panel = document.getElementById("rulePanel");
+    if(!panel) return;
+    if(!R || R.error || !R.rules){ panel.hidden = true; return; }
+    panel.hidden = false;
+    const ch = R.rules[0];
+    document.getElementById("ruleNote").textContent =
+      `frozen ${stamp(ch.f)} \u00B7 judged only on windows since`;
+    document.getElementById("ruleBody").innerHTML = R.rules.map((r,i)=>{
+      const vs = r.vs;
+      let vsTxt = "\u2014";
+      if(i === 0) vsTxt = `<span style="color:var(--muted)">source of truth</span>`;
+      else if(vs && vs.z != null){
+        const col = vs.verdict.startsWith("BEATS") ? "up"
+                  : vs.verdict.startsWith("WORSE") ? "down" : "muted";
+        vsTxt = `<span style="color:var(--${col})">z=${vs.z>=0?"+":""}${vs.z}</span>`
+              + `<span style="color:var(--muted)"> ${vs.windows}w</span>`;
+      } else if(vs) vsTxt = `<span style="color:var(--muted)">${vs.verdict}</span>`;
+      return `<tr><td><b>${r.n}</b></td><td style="white-space:normal">${r.why}</td>`
+        + `<td>${r.trades}</td>`
+        + `<td>${r.trades ? `<span style="color:var(--${r.total>=0?"up":"down"})">`
+              + `${money(r.total)}</span>` : "\u2014"}</td>`
+        + `<td>${r.ev==null ? "\u2014" : money(r.ev)}</td>`
+        + `<td>${vsTxt}</td></tr>`;
+    }).join("");
+    const fairTxt = ch.drift == null
+      ? `<b>Nothing has been judged yet.</b> These rules were frozen `
+        + `${stamp(ch.f)} and only windows closing after that count, so the `
+        + `table fills in from here. That is the point: not one number in it `
+        + `can have influenced the rules it is scoring.`
+      : R.fair
+      ? `The judging stretch finished above its strike ${ch.drift}% of the time, `
+        + `close enough to balanced for the comparison to mean something.`
+      : `<b>The judging stretch is not balanced</b> \u2014 ${ch.drift}% finished `
+        + `above their strike, where 50% is neutral. Buying the cheap side is a `
+        + `bet that price comes back, so a one-way market lifts or sinks every `
+        + `rule here at once. Treat these as wiring checks, not findings.`;
+    document.getElementById("ruleFoot").innerHTML =
+      `<span>Each challenger changes exactly ONE thing, so a win can be `
+      + `attributed to the thing that changed.</span>`
+      + `<span>Compared against the champion on the SAME windows, never against `
+      + `its lifetime average. Promotion needs |z| &ge; ${R.promote_z} \u2014 a high `
+      + `bar because six challengers are six chances to look good by luck.</span>`
+      + `<span>${fairTxt}</span>`;
+  })();
 
   // ---- what it paid ----------------------------------------------------
   (function(){
