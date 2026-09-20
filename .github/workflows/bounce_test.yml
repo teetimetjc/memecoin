@@ -1,0 +1,44 @@
+name: Bounce Exit Test
+
+# ONE $5 trade, by hand, to find out whether a resting take-profit works.
+#
+# Live trading is HALTED globally. This job switches it on for itself alone --
+# the predictor workflow is untouched and stays halted, so nothing else can
+# place an order because this ran.
+#
+# It refuses without the confirmation input, and the script refuses again on
+# its own. Two locks, because this spends real money.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type RUN to place ONE $5 trade'
+        required: true
+        default: ''
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    if: inputs.confirm == 'RUN'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Place one $5 trade and rest a sell at 2x
+        env:
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          KALSHI_KEY_ID:  ${{ secrets.KALSHI_KEY_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          # On for this job ONLY. predictor.yml keeps its own "0".
+          LIVE_TRADING: "1"
+          ALLOW_LIVE_TRADING: "1"
+          LIVE_ALLOW_DOWN: "1"
+        run: python bounce_live_test.py RUN-ONE-FIVE-DOLLAR-TEST
