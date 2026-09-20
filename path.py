@@ -44,6 +44,17 @@ SHEET = "Path"
 HEADERS = [
     "Timestamp", "Symbol", "Ticker", "Strike", "Spot at Open",
     "First Offset s", "Step s", "Samples", "Yes Bids", "Yes Asks", "Note",
+    # HOW MANY, not just how much. A price alone cannot say whether a bounce
+    # was tradeable: 90c with 40 contracts behind it is a real exit, 90c with
+    # 2 contracts is a headline you cannot sell into. The backtest sells
+    # 30-plus contracts a trade and, without these, silently assumes they all
+    # fill at the top of the book.
+    #
+    # APPENDED AFTER "Note", not slotted in beside the prices where they
+    # belong, because 235 rows were already written to this tab. Inserting a
+    # column mid-table would leave every one of them with its Note sitting
+    # under a size heading -- historical data relabelled rather than extended.
+    "Yes Bid Sz", "Yes Ask Sz",
 ]
 
 # Every 30 seconds from +30s to +13:30. The last 90 seconds are deliberately
@@ -58,6 +69,51 @@ PRICE_HOST = "https://api.elections.kalshi.com"
 
 def enabled():
     return os.environ.get("MEASURE_PATH", "").strip() == "1"
+
+
+def _depth(ticker):
+    """(contracts at the best YES bid, contracts at the best YES ask).
+
+    Read from the order book, where a YES ask is the mirror of a NO bid -- so
+    selling a YES position eats the YES bid, and selling a NO position eats
+    the NO bid, which is this market's YES ask side. Both numbers are kept
+    because the strategy trades whichever side came up cheap.
+
+    Deliberately a SEPARATE call from the price read, and deliberately
+    fail-soft: prices are the data that already works, and a shape surprise
+    or a rate limit here must cost a blank size column, never a window of
+    collection.
+    """
+    import predictor as P
+    try:
+        path = f"/trade-api/v2/markets/{ticker}/orderbook"
+        hdrs = P._kalshi_headers("GET", path) or {}
+        r = requests.get(f"{PRICE_HOST}{path}", params={"depth": 1},
+                         headers=hdrs, timeout=8)
+        if not r.ok:
+            return None, None
+        ob = (r.json() or {}).get("orderbook") or {}
+    except Exception:
+        return None, None
+
+    def top(side):
+        # Kalshi returns each side as [[price, count], ...] ascending, so the
+        # best bid is the LAST entry. The key has been spelled both ways
+        # across versions; try the plain one first and fall back.
+        lv = ob.get(side) or ob.get(f"{side}_dollars")
+        if not isinstance(lv, list) or not lv:
+            return None
+        best = lv[-1]
+        if not isinstance(best, (list, tuple)) or len(best) < 2:
+            return None
+        try:
+            return float(best[1])
+        except (TypeError, ValueError):
+            return None
+
+    # "yes" is the YES bid side; "no" is the NO bid side, which is the same
+    # resting interest a YES buyer lifts -- i.e. the size at the YES ask.
+    return top("yes"), top("no")
 
 
 def _book(ticker):
@@ -147,6 +203,8 @@ class _Sampler(threading.Thread):
                 return
             self.bids = {t: [] for _, t, _ in self.mk}
             self.asks = {t: [] for _, t, _ in self.mk}
+            self.bsz = {t: [] for _, t, _ in self.mk}
+            self.asz = {t: [] for _, t, _ in self.mk}
 
             # Only offsets still AHEAD. A late start cannot go back and price
             # +30s, and appending whatever it finds would write a series that
@@ -168,6 +226,9 @@ class _Sampler(threading.Thread):
                     b, a = _book(ticker)
                     self.bids[ticker].append("" if b is None else b)
                     self.asks[ticker].append("" if a is None else a)
+                    bs, as_ = _depth(ticker)
+                    self.bsz[ticker].append("" if bs is None else bs)
+                    self.asz[ticker].append("" if as_ is None else as_)
         except Exception as e:                      # never take the job down
             self.error = str(e)
 
@@ -208,15 +269,27 @@ def finish(client, sampler, spots=None):
             ",".join(str(v) for v in asks),
             "" if got == len(sampler.sched)
             else f"{len(sampler.sched) - got} sample(s) unpriced",
+            ",".join(str(v) for v in sampler.bsz.get(ticker, [])),
+            ",".join(str(v) for v in sampler.asz.get(ticker, [])),
         ])
+    sized = sum(1 for r in rows for v in str(r[11]).split(",") if v not in ("", "None"))
     print(f"  [path] {len(rows)} market(s) from +{sampler.sched[0]:.0f}s, "
-          f"{sum(r[7] for r in rows)}/{len(sampler.sched) * len(rows)} samples priced")
+          f"{sum(r[7] for r in rows)}/{len(sampler.sched) * len(rows)} samples priced, "
+          f"{sized} with depth")
 
     import predictor as P
     try:
         sh = client.open_by_key(P.SPREADSHEET_ID)
         try:
             ws = sh.worksheet(SHEET)
+            # The tab predates the size columns; widen its header once so the
+            # new values are labelled instead of trailing off the end nameless.
+            try:
+                have = ws.row_values(1)
+                if len(have) < len(HEADERS):
+                    ws.update("A1", [HEADERS])
+            except Exception:
+                pass
         except Exception:
             ws = sh.add_worksheet(title=SHEET, rows=8000, cols=len(HEADERS))
             ws.update("A1", [HEADERS])
