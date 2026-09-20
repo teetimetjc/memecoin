@@ -100,9 +100,17 @@ def sell(ticker, holding_yes, contracts, target_cents, exch, tag):
         "self_trade_prevention_type": "taker_at_cross",
         "post_only": False,
         "cancel_order_on_pause": False,
-        # An exit should only ever shrink a position. If the side is wrong,
-        # let the exchange refuse it rather than quietly double the bet.
-        "reduce_only": True,
+        # reduce_only is NOT set, and cannot be: Kalshi refuses it on anything
+        # but an immediate-or-cancel order --
+        #     "reduce_only can only be used with IoC orders"
+        # -- and a take-profit that cancels immediately is not a take-profit.
+        # The guard and the mechanism are mutually exclusive here, so the
+        # side has to be right by construction instead of by refusal:
+        #     holding YES -> "ask" at target
+        #     holding NO  -> "bid" at (1 - target)
+        # both of which SELL. The read-back below is what catches an error,
+        # by showing the position shrinking rather than doubling.
+        "reduce_only": False,
         "subaccount": 0,
         "exchange_index": exch,
     }
@@ -173,7 +181,7 @@ def attempt():
     target = min(99.0, round(entry * TAKE, 1))
     exch = live.market_exchange_index(ticker)
     print(f"\n  RESTING SELL of {n} at {target:.1f}c "
-          f"(side {'ask' if holding_yes else 'bid'}, reduce_only)")
+          f"(side {'ask' if holding_yes else 'bid'}, good_till_canceled)")
     ok, sdetail, soid = sell(ticker, holding_yes, int(n), target, exch,
                              f"exit-{ts}-{symbol}")
     print(f"    {'ACCEPTED' if ok else 'REFUSED'}  {sdetail}  order {soid or '-'}")
