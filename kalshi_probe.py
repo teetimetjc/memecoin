@@ -1161,7 +1161,51 @@ def _money(d, keys):
     return 0.0
 
 
+def orderbook():
+    """Dump a live order book verbatim. Depth logging came back empty.
+
+    path.py asks for the book to find out how many contracts sit at the top
+    of each side, and every value it has written so far is blank -- so either
+    the endpoint is refusing, or the response is not shaped the way the
+    parser assumes. Guessing again is how the settlement fields were misread
+    the first time, so this prints exactly what comes back.
+    """
+    print("=" * 62)
+    print("ORDER BOOK -- raw")
+    print("=" * 62)
+    code, body, err = _get("/markets", {"series_ticker": "KXBTC15M",
+                                        "limit": 1, "status": "open"})
+    ms = (body or {}).get("markets") or [] if code == 200 else []
+    if not ms:
+        print(f"  no open BTC 15-minute market ({code} {err or ''})")
+        return 1
+    tk = ms[0]["ticker"]
+    print(f"\n  ticker {tk}")
+    print(f"  market says bid={ms[0].get('yes_bid_dollars')} "
+          f"ask={ms[0].get('yes_ask_dollars')}")
+
+    import json as _json
+    for params in ({"depth": 1}, {"depth": 5}, None):
+        code, body, err = _get(f"/markets/{tk}/orderbook", params)
+        print(f"\n  GET /markets/{{ticker}}/orderbook {params or '(no params)'} -> {code}")
+        if err:
+            print(f"    error: {err}")
+            continue
+        txt = _json.dumps(body) if not isinstance(body, str) else body
+        print(f"    {txt[:700]}")
+        if code == 200:
+            break
+    print("=" * 62)
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--orderbook":
+        for _s in ("pss", "pkcs1v15"):
+            SCHEME = _s
+            if _get("/portfolio/balance")[0] == 200:
+                break
+        sys.exit(orderbook())
     if len(sys.argv) > 1 and sys.argv[1] == "--settlements":
         for _s in ("pss", "pkcs1v15"):
             SCHEME = _s
