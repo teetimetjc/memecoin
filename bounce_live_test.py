@@ -32,6 +32,7 @@ confirmation string.
 
 import math
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -41,6 +42,7 @@ import live
 import predictor as P
 
 STAKE = 5.0
+ENTRY_S = 120                # the champion reads two minutes in
 LO, HI = 20.0, 35.0          # the champion's entry band
 TAKE = 2.0
 PRICE_HOST = "https://api.elections.kalshi.com"
@@ -121,23 +123,20 @@ def sell(ticker, holding_yes, contracts, target_cents, exch, tag):
     return False, f"HTTP {r.status_code} {r.text[:200]}", ""
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] != "RUN-ONE-FIVE-DOLLAR-TEST":
-        print("Refusing: pass the confirmation string to run this.")
-        return 1
-    print("=" * 66)
-    print("BOUNCE EXIT TEST -- one $5 buy, then a resting sell at 2x")
-    print("=" * 66)
-    if not live.enabled():
-        print("  LIVE_TRADING / ALLOW_LIVE_TRADING are not both set. Nothing sent.")
-        return 1
+def attempt():
+    """Look at one window. Returns True once a trade has been placed.
 
+    Reading at +2 MINUTES is the point, not a detail. The first run fired
+    five and a half minutes in, by which time every coin had resolved to
+    4-14c and nothing was in band -- the setup this is meant to test had
+    already come and gone.
+    """
     boundary, markets = this_window()
     secs = (datetime.now(timezone.utc) - boundary).total_seconds()
     print(f"  window {boundary:%H:%M} UTC, now +{secs:.0f}s, {len(markets)} markets")
     if not markets:
         print("  no markets resolved for this window.")
-        return 1
+        return False
 
     pick = None
     for symbol, ticker in markets:
@@ -156,9 +155,8 @@ def main():
         print(f"    {symbol:9s} yes {a:5.1f}c / no {no_ask:5.1f}c{flag}")
 
     if not pick:
-        print("\n  No coin is in the 20-35c band this window. Nothing sent.")
-        print("  (That is a normal outcome -- run it again next window.)")
-        return 0
+        print("    -> nothing in the 20-35c band; waiting for the next window")
+        return False
 
     symbol, ticker, holding_yes, entry = pick
     side = "UP" if holding_yes else "DOWN"
@@ -169,8 +167,8 @@ def main():
     print(f"    {status}  {detail or ''}  {n} contracts, ${cost:.2f}, order {oid or '-'}")
     if status != "PLACED" or n < 1:
         print("\n  Entry did not fill, so there is nothing to sell. "
-              "The exit leg is still untested.")
-        return 0
+              "The exit leg is still untested; will try the next window.")
+        return False
 
     target = min(99.0, round(entry * TAKE, 1))
     exch = live.market_exchange_index(ticker)
@@ -198,6 +196,42 @@ def main():
     print("\n  WHAT TO LOOK FOR: the sell should show as resting with the full")
     print("  count left. If it filled instantly the target was already through;")
     print("  if it was refused, the message above says why.")
+    return True
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] != "RUN-ONE-FIVE-DOLLAR-TEST":
+        print("Refusing: pass the confirmation string to run this.")
+        return 1
+    windows = int(sys.argv[2]) if len(sys.argv) > 2 else 8
+
+    print("=" * 66)
+    print("BOUNCE EXIT TEST -- one $5 buy, then a resting sell at 2x")
+    print(f"  waiting up to {windows} windows for a setup; stops at the first trade")
+    print("=" * 66)
+    if not live.enabled():
+        print("  LIVE_TRADING / ALLOW_LIVE_TRADING are not both set. Nothing sent.")
+        return 1
+
+    for k in range(windows):
+        now = datetime.now(timezone.utc)
+        b = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+        # The read is at +2min. If this window is already past it, wait for
+        # the next one rather than sampling a window that has moved on.
+        target = b + timedelta(seconds=ENTRY_S)
+        if now >= target:
+            target = b + timedelta(minutes=15, seconds=ENTRY_S)
+        wait = (target - datetime.now(timezone.utc)).total_seconds()
+        if wait > 0:
+            print(f"\n  [{k+1}/{windows}] sleeping {wait:.0f}s until "
+                  f"{target:%H:%M:%S} UTC (+{ENTRY_S}s into the window)")
+            time.sleep(wait)
+        if attempt():
+            print("=" * 66)
+            return 0
+
+    print(f"\n  {windows} windows went by with nothing in the 20-35c band.")
+    print("  Nothing was spent. The exit leg is still untested.")
     print("=" * 66)
     return 0
 
