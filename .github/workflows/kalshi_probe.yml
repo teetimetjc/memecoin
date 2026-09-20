@@ -47,6 +47,7 @@ jobs:
             exchange-index)      python kalshi_probe.py --exchange-index ;;
             fills)               python kalshi_probe.py --fills ;;
             settlements)         python kalshi_probe.py --settlements ;;
+            orderbook)           python kalshi_probe.py --orderbook ;;
             order-types)         python kalshi_probe.py --order-types ;;
             *)                   python kalshi_probe.py ;;
           esac
