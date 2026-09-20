@@ -222,6 +222,15 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
       floor, never an overstatement — but the same 30-second spacing also means
       a real order would need to be resting at the level, not placed by hand
       after noticing it.</p>
+    <p><b>These numbers were overstated until 20 Sep, by about 2.7&times;.</b>
+      The payload carried a flag saying whether each coin finished above its
+      strike, and this page read it as &ldquo;the trade won&rdquo;. That is only
+      true for a trade holding the UP side; a trade holding DOWN wins when the
+      coin finishes <em>below</em>. Every DOWN trade that ran to settlement was
+      therefore scored by the wrong question &mdash; the same mistake, in a new
+      place, as the one that made the v6 dashboard look profitable for weeks.
+      The outcome is now resolved for the side actually held before it reaches
+      the page.</p>
     <p><b>This page shares no data with the v6 dashboard.</b> That one scored a
       rule on who wins at settlement, and scored it wrongly for weeks. This is a
       separate question with a separate payload: not who wins, but whether the
