@@ -16,11 +16,18 @@ on:
         description: 'Type RUN to place ONE $5 trade'
         required: true
         default: ''
+      windows:
+        description: 'How many 15-min windows to wait for a setup'
+        required: false
+        default: '8'
 
 jobs:
   test:
     runs-on: ubuntu-latest
     if: inputs.confirm == 'RUN'
+    # Long enough to sit through eight windows (about two hours) waiting for
+    # a coin to be in band. Runner minutes are free on a public repo.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,4 +48,4 @@ jobs:
           LIVE_TRADING: "1"
           ALLOW_LIVE_TRADING: "1"
           LIVE_ALLOW_DOWN: "1"
-        run: python bounce_live_test.py RUN-ONE-FIVE-DOLLAR-TEST
+        run: python bounce_live_test.py RUN-ONE-FIVE-DOLLAR-TEST ${{ inputs.windows }}
