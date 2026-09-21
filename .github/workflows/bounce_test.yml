@@ -30,7 +30,7 @@ on:
         required: false
         default: '0'
       combo:
-        description: '1 = the six high-ROI rules. plan = price-dependent targets (10-20c 3x, 20-40c 2x). Blank = champion.'
+        description: '1 = six high-ROI rules. plan = 10-20c at 3x plus 20-40c at 2x. cheap = 10-20c only. Blank = champion.'
         required: false
         default: ''
       max_take:
@@ -39,6 +39,10 @@ on:
         default: '0'
       pulse:
         description: 'Set to 1 for an hourly summary notification (fills, stake, balance). No per-bet alerts.'
+        required: false
+        default: ''
+      min_entry:
+        description: 'Cheapest entry allowed, in cents. Blank = 20, which REFUSES the 10-20c band. Set 10 to trade it.'
         required: false
         default: ''
 
@@ -84,4 +88,10 @@ jobs:
           # Lowers a target without changing which setups qualify.
           MAX_TAKE: ${{ inputs.max_take }}
           BOUNCE_PULSE: ${{ inputs.pulse }}
+          # live.py refuses anything under this, LOCALLY, before the order is
+          # sent -- and reports it exactly like a market that moved away. At
+          # the 20c default that silently refuses every 10-20c setup, which
+          # is the band the bounce evidence actually lives in. A cheap run
+          # must set this to 10 or it will place nothing and look unlucky.
+          MIN_ENTRY_CENTS: ${{ inputs.min_entry }}
         run: python bounce_live_test.py RUN-ONE-FIVE-DOLLAR-TEST ${{ inputs.windows }}
