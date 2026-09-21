@@ -169,6 +169,12 @@ def combo_take(symbol, entry, entry_s):
 # from it afterwards; 0 means no cap, which is only safe for a single
 # supervised trade.
 SPENT = 0.0
+# Counted per ATTEMPT, not per window. attempt() collapses a whole window
+# into one verdict, so a window that bought one coin and missed three
+# reported a single trade and NO misses -- which zeroed the fill rate,
+# the one number these runs exist to measure.
+TRADES = 0
+MISSES = 0
 MAX_SPEND = float(os.environ.get("MAX_SPEND_USD") or 0)
 # Hourly summary notification, off unless asked for. Betting alerts stay
 # off regardless: this reports what already happened, it never names a bet
@@ -429,13 +435,17 @@ def attempt(stop_at=None, entry_s=ENTRY_S, done=None):
     if seen > 1:
         print(f"    -> {seen} setups this window; taking all of them")
     out = "none"
+    global TRADES, MISSES
     for symbol, ticker, holding_yes, entry, take in picks:
         r = trade_one(ts, symbol, ticker, holding_yes, entry, seen, stop_at,
                       take)
         if r == "traded":
             out = "traded"
+            TRADES += 1
             if done is not None:
                 done.add(symbol)
+        elif r == "missed":
+            MISSES += 1
         elif r == "expired":
             return "expired"          # the deadline applies to the rest too
         elif r == "budget":
@@ -638,10 +648,12 @@ def main():
     # sentence as "the setup came and we missed it" hides the one failure
     # mode a backtest cannot see. Those are opposite problems: the first is
     # patience, the second is slippage.
-    print(f"\n  {windows} windows checked: {traded} buys, {empty} reads with "
-          f"nothing qualifying, {missed} where a setup appeared but the "
-          f"entry filled nothing.")
-    if missed:
+    att = TRADES + MISSES
+    print(f"\n  {windows} windows checked: {TRADES} buys, {MISSES} attempts "
+          f"that filled nothing"
+          + (f" -- {TRADES/att*100:.0f}% fill rate over {att} attempts."
+             if att else "."))
+    if MISSES:
         print("  A miss is not the same as an absent setup -- the book moved "
               "between the read and the order. Logged to the Fills tab so the "
               "real fill rate can be measured rather than guessed.")
