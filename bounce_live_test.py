@@ -63,7 +63,7 @@ PRICE_HOST = "https://api.elections.kalshi.com"
 # picked it. That choice is not free: it converts some 2.5x sales into 3x
 # sales that never trade and ride to settlement instead. It is the honest
 # reading of "fire all of them" rather than the flattering one.
-COMBO = (os.environ.get("COMBO") or "") == "1"
+COMBO = (os.environ.get("COMBO") or "") in ("1", "plan")
 COMBO_RULES = [
     ("ALL",  10.0, 20.0, 180, 3.0),
     ("DOGE", 15.0, 30.0, 120, 3.0),
@@ -72,6 +72,42 @@ COMBO_RULES = [
     ("BTC",  30.0, 40.0, 180, 2.5),
     ("XRP",  10.0, 25.0, 180, 3.0),
 ]
+
+# THE PRICE-DEPENDENT PLAN (COMBO=plan), and why a flat multiple was wrong.
+#
+# A single take-profit means different things at different prices: 2.5x from
+# 15c is a move to 38c, while 2.5x from 36c demands 90c -- the market
+# resolving almost completely. The first is a bounce; the second is a
+# different bet wearing the same number. A live 36c trade on 21 Sep peaked
+# at 63c, missed its 90c target and settled worthless, which is that defect
+# costing money rather than describing it.
+#
+# Per-trade profit by entry band says the same thing. The 10-20c row climbs
+# all the way out to 4x, while 30-40c peaks near 2-2.5x and falls off after.
+# Cheap entries want MORE greed; dearer ones want less.
+#
+#     band     1.5x    2.0x    2.5x    3.0x    3.5x    4.0x
+#     0-10c   -3.28   -3.28   -3.28   -3.28   -3.09   -2.83
+#     10-20c  +2.31   +3.22   +4.08   +4.86   +5.20   +5.33
+#     20-30c  -0.34   +0.19   +0.16   +0.38   -0.31   -0.42
+#     30-40c  +0.84   +1.62   +1.81   +0.98   +0.61   +0.61
+#
+# Under 10c is excluded because it loses at EVERY target, and no exit
+# rescues an entry that is wrong.
+#
+# Scored on holdout windows this plan pays +$1.24 a trade against +$1.01 for
+# a flat 2.5x and +$0.45 for a flat 3x. It also beats the version tuned to
+# the best target in every band, which manages only +$1.11 -- coarser
+# survived better than finer, which is overfitting caught in the act and the
+# reason this plan has two rows rather than five.
+#
+# The interval still spans zero. Better than flat is not the same as proven.
+PLAN_RULES = [
+    ("ALL", 10.0, 20.0, 180, 3.0),
+    ("ALL", 20.0, 40.0, 180, 2.0),
+]
+if (os.environ.get("COMBO") or "") == "plan":
+    COMBO_RULES = PLAN_RULES
 # The read times the rules actually need. Two passes per window, not one.
 COMBO_ENTRIES = sorted({r[3] for r in COMBO_RULES})
 
