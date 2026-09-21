@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type RUN to place ONE $5 trade'
+        description: 'Type RUN to place $5 trades'
         required: true
         default: ''
       windows:
@@ -24,6 +24,10 @@ on:
         description: 'Stop BUYING after this UTC time, YYYY-MM-DDTHH:MM. Blank = one trade only.'
         required: false
         default: ''
+      max_spend:
+        description: 'Total dollars this run may commit. 0 = no cap (single supervised trade only).'
+        required: false
+        default: '0'
 
 jobs:
   test:
@@ -52,8 +56,11 @@ jobs:
           LIVE_TRADING: "1"
           ALLOW_LIVE_TRADING: "1"
           LIVE_ALLOW_DOWN: "1"
-          # The hard stop. Checked in the SECOND before every order is
-          # signed, so a job that hangs, retries or is dispatched twice
-          # cannot spend past it. Blank keeps the old one-trade behaviour.
+          # Two gates, both checked in the SECOND before an order is signed.
+          # The deadline bounds WHEN it may buy; the ceiling bounds HOW MUCH.
+          # Neither can be outrun by a job that hangs, retries, or is
+          # dispatched twice, and a window that produces five setups cannot
+          # turn "until 11:45" into a number nobody named in advance.
           BUY_UNTIL_UTC: ${{ inputs.buy_until }}
+          MAX_SPEND_USD: ${{ inputs.max_spend }}
         run: python bounce_live_test.py RUN-ONE-FIVE-DOLLAR-TEST ${{ inputs.windows }}
