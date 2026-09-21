@@ -213,6 +213,24 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     </table></div>
   </section>
 
+  <section class="panel">
+    <div class="phead">
+      <h2>Was 2&times; the right greed?</h2>
+      <span class="note" id="peakNote"></span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Sell at</th><th>Reached it</th><th>Held to settle</th>
+        <th>P&amp;L</th><th>Per trade</th></tr></thead>
+      <tbody id="peakBody"></tbody>
+    </table></div>
+    <div class="legend" id="peakFoot"></div>
+    <div class="tablewrap" style="margin-top:14px"><table>
+      <thead><tr><th>How high it actually got</th><th>Setups</th><th>Share</th></tr></thead>
+      <tbody id="distBody"></tbody>
+    </table></div>
+    <div class="legend" id="distFoot"></div>
+  </section>
+
   <section class="panel" id="rulePanel" hidden>
     <div class="phead">
       <h2>Champion and challengers</h2>
@@ -669,10 +687,119 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
       + `the filter was chosen from, and a filter always flatters itself there.</span>`;
   }
 
+  // ---- what the take-profit left on the table --------------------------
+  // The question this answers: we sell at 2x, but how many of those would
+  // have gone on to 2.5x or 3x if we had been greedier? The paths are logged
+  // for every market whether or not a trade was placed, so the rest of each
+  // one is already here -- no new data needed, just the nerve to look.
+  //
+  // Two honest limits, both stated on the page rather than buried: the book
+  // is sampled every 30 SECONDS, so a spike that comes and goes between two
+  // samples is invisible; and sampling stops around +13.5 min, so the last
+  // stretch before settlement is dark. Both make the peaks below an
+  // UNDERSTATEMENT of what was briefly available -- which is the safe
+  // direction for a "should we have held out for more" question, because it
+  // cannot manufacture a peak that never happened.
+  const LADDER = [1.5, 2.0, 2.5, 3.0, 4.0];
+  // A target at or above 100c can never trade, so priceTrade falls through
+  // to settlement. That IS the "never sell early" arm, not a special case.
+  const HOLD = 99;
+  // Highest price the side we hold was BID after entry, as a multiple of
+  // what we paid. k starts at 1 for the same reason priceTrade does: you
+  // cannot sell into the same quote you just bought through.
+  function peakMult(tr){
+    let hi = null;
+    for(let k=1;k<tr.p.length;k++){
+      const v = tr.p[k];
+      if(v == null) continue;
+      if(hi == null || v > hi) hi = v;
+    }
+    return hi == null ? null : hi/tr.e;
+  }
+  function drawPeaks(rows){
+    const ladder = LADDER.map(tk=>({tk, st: stats2(rows, tk)}));
+    const hold = stats2(rows, HOLD);
+    const best = ladder.concat([{tk:HOLD, st:hold}])
+      .filter(r=>r.st.ev != null)
+      .sort((a,b)=>b.st.ev - a.st.ev)[0];
+    const mk = (label, st, tk) => {
+      if(!st.priced) return `<tr><td>${label}</td><td colspan="4"`
+        + ` style="color:var(--muted)">nothing settled yet</td></tr>`;
+      const win = best && best.tk === tk;
+      return `<tr${win?' style="background:var(--signal-soft)"':''}>`
+        + `<td>${label}</td>`
+        + `<td>${tk===HOLD ? "—"
+              : pct(st.hit,st.priced).toFixed(0)+"%"
+                + `<span style="color:var(--muted)"> ${st.hit}/${st.priced}</span>`}</td>`
+        + `<td>${st.priced - st.hit}</td>`
+        + `<td style="color:var(--${st.net>=0?"up":"down"})">${money(st.net)}</td>`
+        + `<td style="color:var(--${st.ev>=0?"up":"down"})">${money(st.ev)}</td></tr>`;
+    };
+    document.getElementById("peakBody").innerHTML =
+      ladder.map(r=>mk(`${r.tk}×`, r.st, r.tk)).join("")
+      + mk("never — hold to settlement", hold, HOLD);
+    document.getElementById("peakNote").textContent =
+      `${rows.length} setups · $${stake} a bet · highlighted row pays best`;
+    document.getElementById("peakFoot").innerHTML =
+      `<span>Same trades, same entries — only the exit changes. A target `
+      + `that never trades is held to settlement, so the greedier rows carry `
+      + `more of the losses that a quick sell would have dodged. `
+      + `<b>The bottom row is the control:</b> if it pays as well as the `
+      + `others, the take-profit is not what is making the money.</span>`;
+
+    // How high did each one actually get? This is the direct answer to
+    // "would they all have 3x'd" -- and it is a distribution, not an average,
+    // because the average of a few runaways and many duds is a number that
+    // describes neither.
+    const peaks = rows.map(peakMult).filter(v=>v != null);
+    const cuts = [[0,1,"never got above what we paid"],
+                  [1,1.5,"up a bit, under 1.5×"],
+                  [1.5,2,"1.5× to 2×"],
+                  [2,2.5,"2× to 2.5×"],
+                  [2.5,3,"2.5× to 3×"],
+                  [3,1e9,"3× or better"]];
+    document.getElementById("distBody").innerHTML = peaks.length
+      ? cuts.map(([lo,hi,lab])=>{
+          const n = peaks.filter(v=>v>=lo && v<hi).length;
+          return `<tr><td>${lab}</td><td>${n}</td>`
+            + `<td>${pct(n,peaks.length).toFixed(0)}%</td></tr>`;
+        }).join("")
+      : `<tr><td colspan="3" style="color:var(--muted)">no paths yet</td></tr>`;
+    // The conditional question, which is the one actually being asked.
+    const hit2 = peaks.filter(v=>v>=2);
+    const on25 = hit2.filter(v=>v>=2.5).length, on3 = hit2.filter(v=>v>=3).length;
+    document.getElementById("distFoot").innerHTML = hit2.length
+      ? `<span><b>Of the ${hit2.length} that reached 2×, `
+        + `${pct(on25,hit2.length).toFixed(0)}% went on to 2.5× and `
+        + `${pct(on3,hit2.length).toFixed(0)}% to 3×.</b> That is the cost `
+        + `of selling at 2× — but only on the winners. Raising the `
+        + `target also means the ones that stall at 1.9× ride to `
+        + `settlement instead of banking, which the table above prices in.</span>`
+      : `<span>Nothing has reached 2× yet in this slice.</span>`;
+    document.getElementById("distFoot").innerHTML +=
+      `<span style="display:block;margin-top:8px;color:var(--muted)">The book `
+      + `is sampled every 30s and stops near +13.5 min, so a brief spike `
+      + `between samples is missed. These peaks are a floor, not a ceiling.</span>`;
+  }
+  // stats() closes over the reader's take-profit; this panel needs the same
+  // arithmetic at SEVERAL targets at once, so the target is a parameter here
+  // rather than shared state.
+  function stats2(rows, tk){
+    let hit=0, net=0, priced=0;
+    for(const t of rows){
+      const r = priceTrade(t, tk, stake);
+      if(!r) continue;
+      priced++; net += r.net;
+      if(r.hit) hit++;
+    }
+    return {priced, hit, net, ev: priced ? net/priced : null};
+  }
+
   function render(){
     drawChips();
     const rows = view();
     drawSel(rows); drawHold(rows); drawPaths(rows); drawTables(rows);
+    drawPeaks(rows);
   }
 
   // ---- champion and challengers ----------------------------------------
