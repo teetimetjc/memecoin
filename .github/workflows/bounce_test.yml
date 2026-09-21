@@ -30,13 +30,17 @@ on:
         required: false
         default: '0'
       combo:
-        description: 'Set to 1 for the six high-ROI rules. Blank = champion only (20-35c, +2min, 2x).'
+        description: '1 = the six high-ROI rules. plan = price-dependent targets (10-20c 3x, 20-40c 2x). Blank = champion.'
         required: false
         default: ''
       max_take:
         description: 'Cap the take-profit, e.g. 2.5. Banks more often for slightly less edge. 0 = each rule keeps its own.'
         required: false
         default: '0'
+      pulse:
+        description: 'Set to 1 for an hourly summary notification (fills, stake, balance). No per-bet alerts.'
+        required: false
+        default: ''
 
 jobs:
   test:
@@ -61,6 +65,9 @@ jobs:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           KALSHI_KEY_ID:  ${{ secrets.KALSHI_KEY_ID }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          # Only read by the hourly pulse. Nothing here sends a bet alert.
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY:  ${{ secrets.PUSHOVER_USER_KEY }}
           # On for this job ONLY. predictor.yml keeps its own "0".
           LIVE_TRADING: "1"
           ALLOW_LIVE_TRADING: "1"
@@ -76,4 +83,5 @@ jobs:
           COMBO: ${{ inputs.combo }}
           # Lowers a target without changing which setups qualify.
           MAX_TAKE: ${{ inputs.max_take }}
+          BOUNCE_PULSE: ${{ inputs.pulse }}
         run: python bounce_live_test.py RUN-ONE-FIVE-DOLLAR-TEST ${{ inputs.windows }}
