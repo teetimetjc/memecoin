@@ -394,7 +394,12 @@ def main():
     stop_at = deadline()
     if stop_at == "bad":
         return 1
-    many = stop_at is not None
+    # More than one buy needs a BOUND, but either kind will do: a deadline
+    # bounds the time, a ceiling bounds the money. Requiring the deadline
+    # specifically forced a stop time onto a run that only wanted a budget,
+    # and the budget is the stricter limit of the two -- it cannot be
+    # outrun by a busy afternoon the way a clock can.
+    many = stop_at is not None or MAX_SPEND > 0
 
     print("=" * 66)
     print("BOUNCE EXIT TEST -- $5 a buy, each with a resting sell at 2x")
