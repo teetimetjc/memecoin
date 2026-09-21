@@ -172,6 +172,70 @@ def main():
               f"{('median '+format(m,'.0f')) if m is not None else '-':>16} "
               f"{s['exit_ok']/s['exit_n']*100:>18.0f}%")
 
+    # WHICH TARGET CAN ACTUALLY BE SOLD INTO. The exit depth above is
+    # measured at one target per band; the real question is how that depth
+    # changes as the target moves. A greedier exit is worth less than it
+    # looks if nobody is bid there.
+    print("\n" + "=" * 74)
+    print("THE 10-20c BAND, EXIT DEPTH AT EACH TARGET")
+    print("=" * 74)
+    print(f"\n{'target':>8} {'reached':>9} {'bid size':>16} {'can sell all':>14} "
+          f"{'median % of position':>21}")
+    for take in (1.5, 2.0, 2.5, 3.0):
+        hit = ok = 0
+        sizes = []
+        fracs = []
+        for r in rows[1:]:
+            ts2 = str(cell(r, "Timestamp")).replace(" UTC", "").strip()
+            if ts2 in hedge.POISONED:
+                continue
+            asks = [_f(x) for x in str(cell(r, "Yes Asks")).split(",")]
+            bids = [_f(x) for x in str(cell(r, "Yes Bids")).split(",")]
+            asz = [_f(x) for x in str(cell(r, "Yes Ask Sz")).split(",")]
+            bsz = [_f(x) for x in str(cell(r, "Yes Bid Sz")).split(",")]
+            first = _f(cell(r, "First Offset s")) or 30.0
+            step = _f(cell(r, "Step s")) or 30.0
+            off = (ENTRY_S - first) / step
+            if off < 0 or abs(off - round(off)) > 0.01:
+                continue
+            i = int(round(off))
+            if (i >= len(asks) or i >= len(bids) or i >= len(asz)
+                    or i >= len(bsz)):
+                continue
+            a, b = asks[i], bids[i]
+            if a is None or b is None or asz[i] is None or bsz[i] is None:
+                continue
+            no_ask = 100.0 - b
+            cheap_yes = a <= no_ask
+            entry = a if cheap_yes else no_ask
+            if not (10 <= entry < 20):
+                continue
+            want = STAKE / (entry / 100.0)
+            target = entry * take
+            if target >= 100:
+                continue
+            for k in range(i + 1, min(len(bids), len(asks), len(bsz), len(asz))):
+                bb, aa = bids[k], asks[k]
+                if bb is None or aa is None:
+                    continue
+                px = bb if cheap_yes else (100.0 - aa)
+                if px >= target:
+                    sz = bsz[k] if cheap_yes else asz[k]
+                    if sz is None:
+                        break
+                    hit += 1
+                    sizes.append(sz)
+                    fracs.append(min(1.0, sz / want))
+                    if sz >= want:
+                        ok += 1
+                    break
+        m = med(sizes)
+        mf = med(fracs)
+        print(f"{str(take)+'x':>8} {hit:>9} "
+              f"{('median '+format(m,'.0f')) if m is not None else '-':>16} "
+              f"{(str(round(ok/hit*100)) + '%') if hit else '-':>14} "
+              f"{(str(round(mf*100)) + '%') if mf is not None else '-':>21}")
+
     print("\n'wants' is how many contracts $5 buys at the middle of the band.")
     print("'fills in full' is the share of setups with at least that many")
     print("resting at the quoted price -- the backtest assumes 100%.")
