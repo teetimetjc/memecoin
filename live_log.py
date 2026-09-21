@@ -115,7 +115,7 @@ CHANGES = [
         "stake": 5.0,
     },
     {
-        "at": "2026-09-21 20:45",
+        "at": "2026-09-21 20:30",
         "what": "ALL REAL-MONEY BETTING PAUSED",
         "rules": "nothing places orders; collection continues",
         "why": "about $50 down on the day across four rule sets. Open "
