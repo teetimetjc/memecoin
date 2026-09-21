@@ -100,6 +100,20 @@ CHANGES = [
                "with a liquidity problem, and it was the one being used",
         "stake": 5.0,
     },
+    {
+        "at": "2026-09-21 18:50",
+        "what": "sub-10c, held to settlement",
+        "rules": "under 10c at +3min or +7min, no take-profit, "
+                 "hold to settlement; $25 ceiling",
+        "why": "a different bet from the bounce, and the first with no exit "
+               "at all -- every failure of the day came from the exit. The "
+               "case for it is a calibration gap: priced at 8.3c, the side "
+               "won 19.4% of 160 setups, and it held up out of sample. The "
+               "case against is that the top ten bets are 112% of the profit "
+               "and the interval spans zero. Balance at the start: $147.73, "
+               "so the floor for this run is $122.73",
+        "stake": 5.0,
+    },
 ]
 
 
