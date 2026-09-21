@@ -42,7 +42,16 @@ import requests
 import live
 import predictor as P
 
-STAKE = 5.0
+# Dollars per bet. Settable because the right size depends on the rule:
+# a 2x bounce on a 30c contract and a hold on a 4c longshot have completely
+# different payoffs per dollar, and the cheap end buys so many contracts
+# that $5 is a larger position than it sounds -- $5 at 4.5c is 111
+# contracts, which pays $111 if it lands.
+#
+# Smaller also buys more BETS from the same ceiling, and for a rule whose
+# whole question is "does one in five really land", the count of bets is
+# the thing that resolves it, not the size of each.
+STAKE = float(os.environ.get("STAKE_USD") or 5.0)
 ENTRY_S = 120                # the champion reads two minutes in
 LO, HI = 20.0, 35.0          # the champion's entry band
 TAKE = 2.0
