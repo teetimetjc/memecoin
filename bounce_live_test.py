@@ -76,6 +76,25 @@ COMBO_RULES = [
 COMBO_ENTRIES = sorted({r[3] for r in COMBO_RULES})
 
 
+# A CEILING ON GREED, and why it is a knob rather than a rewrite.
+#
+# Priced across the 201 setups these rules select, the targets rank:
+#
+#     2.0x  +$2.42 a trade, banks 34% of the time
+#     2.5x  +$3.06 a trade, banks 26%
+#     3.0x  +$3.39 a trade, banks 15%   <- highest expected value
+#
+# 3x wins on paper, and all three intervals overlap heavily enough that the
+# ranking is real but not established. What 3x costs is FEEDBACK: it closes
+# a position 15% of the time where 2.5x closes 26%, and while the point of
+# these early runs is to learn how the thing behaves with real money, more
+# closed trades is worth more than the last $0.33 of theoretical edge.
+#
+# So the cap trades a little expected value for a lot more observation, on
+# purpose, and can be lifted in one input once the mechanism is trusted.
+MAX_TAKE = float(os.environ.get("MAX_TAKE") or 0)
+
+
 def combo_take(symbol, entry, entry_s):
     """Greediest target among the rules selecting this setup, or None."""
     coin = symbol.replace("USDT", "")
@@ -87,6 +106,12 @@ def combo_take(symbol, entry, entry_s):
             continue
         if lo <= entry < hi and (best is None or take > best):
             best = take
+    # The cap lowers a target; it never makes one qualify that did not.
+    # Applied after selection so the SET of setups is unchanged -- only
+    # where each one sells. Otherwise lowering the cap would quietly change
+    # which rules fire, and the run would stop being the rules we measured.
+    if best is not None and MAX_TAKE and best > MAX_TAKE:
+        best = MAX_TAKE
     return best
 
 # THE FILL-RATE LOG, and why it earns a tab of its own.
