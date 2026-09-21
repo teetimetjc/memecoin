@@ -48,6 +48,47 @@ LO, HI = 20.0, 35.0          # the champion's entry band
 TAKE = 2.0
 PRICE_HOST = "https://api.elections.kalshi.com"
 
+# THE COMBO SET -- the six rules that cleared 67% ROI in the grid search,
+# run together. Off unless COMBO=1, so the champion stays the default.
+#
+#   (coin, low, high, seconds into the window, take-profit multiple)
+#
+# WHY THESE OVERLAP, AND WHY THAT HAD TO BE RESOLVED. Half of the setups
+# these select are selected by more than one rule, and 98 of them are given
+# CONFLICTING targets -- the same contract told to sell at 2.5x by one rule
+# and 3x by another. Fired naively that is two orders on one position at two
+# exits, which is not what any of the six rules measured.
+#
+# So a setup is bought ONCE, at the greediest target among the rules that
+# picked it. That choice is not free: it converts some 2.5x sales into 3x
+# sales that never trade and ride to settlement instead. It is the honest
+# reading of "fire all of them" rather than the flattering one.
+COMBO = (os.environ.get("COMBO") or "") == "1"
+COMBO_RULES = [
+    ("ALL",  10.0, 20.0, 180, 3.0),
+    ("DOGE", 15.0, 30.0, 120, 3.0),
+    ("ALL",   0.0, 20.0, 180, 3.0),
+    ("ALL",  10.0, 20.0, 180, 2.5),
+    ("BTC",  30.0, 40.0, 180, 2.5),
+    ("XRP",  10.0, 25.0, 180, 3.0),
+]
+# The read times the rules actually need. Two passes per window, not one.
+COMBO_ENTRIES = sorted({r[3] for r in COMBO_RULES})
+
+
+def combo_take(symbol, entry, entry_s):
+    """Greediest target among the rules selecting this setup, or None."""
+    coin = symbol.replace("USDT", "")
+    best = None
+    for c, lo, hi, es, take in COMBO_RULES:
+        if es != entry_s:
+            continue
+        if c != "ALL" and c != coin:
+            continue
+        if lo <= entry < hi and (best is None or take > best):
+            best = take
+    return best
+
 # THE FILL-RATE LOG, and why it earns a tab of its own.
 #
 # Every P&L number on the Bounce Test page assumes an entry fills at the
@@ -181,13 +222,17 @@ def log_attempt(row):
         print(f"    [fills] could not log: {e}")
 
 
-def attempt(stop_at=None):
-    """Look at one window. Returns traded / missed / expired / none.
+def attempt(stop_at=None, entry_s=ENTRY_S, done=None):
+    """Look at one window at one read time. traded / missed / expired / none.
 
-    Reading at +2 MINUTES is the point, not a detail. The first run fired
-    five and a half minutes in, by which time every coin had resolved to
-    4-14c and nothing was in band -- the setup this is meant to test had
-    already come and gone.
+    Reading at the RIGHT SECOND is the point, not a detail. The first run
+    fired five and a half minutes in, by which time every coin had resolved
+    to 4-14c and nothing was in band -- the setup this is meant to test had
+    already come and gone. The combo rules read at +2min and +3min, and a
+    rule scored at +3min is a different rule if it is filled at +2min.
+
+    `done` carries the coins already bought earlier in this same window, so
+    the second pass cannot buy a coin the first pass already holds.
     """
     boundary, markets = this_window()
     secs = (datetime.now(timezone.utc) - boundary).total_seconds()
@@ -198,21 +243,33 @@ def attempt(stop_at=None):
 
     picks = []
     for symbol, ticker in markets:
+        if symbol in (done or ()):
+            continue                 # already bought this window
         b, a = book(ticker)
         if b is None or a is None:
             print(f"    {symbol:9s} no book")
             continue
         no_ask = round(100.0 - b, 1)
-        cy, cn = a <= HI, no_ask <= HI
-        entry = a if cy else no_ask
+        # The CHEAPER side, whichever it is. The champion also required it
+        # to be under 45c; the combo rules carry their own bands, so the
+        # band test is the rule's job and not a second filter on top.
+        cheap_yes = a <= no_ask
+        entry = a if cheap_yes else no_ask
         flag = ""
-        if cy != cn and LO <= entry < HI:
-            flag = "  <- SETUP"
-            picks.append((symbol, ticker, cy, entry))
+        if COMBO:
+            take = combo_take(symbol, entry, entry_s)
+            if take:
+                flag = f"  <- SETUP (sell {take}x)"
+                picks.append((symbol, ticker, cheap_yes, entry, take))
+        else:
+            cy, cn = a <= HI, no_ask <= HI
+            if cy != cn and LO <= entry < HI:
+                flag = "  <- SETUP"
+                picks.append((symbol, ticker, cy, entry, TAKE))
         print(f"    {symbol:9s} yes {a:5.1f}c / no {no_ask:5.1f}c{flag}")
 
     if not picks:
-        print("    -> nothing in the 20-35c band; waiting for the next window")
+        print("    -> nothing qualifies at this read; on to the next")
         return "none"
 
     # EVERY qualifying coin, not just the first. Taking only one was an
@@ -231,10 +288,13 @@ def attempt(stop_at=None):
     if seen > 1:
         print(f"    -> {seen} setups this window; taking all of them")
     out = "none"
-    for symbol, ticker, holding_yes, entry in picks:
-        r = trade_one(ts, symbol, ticker, holding_yes, entry, seen, stop_at)
+    for symbol, ticker, holding_yes, entry, take in picks:
+        r = trade_one(ts, symbol, ticker, holding_yes, entry, seen, stop_at,
+                      take)
         if r == "traded":
             out = "traded"
+            if done is not None:
+                done.add(symbol)
         elif r == "expired":
             return "expired"          # the deadline applies to the rest too
         elif r == "budget":
@@ -245,7 +305,8 @@ def attempt(stop_at=None):
     return out
 
 
-def trade_one(ts, symbol, ticker, holding_yes, entry, seen, stop_at):
+def trade_one(ts, symbol, ticker, holding_yes, entry, seen, stop_at,
+              take=TAKE):
     """One buy and its resting sell. Returns traded / missed / expired / budget."""
     global SPENT
     side = "UP" if holding_yes else "DOWN"
@@ -287,7 +348,7 @@ def trade_one(ts, symbol, ticker, holding_yes, entry, seen, stop_at):
         print("  Entry did not fill, so there is nothing to sell.")
         return "missed"
 
-    target = min(99.0, round(entry * TAKE, 1))
+    target = min(99.0, round(entry * take, 1))
     exch = live.market_exchange_index(ticker)
     print(f"  RESTING SELL of {n} at {target:.1f}c "
           f"(side {'ask' if holding_yes else 'bid'}, good_till_canceled)")
@@ -349,38 +410,57 @@ def main():
         print("  LIVE_TRADING / ALLOW_LIVE_TRADING are not both set. Nothing sent.")
         return 1
 
+    # The read times this run needs. The champion wants one pass at +2min;
+    # the combo set wants +2min AND +3min, because a rule measured at +3min
+    # is a DIFFERENT rule if it is filled at +2min -- the price it selects on
+    # has had another minute to move.
+    reads = COMBO_ENTRIES if COMBO else [ENTRY_S]
+
     missed = empty = traded = 0
+    stop = False
     for k in range(windows):
-        now = datetime.now(timezone.utc)
-        b = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
-        # The read is at +2min. If this window is already past it, wait for
-        # the next one rather than sampling a window that has moved on.
-        target = b + timedelta(seconds=ENTRY_S)
-        if now >= target:
-            target = b + timedelta(minutes=15, seconds=ENTRY_S)
-        wait = (target - datetime.now(timezone.utc)).total_seconds()
-        if wait > 0:
-            print(f"\n  [{k+1}/{windows}] sleeping {wait:.0f}s until "
-                  f"{target:%H:%M:%S} UTC (+{ENTRY_S}s into the window)")
-            time.sleep(wait)
-        r = attempt(stop_at)
-        if r == "traded":
-            traded += 1
-            if not many:
-                print("=" * 66)
-                return 0
-        elif r == "budget":
-            print(f"\n  Stopping: ${SPENT:.2f} committed, budget "
-                  f"${MAX_SPEND:.2f}.")
+        if stop:
             break
-        elif r == "missed":
-            missed += 1
-        elif r == "expired":
-            # Past the deadline. Keep scanning, because the scan is free and
-            # the Path tab wants the windows either way -- but never buy.
-            empty += 1
-        else:
-            empty += 1
+        # Coins already bought in THIS window, so the +3min pass cannot buy
+        # a coin the +2min pass already holds. Two rules selecting the same
+        # coin is one position, not two.
+        done = set()
+        for entry_s in reads:
+            now = datetime.now(timezone.utc)
+            b = now.replace(minute=(now.minute // 15) * 15,
+                            second=0, microsecond=0)
+            target = b + timedelta(seconds=entry_s)
+            if now >= target:
+                # Already past this read. If a later read in the same window
+                # is still ahead, take it; otherwise wait for the next window.
+                if any(b + timedelta(seconds=e) > now for e in reads
+                       if e > entry_s):
+                    continue
+                target = b + timedelta(minutes=15, seconds=entry_s)
+                done = set()
+            wait = (target - datetime.now(timezone.utc)).total_seconds()
+            if wait > 0:
+                print(f"\n  [{k+1}/{windows}] sleeping {wait:.0f}s until "
+                      f"{target:%H:%M:%S} UTC (+{entry_s}s into the window)")
+                time.sleep(wait)
+            r = attempt(stop_at, entry_s, done)
+            if r == "traded":
+                traded += 1
+                if not many:
+                    print("=" * 66)
+                    return 0
+            elif r == "budget":
+                print(f"\n  Stopping: ${SPENT:.2f} committed, budget "
+                      f"${MAX_SPEND:.2f}.")
+                stop = True
+                break
+            elif r == "missed":
+                missed += 1
+            else:
+                # "expired" lands here too: past the deadline the scan still
+                # runs, because scanning is free and the Path tab wants the
+                # windows either way -- it just never buys.
+                empty += 1
 
     # WHAT THE SUMMARY USED TO SAY, and why it was worth fixing. It printed
     # "N windows went by with nothing in the band" unconditionally -- even on
@@ -389,14 +469,15 @@ def main():
     # sentence as "the setup came and we missed it" hides the one failure
     # mode a backtest cannot see. Those are opposite problems: the first is
     # patience, the second is slippage.
-    print(f"\n  {windows} windows checked: {empty} with no setup in the "
-          f"20-35c band, {missed} where a setup appeared but the entry "
-          f"filled nothing.")
+    print(f"\n  {windows} windows checked: {traded} buys, {empty} reads with "
+          f"nothing qualifying, {missed} where a setup appeared but the "
+          f"entry filled nothing.")
     if missed:
         print("  A miss is not the same as an absent setup -- the book moved "
               "between the read and the order. Logged to the Fills tab so the "
               "real fill rate can be measured rather than guessed.")
-    print("  Nothing was spent.")
+    print(f"  Committed ${SPENT:.2f}"
+          + (f" of the ${MAX_SPEND:.2f} ceiling." if MAX_SPEND else "."))
     print("=" * 66)
     return 0
 
