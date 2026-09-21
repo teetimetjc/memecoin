@@ -47,6 +47,26 @@ LO, HI = 20.0, 35.0          # the champion's entry band
 TAKE = 2.0
 PRICE_HOST = "https://api.elections.kalshi.com"
 
+# THE FILL-RATE LOG, and why it earns a tab of its own.
+#
+# Every P&L number on the Bounce Test page assumes an entry fills at the
+# quoted ask. On 21 Sep a setup at 29c was ordered and filled ZERO contracts
+# -- the book moved in the second between reading it and the order landing.
+# A backtest cannot see that: it reads a price from a sheet and books a
+# trade. So the miss has to be counted here, at the only place that knows
+# the difference between what was asked for and what was got.
+#
+# It matters more than it sounds. Misses are not random: the setups that
+# move fastest are both the most likely to slip away and the most likely to
+# be the winners, so an unmeasured fill rate biases the edge UPWARD by more
+# than the raw miss count suggests. One row per attempt, so the rate is a
+# measurement rather than a memory.
+FILL_SHEET = "Fills"
+FILL_HEADERS = [
+    "Timestamp", "Window", "Symbol", "Side", "Asked At c", "Stake",
+    "Status", "Contracts", "Cost", "Detail", "Setups Seen", "Order Id",
+]
+
 
 def book(ticker):
     try:
@@ -131,6 +151,28 @@ def sell(ticker, holding_yes, contracts, target_cents, exch, tag):
     return False, f"HTTP {r.status_code} {r.text[:200]}", ""
 
 
+def log_attempt(row):
+    """Append one attempted entry. Never fails the trade if the sheet does.
+
+    Fail-soft on purpose: a logging error must not take down a run that has
+    real money in flight, and a missing row is a smaller problem than an
+    exception thrown between the buy and the sell.
+    """
+    try:
+        client = P._get_client()
+        sh = client.open_by_key(P.SPREADSHEET_ID)
+        try:
+            ws = sh.worksheet(FILL_SHEET)
+        except Exception:
+            ws = sh.add_worksheet(title=FILL_SHEET, rows=2000,
+                                  cols=len(FILL_HEADERS))
+            ws.update("A1", [FILL_HEADERS])
+        ws.append_row(row, value_input_option="USER_ENTERED", table_range="A1")
+        print(f"    [fills] logged: {row[6]}")
+    except Exception as e:
+        print(f"    [fills] could not log: {e}")
+
+
 def attempt():
     """Look at one window. Returns True once a trade has been placed.
 
@@ -144,9 +186,9 @@ def attempt():
     print(f"  window {boundary:%H:%M} UTC, now +{secs:.0f}s, {len(markets)} markets")
     if not markets:
         print("  no markets resolved for this window.")
-        return False
+        return "none"
 
-    pick = None
+    pick, seen = None, 0
     for symbol, ticker in markets:
         b, a = book(ticker)
         if b is None or a is None:
@@ -158,13 +200,14 @@ def attempt():
         flag = ""
         if cy != cn and LO <= entry < HI:
             flag = "  <- SETUP"
+            seen += 1
             if pick is None:
                 pick = (symbol, ticker, cy, entry)
         print(f"    {symbol:9s} yes {a:5.1f}c / no {no_ask:5.1f}c{flag}")
 
     if not pick:
         print("    -> nothing in the 20-35c band; waiting for the next window")
-        return False
+        return "none"
 
     symbol, ticker, holding_yes, entry = pick
     side = "UP" if holding_yes else "DOWN"
@@ -173,10 +216,17 @@ def attempt():
     ts = boundary.strftime("%Y-%m-%d %H:%M UTC")
     status, detail, n, cost, oid = live.place(ts, symbol, side, ticker, entry, STAKE)
     print(f"    {status}  {detail or ''}  {n} contracts, ${cost:.2f}, order {oid or '-'}")
+    # Logged for EVERY attempt, filled or not. A log written only on success
+    # measures nothing: the misses are the whole point of the tab.
+    log_attempt([
+        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"), ts,
+        symbol, side, round(entry, 1), STAKE,
+        status, n, round(cost, 2), detail or "", seen, oid or "",
+    ])
     if status != "PLACED" or n < 1:
         print("\n  Entry did not fill, so there is nothing to sell. "
               "The exit leg is still untested; will try the next window.")
-        return False
+        return "missed"
 
     target = min(99.0, round(entry * TAKE, 1))
     exch = live.market_exchange_index(ticker)
@@ -204,7 +254,7 @@ def attempt():
     print("\n  WHAT TO LOOK FOR: the sell should show as resting with the full")
     print("  count left. If it filled instantly the target was already through;")
     print("  if it was refused, the message above says why.")
-    return True
+    return "traded"
 
 
 def main():
@@ -221,6 +271,7 @@ def main():
         print("  LIVE_TRADING / ALLOW_LIVE_TRADING are not both set. Nothing sent.")
         return 1
 
+    missed = empty = 0
     for k in range(windows):
         now = datetime.now(timezone.utc)
         b = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
@@ -234,12 +285,30 @@ def main():
             print(f"\n  [{k+1}/{windows}] sleeping {wait:.0f}s until "
                   f"{target:%H:%M:%S} UTC (+{ENTRY_S}s into the window)")
             time.sleep(wait)
-        if attempt():
+        r = attempt()
+        if r == "traded":
             print("=" * 66)
             return 0
+        if r == "missed":
+            missed += 1
+        else:
+            empty += 1
 
-    print(f"\n  {windows} windows went by with nothing in the 20-35c band.")
-    print("  Nothing was spent. The exit leg is still untested.")
+    # WHAT THE SUMMARY USED TO SAY, and why it was worth fixing. It printed
+    # "N windows went by with nothing in the band" unconditionally -- even on
+    # the run where three setups appeared and an order was sent and filled
+    # nothing. A log that flattens "the setup never came" into the same
+    # sentence as "the setup came and we missed it" hides the one failure
+    # mode a backtest cannot see. Those are opposite problems: the first is
+    # patience, the second is slippage.
+    print(f"\n  {windows} windows checked: {empty} with no setup in the "
+          f"20-35c band, {missed} where a setup appeared but the entry "
+          f"filled nothing.")
+    if missed:
+        print("  A miss is not the same as an absent setup -- the book moved "
+              "between the read and the order. Logged to the Fills tab so the "
+              "real fill rate can be measured rather than guessed.")
+    print("  Nothing was spent.")
     print("=" * 66)
     return 0
 
