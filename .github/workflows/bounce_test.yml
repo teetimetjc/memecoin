@@ -1,6 +1,7 @@
 name: Bounce Exit Test
 
-# $5 trades, by hand, to find out whether a resting take-profit works.
+# $5 trades, by hand. Started as a mechanical test of the resting sell and
+# now also runs the combo rule set.
 #
 # Live trading is HALTED globally. This job switches it on for itself alone --
 # the predictor workflow is untouched and stays halted, so nothing else can
@@ -28,6 +29,10 @@ on:
         description: 'Total dollars this run may commit. 0 = no cap (single supervised trade only).'
         required: false
         default: '0'
+      combo:
+        description: 'Set to 1 for the six high-ROI rules. Blank = champion only (20-35c, +2min, 2x).'
+        required: false
+        default: ''
 
 jobs:
   test:
@@ -35,7 +40,7 @@ jobs:
     if: inputs.confirm == 'RUN'
     # Long enough to sit through the windows a deadline run spans. Runner
     # minutes are free on a public repo.
-    timeout-minutes: 200
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,7 +52,7 @@ jobs:
 
       - run: pip install requests gspread google-auth cryptography
 
-      - name: Place $5 trades, each with a resting sell at 2x
+      - name: Place $5 trades, each with a resting sell
         env:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           KALSHI_KEY_ID:  ${{ secrets.KALSHI_KEY_ID }}
@@ -61,6 +66,11 @@ jobs:
           # Neither can be outrun by a job that hangs, retries, or is
           # dispatched twice, and a window that produces five setups cannot
           # turn "until 11:45" into a number nobody named in advance.
+          #
+          # The ceiling is the one that matters for the combo set: it fires
+          # about 107 times a day where the champion fires 60, so the same
+          # deadline buys nearly twice the exposure.
           BUY_UNTIL_UTC: ${{ inputs.buy_until }}
           MAX_SPEND_USD: ${{ inputs.max_spend }}
+          COMBO: ${{ inputs.combo }}
         run: python bounce_live_test.py RUN-ONE-FIVE-DOLLAR-TEST ${{ inputs.windows }}
