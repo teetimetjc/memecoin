@@ -74,7 +74,23 @@ ALLOW_DOWN = os.environ.get("LIVE_ALLOW_DOWN", "").strip() == "1"
 # 20c is inside the measured data with room to spare, and it caps position size
 # for free: at 20c a $5 stake buys 25 contracts, where at 3c it bought 165.
 MAX_ENTRY = 50.0
-MIN_ENTRY = 20.0
+# THE FLOOR IS NOW SETTABLE, and here is what it silently did.
+#
+# It was fixed at 20c, which was right for v6: that rule's evidence lived in
+# 20-50c and a 3c longshot extrapolated off the end of the tested range.
+#
+# But the bounce work moved the evidence. Its edge is concentrated in
+# 10-20c, and on 21 Sep a run configured for exactly that band placed three
+# orders and filled none. That read as a liquidity wall -- cheap contracts
+# being too thin to buy -- and it was nothing of the sort: every order was
+# refused HERE, by this floor, and never reached Kalshi. The band had not
+# been tested at all.
+#
+# A guard that silently rejects the strategy it is running, and reports it
+# in the same words as a market that moved, is worse than no guard. So the
+# floor stays on by default and the run that means to go below it has to
+# say so, in a variable that appears in the workflow that set it.
+MIN_ENTRY = float(os.environ.get("MIN_ENTRY_CENTS") or 20.0)
 
 # How far above the quoted price we are willing to pay. One cent covers the
 # ordinary tick of movement between reading the book and the order landing;
