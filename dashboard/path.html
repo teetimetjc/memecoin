@@ -164,6 +164,9 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
 
   <section class="rail" id="sel"></section>
 
+  <div class="verdict" id="selWarn" hidden
+    style="border-left-color:var(--down);background:#9E3B3614"></div>
+
   <section class="panel" id="holdPanel" style="border-color:var(--signal)">
     <div class="phead">
       <h2>Does this filter still work on data it has not seen?</h2>
@@ -560,20 +563,81 @@ hr{border:0; border-top:1px solid var(--rule); margin:0}
     });
   }
 
+  // WHY THE BIG NUMBER HERE IS THE HOLDOUT ONE, AND NOT THE TOTAL.
+  //
+  // This rail used to lead with "Profit / loss +$208.25" and "Return +27.6%"
+  // computed over EVERY window -- including the ones that made the filter
+  // look worth clicking. Underneath it, in grey, the holdout panel said the
+  // same selection paid -$1.21 a trade on windows it had never seen. A
+  // reader acting on this page reasonably took the 48-point green number and
+  // put real money behind it, which is the page's fault and not theirs.
+  //
+  // Circularity is not a footnote, so it no longer reads like one. The
+  // headline is now the number that predicts the next trade; the total is
+  // still shown, because hiding it would be its own kind of lie, but it is
+  // labelled as the thing it is -- a score on its own homework.
   function drawSel(rows){
     const st = stats(rows);
     const el = document.getElementById("sel");
     const coinTxt = anyCoin() ? "all coins" : [...coinSel].sort().join(" ");
     const bandTxt = anyBand() ? "any price"
       : [...bandSel].sort((a,b)=>a-b).map(i=>bandLab(BANDS[i])).join(" + ");
+    const ho = CUT ? clusteredCI(rows.filter(t => t.t >= CUT)) : null;
+    const honest = ho && ho.n >= 15;
+    const tile2 = (k,v,d,c) =>
+      `<div><span class="k">${k}</span>`
+      + `<span class="v" style="color:var(--${c||"ink"})">${v}</span>`
+      + (d ? `<span class="d" style="font-size:.78rem;color:var(--muted);`
+           + `display:block;margin-top:2px">${d}</span>` : "") + `</div>`;
     el.innerHTML =
       tile("Showing", `${st.n}`)
     + tile("Filter", `${coinTxt} \u00B7 ${bandTxt}`)
     + tile(`Reached ${take}\u00D7`, st.n ? `${pct(st.hit,st.n).toFixed(0)}%` : "\u2014")
-    + tile("Risked", st.priced ? `$${st.risked.toLocaleString()}` : "\u2014")
-    + tile("Profit / loss", st.priced ? money(st.net) : "\u2014")
-    + tile("Per trade", st.ev==null ? "\u2014" : money(st.ev))
-    + tile("Return", st.roi==null ? "\u2014" : `${st.roi>=0?"+":"\u2212"}${Math.abs(st.roi).toFixed(1)}%`);
+    // THE HEADLINE. Per trade on unseen windows -- the only figure here
+    // that says anything about the next trade rather than the last ones.
+    + tile2("Per trade, on data it never saw",
+            honest ? money(ho.m) : "\u2014",
+            honest
+              ? (ho.lo != null
+                  ? `${ho.n} trades \u00B7 could be ${money(ho.lo)} to ${money(ho.hi)}`
+                  : `${ho.n} trades`)
+              : `only ${ho ? ho.n : 0} held-back trades \u2014 too few to say`,
+            honest ? (ho.m >= 0 ? "up" : "down") : "muted")
+    + tile2("Total, scored on its own data",
+            st.priced ? money(st.net) : "\u2014",
+            "NOT A RESULT \u2014 includes the windows that made this filter "
+            + "look good", "muted")
+    + tile2("Risked", st.priced ? `$${st.risked.toLocaleString()}` : "\u2014",
+            `$${stake} a bet`, "muted");
+
+    // A selection that is positive overall and negative on unseen windows is
+    // the exact trap this project already fell into once. Say so, at the
+    // moment it is true, rather than leaving it to be inferred from two
+    // numbers several panels apart.
+    // The trap is WIDER than "the holdout is negative". A holdout of
+    // +$0.28 a trade with an interval running from -$4.36 to +$4.93 is not
+    // a small profit -- it is no measurement at all, and it sits under a
+    // headline total of +$192 that looks like certainty. Warning only on a
+    // negative mean would stay silent in exactly that case, which is the
+    // case that actually costs money.
+    const warn = document.getElementById("selWarn");
+    const spansZero = honest && ho.lo != null && ho.lo <= 0 && ho.hi >= 0;
+    if(honest && st.net > 0 && (ho.m < 0 || spansZero)){
+      warn.hidden = false;
+      warn.innerHTML = ho.m < 0
+        ? `<b>These two disagree, and the smaller one is the one that `
+          + `counts.</b> This filter made ${money(st.net)} across all windows `
+          + `but lost ${money(ho.m)} a trade on windows it had never seen. `
+          + `Any filter looks profitable on the data it was chosen from \u2014 `
+          + `try enough combinations and one always will.`
+        : `<b>That ${money(st.net)} is not evidence, and this is why.</b> On `
+          + `windows this selection never saw it paid ${money(ho.m)} a trade, `
+          + `but anywhere from ${money(ho.lo)} to ${money(ho.hi)} is equally `
+          + `consistent with the data. An interval straddling zero means the `
+          + `edge has not been measured \u2014 not that it is small. The total `
+          + `above looks certain because it is scored on the windows that `
+          + `made this filter worth clicking.`;
+    } else warn.hidden = true;
   }
 
   // ---- the only test that separates luck from an edge ------------------
