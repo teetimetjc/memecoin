@@ -1,0 +1,29 @@
+name: Depth Check (read-only)
+
+# Answers the one question the price history cannot: when the backtest
+# bought at the quoted ask, was there anything resting there to buy?
+#
+# Read-only by construction -- it is handed the sheet credentials and
+# nothing else. No Kalshi trading key, so it could not place an order even
+# if the code tried.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Check the book depth behind every setup
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python depth_check.py
