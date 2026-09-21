@@ -1,7 +1,7 @@
 name: Bounce Exit Test
 
-# $5 trades, by hand. Started as a mechanical test of the resting sell and
-# now also runs the combo rule sets.
+# Small real-money trades, by hand. Started as a mechanical test of the
+# resting sell and now also runs the combo rule sets.
 #
 # Live trading is HALTED globally. This job switches it on for itself alone --
 # the predictor workflow is untouched and stays halted, so nothing else can
@@ -16,13 +16,17 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type RUN to place $5 trades'
+        description: 'Type RUN to place real trades'
         required: true
         default: ''
       windows:
         description: 'How many 15-min windows to wait for a setup'
         required: false
         default: '8'
+      stake:
+        description: 'Dollars per bet. Blank = 5. Smaller buys more bets from the same ceiling.'
+        required: false
+        default: ''
       buy_until:
         description: 'Stop BUYING after this UTC time, YYYY-MM-DDTHH:MM. Blank = no time limit.'
         required: false
@@ -66,7 +70,7 @@ jobs:
 
       - run: pip install requests gspread google-auth cryptography
 
-      - name: Place $5 trades
+      - name: Place the trades
         env:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           KALSHI_KEY_ID:  ${{ secrets.KALSHI_KEY_ID }}
@@ -86,12 +90,15 @@ jobs:
           # afternoon cannot spend past it the way it can outpace a clock.
           #
           # sub10 fires about 80 times a day, so the ceiling is the only
-          # thing standing between a quiet afternoon and $200 of turnover.
+          # thing standing between a quiet afternoon and heavy turnover.
           BUY_UNTIL_UTC: ${{ inputs.buy_until }}
           MAX_SPEND_USD: ${{ inputs.max_spend }}
           COMBO: ${{ inputs.combo }}
           MAX_TAKE: ${{ inputs.max_take }}
           BOUNCE_PULSE: ${{ inputs.pulse }}
+          # Dollars per bet. At the cheap end this is a bigger position than
+          # it sounds: $5 at 4.5c is 111 contracts, which pays $111.
+          STAKE_USD: ${{ inputs.stake }}
           # live.py refuses anything under this, LOCALLY, before the order is
           # sent -- and reports it exactly like a market that moved away. At
           # the 20c default that silently refuses every cheap setup, which is
