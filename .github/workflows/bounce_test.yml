@@ -22,7 +22,7 @@ on:
         required: false
         default: '8'
       buy_until:
-        description: 'Stop BUYING after this UTC time, YYYY-MM-DDTHH:MM. Blank = one trade only.'
+        description: 'Stop BUYING after this UTC time, YYYY-MM-DDTHH:MM. Blank = no time limit.'
         required: false
         default: ''
       max_spend:
@@ -33,6 +33,10 @@ on:
         description: 'Set to 1 for the six high-ROI rules. Blank = champion only (20-35c, +2min, 2x).'
         required: false
         default: ''
+      max_take:
+        description: 'Cap the take-profit, e.g. 2.5. Banks more often for slightly less edge. 0 = each rule keeps its own.'
+        required: false
+        default: '0'
 
 jobs:
   test:
@@ -63,14 +67,13 @@ jobs:
           LIVE_ALLOW_DOWN: "1"
           # Two gates, both checked in the SECOND before an order is signed.
           # The deadline bounds WHEN it may buy; the ceiling bounds HOW MUCH.
-          # Neither can be outrun by a job that hangs, retries, or is
-          # dispatched twice, and a window that produces five setups cannot
-          # turn "until 11:45" into a number nobody named in advance.
-          #
-          # The ceiling is the one that matters for the combo set: it fires
-          # about 107 times a day where the champion fires 60, so the same
-          # deadline buys nearly twice the exposure.
+          # Either one alone unlocks more than a single trade, and neither
+          # can be outrun by a job that hangs, retries, or is dispatched
+          # twice. The ceiling is the stricter of the two, since a busy
+          # afternoon cannot spend past it the way it can outpace a clock.
           BUY_UNTIL_UTC: ${{ inputs.buy_until }}
           MAX_SPEND_USD: ${{ inputs.max_spend }}
           COMBO: ${{ inputs.combo }}
+          # Lowers a target without changing which setups qualify.
+          MAX_TAKE: ${{ inputs.max_take }}
         run: python bounce_live_test.py RUN-ONE-FIVE-DOLLAR-TEST ${{ inputs.windows }}
