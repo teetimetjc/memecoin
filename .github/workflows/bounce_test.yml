@@ -1,6 +1,6 @@
 name: Bounce Exit Test
 
-# ONE $5 trade, by hand, to find out whether a resting take-profit works.
+# $5 trades, by hand, to find out whether a resting take-profit works.
 #
 # Live trading is HALTED globally. This job switches it on for itself alone --
 # the predictor workflow is untouched and stays halted, so nothing else can
@@ -20,14 +20,18 @@ on:
         description: 'How many 15-min windows to wait for a setup'
         required: false
         default: '8'
+      buy_until:
+        description: 'Stop BUYING after this UTC time, YYYY-MM-DDTHH:MM. Blank = one trade only.'
+        required: false
+        default: ''
 
 jobs:
   test:
     runs-on: ubuntu-latest
     if: inputs.confirm == 'RUN'
-    # Long enough to sit through eight windows (about two hours) waiting for
-    # a coin to be in band. Runner minutes are free on a public repo.
-    timeout-minutes: 150
+    # Long enough to sit through the windows a deadline run spans. Runner
+    # minutes are free on a public repo.
+    timeout-minutes: 200
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,7 +43,7 @@ jobs:
 
       - run: pip install requests gspread google-auth cryptography
 
-      - name: Place one $5 trade and rest a sell at 2x
+      - name: Place $5 trades, each with a resting sell at 2x
         env:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           KALSHI_KEY_ID:  ${{ secrets.KALSHI_KEY_ID }}
@@ -48,4 +52,8 @@ jobs:
           LIVE_TRADING: "1"
           ALLOW_LIVE_TRADING: "1"
           LIVE_ALLOW_DOWN: "1"
+          # The hard stop. Checked in the SECOND before every order is
+          # signed, so a job that hangs, retries or is dispatched twice
+          # cannot spend past it. Blank keeps the old one-trade behaviour.
+          BUY_UNTIL_UTC: ${{ inputs.buy_until }}
         run: python bounce_live_test.py RUN-ONE-FIVE-DOLLAR-TEST ${{ inputs.windows }}
