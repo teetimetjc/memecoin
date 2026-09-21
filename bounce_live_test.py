@@ -63,7 +63,7 @@ PRICE_HOST = "https://api.elections.kalshi.com"
 # picked it. That choice is not free: it converts some 2.5x sales into 3x
 # sales that never trade and ride to settlement instead. It is the honest
 # reading of "fire all of them" rather than the flattering one.
-COMBO = (os.environ.get("COMBO") or "") in ("1", "plan", "cheap")
+COMBO = (os.environ.get("COMBO") or "") in ("1", "plan", "cheap", "sub10")
 COMBO_RULES = [
     ("ALL",  10.0, 20.0, 180, 3.0),
     ("DOGE", 15.0, 30.0, 120, 3.0),
@@ -131,11 +131,42 @@ CHEAP_RULES = [
     ("ALL", 10.0, 20.0, 180, 3.0),
 ]
 
+# SUB-10c, HELD TO SETTLEMENT (COMBO=sub10). A different bet entirely.
+#
+# Not a bounce. There is no take-profit and nothing to sell into: buy the
+# side the market has nearly written off, with at least eight minutes left,
+# and wait for the window to close. Every problem the bounce runs hit came
+# from the EXIT -- fills at 3x, depth at the target, partial sells. This has
+# no exit, so it has none of them.
+#
+# What makes it interesting is a calibration gap. Across 160 setups priced
+# at an average of 8.3c -- the market saying 8.3% -- the side won 19.4% of
+# the time. Capped at the depth ACTUALLY resting at those prices, it paid
+# +$2.39 a bet, and it held up on windows it was not chosen from (+$3.75
+# against +$1.63 on the earlier ones).
+#
+# WHAT IS WRONG WITH IT, stated here because the number above is seductive.
+# The top ten bets produce 112% of the profit: remove them and it loses.
+# Nineteen percent of bets win. The 95% interval runs -$1.35 to +$6.12, so
+# it is entirely consistent with no edge. This is a lottery-ticket shape,
+# which takes hundreds of bets to confirm and can look brilliant for a week
+# on luck alone.
+#
+# A take of 0 means HOLD -- the position is never sold, so no resting exit
+# is placed. It reads at +3min and +7min, both of which leave the eight
+# minutes the backtest required.
+SUB10_RULES = [
+    ("ALL", 2.0, 10.0, 180, 0.0),
+    ("ALL", 2.0, 10.0, 420, 0.0),
+]
+
 _mode = (os.environ.get("COMBO") or "")
 if _mode == "plan":
     COMBO_RULES = PLAN_RULES
 elif _mode == "cheap":
     COMBO_RULES = CHEAP_RULES
+elif _mode == "sub10":
+    COMBO_RULES = SUB10_RULES
 # The read times the rules actually need. Two passes per window, not one.
 COMBO_ENTRIES = sorted({r[3] for r in COMBO_RULES})
 
@@ -168,13 +199,18 @@ def combo_take(symbol, entry, entry_s):
             continue
         if c != "ALL" and c != coin:
             continue
-        if lo <= entry < hi and (best is None or take > best):
-            best = take
+        if lo <= entry < hi:
+            # 0 means HOLD, and holding is not "less greedy than 1.5x" --
+            # it is a different rule. It only wins the comparison if no
+            # selling rule also matched, so a band with both keeps its exit.
+            if best is None or (best == 0.0 and take > 0) or \
+                    (best > 0 and take > best):
+                best = take
     # The cap lowers a target; it never makes one qualify that did not.
     # Applied after selection so the SET of setups is unchanged -- only
     # where each one sells. Otherwise lowering the cap would quietly change
     # which rules fire, and the run would stop being the rules we measured.
-    if best is not None and MAX_TAKE and best > MAX_TAKE:
+    if best and MAX_TAKE and best > MAX_TAKE:
         best = MAX_TAKE
     return best
 
@@ -526,6 +562,14 @@ def trade_one(ts, symbol, ticker, holding_yes, entry, seen, stop_at,
     if status != "PLACED" or n < 1:
         print("  Entry did not fill, so there is nothing to sell.")
         return "missed"
+
+    if not take:
+        # HOLD TO SETTLEMENT. No resting sell, so nothing can fail to fill
+        # on the way out -- the position simply settles at $1.00 or zero.
+        print(f"    HOLDING to settlement (no take-profit)")
+        print(f"    committed so far this run: ${SPENT:.2f}"
+              + (f" of ${MAX_SPEND:.2f}" if MAX_SPEND else ""))
+        return "traded"
 
     target = min(99.0, round(entry * take, 1))
     exch = live.market_exchange_index(ticker)
