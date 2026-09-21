@@ -31,6 +31,7 @@ confirmation string.
 """
 
 import math
+import os
 import sys
 import time
 import uuid
@@ -173,8 +174,8 @@ def log_attempt(row):
         print(f"    [fills] could not log: {e}")
 
 
-def attempt():
-    """Look at one window. Returns True once a trade has been placed.
+def attempt(stop_at=None):
+    """Look at one window. Returns traded / missed / expired / none.
 
     Reading at +2 MINUTES is the point, not a detail. The first run fired
     five and a half minutes in, by which time every coin had resolved to
@@ -211,6 +212,19 @@ def attempt():
 
     symbol, ticker, holding_yes, entry = pick
     side = "UP" if holding_yes else "DOWN"
+
+    # THE LAST GATE, deliberately here and not at the top of the loop. A
+    # window takes a couple of minutes to reach this point, so a deadline
+    # checked before the scan could be honoured on the way in and stale by
+    # the time an order is signed. Checked here, "no buying after X" means
+    # exactly that, to the second.
+    now = datetime.now(timezone.utc)
+    if stop_at is not None and now >= stop_at:
+        print(f"\n  SETUP FOUND ({symbol} {side} at {entry:.1f}c) but it is "
+              f"{now:%H:%M} UTC, past the {stop_at:%H:%M} buying deadline.")
+        print("  Not buying. Still scanning and logging.")
+        return "expired"
+
     print(f"\n  BUYING {symbol} {side} at {entry:.1f}c, ${STAKE:.2f}")
 
     ts = boundary.strftime("%Y-%m-%d %H:%M UTC")
@@ -257,21 +271,56 @@ def attempt():
     return "traded"
 
 
+def deadline():
+    """The UTC moment after which this process must not buy anything.
+
+    A HARD STOP, not a schedule. The alternative -- sizing a run so that it
+    "should" finish by bedtime -- fails in exactly the way that matters: a
+    job that hangs, retries, or is dispatched twice keeps spending while
+    nobody is awake to notice. This is checked immediately before every
+    order, so the worst case is a run that scans and logs and buys nothing.
+
+    Unset means no deadline, which is the old behaviour and is fine for a
+    single supervised trade.
+    """
+    raw = (os.environ.get("BUY_UNTIL_UTC") or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M").replace(tzinfo=timezone.utc)
+    except ValueError:
+        # A deadline that cannot be parsed must not silently mean "forever".
+        print(f"  BUY_UNTIL_UTC={raw!r} is not YYYY-MM-DDTHH:MM -- refusing to "
+              f"trade rather than guess at it.")
+        return "bad"
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] != "RUN-ONE-FIVE-DOLLAR-TEST":
         print("Refusing: pass the confirmation string to run this.")
         return 1
     windows = int(sys.argv[2]) if len(sys.argv) > 2 else 8
+    # More than one buy is allowed only when a deadline bounds it. Without
+    # one, the old one-and-done rule stands.
+    stop_at = deadline()
+    if stop_at == "bad":
+        return 1
+    many = stop_at is not None
 
     print("=" * 66)
-    print("BOUNCE EXIT TEST -- one $5 buy, then a resting sell at 2x")
-    print(f"  waiting up to {windows} windows for a setup; stops at the first trade")
+    print("BOUNCE EXIT TEST -- $5 a buy, each with a resting sell at 2x")
+    if many:
+        print(f"  buying until {stop_at:%Y-%m-%d %H:%M} UTC, then scanning only")
+        print(f"  up to {windows} windows · max ${windows * STAKE:.0f} at risk "
+              f"if every one fills")
+    else:
+        print(f"  waiting up to {windows} windows; stops at the first trade")
     print("=" * 66)
     if not live.enabled():
         print("  LIVE_TRADING / ALLOW_LIVE_TRADING are not both set. Nothing sent.")
         return 1
 
-    missed = empty = 0
+    missed = empty = traded = 0
     for k in range(windows):
         now = datetime.now(timezone.utc)
         b = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
@@ -285,12 +334,18 @@ def main():
             print(f"\n  [{k+1}/{windows}] sleeping {wait:.0f}s until "
                   f"{target:%H:%M:%S} UTC (+{ENTRY_S}s into the window)")
             time.sleep(wait)
-        r = attempt()
+        r = attempt(stop_at)
         if r == "traded":
-            print("=" * 66)
-            return 0
-        if r == "missed":
+            traded += 1
+            if not many:
+                print("=" * 66)
+                return 0
+        elif r == "missed":
             missed += 1
+        elif r == "expired":
+            # Past the deadline. Keep scanning, because the scan is free and
+            # the Path tab wants the windows either way -- but never buy.
+            empty += 1
         else:
             empty += 1
 
