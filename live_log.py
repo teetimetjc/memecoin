@@ -114,6 +114,17 @@ CHANGES = [
                "so the floor for this run is $122.73",
         "stake": 5.0,
     },
+    {
+        "at": "2026-09-21 20:45",
+        "what": "ALL REAL-MONEY BETTING PAUSED",
+        "rules": "nothing places orders; collection continues",
+        "why": "about $50 down on the day across four rule sets. Open "
+               "positions settle normally; nothing new is bought. The Path "
+               "sampler, outcome grading and the Fills log keep running -- "
+               "they are read-only and cost nothing, so the backtests keep "
+               "sharpening while no money moves",
+        "stake": 0.0,
+    },
 ]
 
 
