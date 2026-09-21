@@ -63,7 +63,7 @@ PRICE_HOST = "https://api.elections.kalshi.com"
 # picked it. That choice is not free: it converts some 2.5x sales into 3x
 # sales that never trade and ride to settlement instead. It is the honest
 # reading of "fire all of them" rather than the flattering one.
-COMBO = (os.environ.get("COMBO") or "") in ("1", "plan")
+COMBO = (os.environ.get("COMBO") or "") in ("1", "plan", "cheap")
 COMBO_RULES = [
     ("ALL",  10.0, 20.0, 180, 3.0),
     ("DOGE", 15.0, 30.0, 120, 3.0),
@@ -106,8 +106,36 @@ PLAN_RULES = [
     ("ALL", 10.0, 20.0, 180, 3.0),
     ("ALL", 20.0, 40.0, 180, 2.0),
 ]
-if (os.environ.get("COMBO") or "") == "plan":
+
+# CHEAP ONLY (COMBO=cheap) -- the band the claim was always about.
+#
+# Ten live trades on 21 Sep went roughly 3 wins to 7 losses. That rate is
+# close to what a 2x target should hit, so it is not the surprise; the
+# surprise is that it still lost money. The reason is WHERE it fired: at
+# 24-40c entries, where 2x means 48-80c, a win pays about what a loss
+# costs, and a coin-flip at even money loses to the fee.
+#
+# The favourable asymmetry only exists when the entry is cheap. At 15c a
+# 3x exit returns three times the stake while a loss still costs one, so
+# the same 30% hit rate is strongly profitable instead of mildly ruinous.
+# Every number that motivated this -- the +88% ROI, the train-to-holdout
+# consistency -- came from 10-20c, and barely a trade has fired there.
+#
+# Under 10c stays excluded: it loses at every target, and no exit rescues
+# an entry that is wrong.
+#
+# This fires roughly once every seven windows rather than several a window,
+# so it will look idle. That is the cost of testing the actual claim rather
+# than an adjacent one that happens to trade more often.
+CHEAP_RULES = [
+    ("ALL", 10.0, 20.0, 180, 3.0),
+]
+
+_mode = (os.environ.get("COMBO") or "")
+if _mode == "plan":
     COMBO_RULES = PLAN_RULES
+elif _mode == "cheap":
+    COMBO_RULES = CHEAP_RULES
 # The read times the rules actually need. Two passes per window, not one.
 COMBO_ENTRIES = sorted({r[3] for r in COMBO_RULES})
 
