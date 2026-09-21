@@ -154,6 +154,16 @@ def build(path_rows, pred_rows, headers):
         "take": list(TAKE),
         "trades": trades,
     }
+    # WHAT WAS LIVE, WHEN. Shipped so a page can mark where the settings
+    # changed instead of drawing one line through a period during which
+    # they changed underneath it. Live trades from before and after a rule
+    # change are not the same strategy, and pooling them silently is the
+    # thing this prevents.
+    try:
+        import live_log
+        out["changes"] = live_log.payload()
+    except Exception as e:
+        out["changes"] = {"error": str(e)}
     # The money question, with its holdout discipline intact.
     out["hedge"] = hedge.run(path_rows, pred_rows, headers)
     # Champion and challengers, each scored only on windows that closed after
