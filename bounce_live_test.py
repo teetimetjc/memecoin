@@ -402,9 +402,20 @@ def main():
     many = stop_at is not None or MAX_SPEND > 0
 
     print("=" * 66)
-    print("BOUNCE EXIT TEST -- $5 a buy, each with a resting sell at 2x")
+    print("BOUNCE EXIT TEST -- $5 a buy, each with a resting sell")
+    print(f"  rules: {'the six high-ROI combos' if COMBO else 'champion only'}"
+          + (f", read at +{'/+'.join(str(e) for e in COMBO_ENTRIES)}s"
+             if COMBO else f", read at +{ENTRY_S}s"))
     if many:
-        print(f"  buying until {stop_at:%Y-%m-%d %H:%M} UTC, then scanning only")
+        # Either bound may be absent now that either one unlocks multi-buy,
+        # so each is printed only when it exists. Formatting an absent
+        # deadline is what killed the first combo run before it placed
+        # anything.
+        if stop_at:
+            print(f"  buying until {stop_at:%Y-%m-%d %H:%M} UTC, "
+                  f"then scanning only")
+        else:
+            print("  no stop time -- the ceiling is the only bound")
         print(f"  every qualifying coin each window · {windows} windows")
         print(f"  ceiling: ${MAX_SPEND:.2f}" if MAX_SPEND else
               "  NO SPEND CEILING SET (MAX_SPEND_USD)")
