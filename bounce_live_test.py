@@ -170,6 +170,10 @@ def combo_take(symbol, entry, entry_s):
 # supervised trade.
 SPENT = 0.0
 MAX_SPEND = float(os.environ.get("MAX_SPEND_USD") or 0)
+# Hourly summary notification, off unless asked for. Betting alerts stay
+# off regardless: this reports what already happened, it never names a bet
+# to place by hand.
+PULSE = (os.environ.get("BOUNCE_PULSE") or "") == "1"
 
 FILL_SHEET = "Fills"
 FILL_HEADERS = [
@@ -281,6 +285,82 @@ def log_attempt(row):
         print(f"    [fills] logged: {row[6]}")
     except Exception as e:
         print(f"    [fills] could not log: {e}")
+
+
+def pulse():
+    """One notification an hour about the bounce runs. Not one per bet.
+
+    Deliberately the SAME shape as the v6 pulse: a summary on the hour, not
+    a buzz per trade. A notification per bet trained the last strategy to be
+    read as a prompt to act, and there is nothing here to act on -- the runs
+    place their own orders and rest their own exits.
+
+    It leads with the FILL RATE, because that is the number these runs exist
+    to measure and the one no backtest can produce. Balance comes from the
+    exchange rather than a running total: it already nets fees, wins and
+    losses, and cannot drift from reality the way a computed figure can.
+    """
+    try:
+        client = P._get_client()
+        sh = client.open_by_key(P.SPREADSHEET_ID)
+        rows = sh.worksheet(FILL_SHEET).get_all_values()
+    except Exception as e:
+        print(f"    [pulse] could not read fills: {e}")
+        return
+    if len(rows) < 2:
+        return
+    idx = {h: i for i, h in enumerate(rows[0])}
+
+    def cell(r, k):
+        i = idx.get(k, -1)
+        return r[i] if 0 <= i < len(r) else ""
+
+    now = datetime.now(timezone.utc)
+    cutoff = now.timestamp() - 3600
+    hr_n = hr_filled = hr_missed = 0
+    hr_cost = 0.0
+    all_n = all_filled = 0
+    for r in rows[1:]:
+        status = cell(r, "Status")
+        filled = status == "PLACED"
+        all_n += 1
+        all_filled += 1 if filled else 0
+        try:
+            t = datetime.strptime(cell(r, "Timestamp"),
+                                  "%Y-%m-%d %H:%M:%S UTC").replace(
+                                      tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if t.timestamp() < cutoff:
+            continue
+        hr_n += 1
+        if filled:
+            hr_filled += 1
+            try:
+                hr_cost += float(cell(r, "Cost") or 0)
+            except ValueError:
+                pass
+        else:
+            hr_missed += 1
+
+    try:
+        import control
+        bal = control.fetch_balance()
+    except Exception:
+        bal = None
+
+    # An average well under the stake is the partial-fill problem showing
+    # up as a number rather than an anecdote, so it is stated outright.
+    avg = (hr_cost / hr_filled) if hr_filled else None
+    msg = (f"Last hour: {hr_n} setups, {hr_filled} filled, "
+           f"{hr_missed} missed.\n"
+           f"Staked ${hr_cost:.2f}"
+           + (f" (avg ${avg:.2f} of ${STAKE:.2f} asked)" if avg else "")
+           + f"\nAll time: {all_filled}/{all_n} attempts filled\n"
+           f"Balance: {'unreadable' if bal is None else f'${bal:.2f}'}\n"
+           f"Rules: {'price-dependent' if COMBO else 'champion'}")
+    P.send_pushover("bounce pulse", msg)
+    print(f"    [pulse] sent -- {hr_filled}/{hr_n} filled last hour")
 
 
 def attempt(stop_at=None, entry_s=ENTRY_S, done=None):
@@ -493,6 +573,9 @@ def main():
     # has had another minute to move.
     reads = COMBO_ENTRIES if COMBO else [ENTRY_S]
 
+    # Hour last pulsed, kept on the function so a run pulses once an hour
+    # rather than once per read.
+    main.last_pulse = None
     missed = empty = traded = 0
     stop = False
     for k in range(windows):
@@ -521,6 +604,15 @@ def main():
                       f"{target:%H:%M:%S} UTC (+{entry_s}s into the window)")
                 time.sleep(wait)
             r = attempt(stop_at, entry_s, done)
+            # Once an hour, on the first read after the top of the hour.
+            # Guarded by a marker rather than the clock alone, because a
+            # window has two reads and both sit inside the same minute
+            # range -- checking only the time would send two.
+            if PULSE:
+                stamp_h = datetime.now(timezone.utc).strftime("%Y-%m-%d %H")
+                if stamp_h != main.last_pulse:
+                    main.last_pulse = stamp_h
+                    pulse()
             if r == "traded":
                 traded += 1
                 if not many:
