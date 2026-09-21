@@ -62,6 +62,13 @@ PRICE_HOST = "https://api.elections.kalshi.com"
 # be the winners, so an unmeasured fill rate biases the edge UPWARD by more
 # than the raw miss count suggests. One row per attempt, so the rate is a
 # measurement rather than a memory.
+# Total committed so far, and the ceiling on it. MAX_SPEND is read from the
+# environment so the number can be stated before a run rather than inferred
+# from it afterwards; 0 means no cap, which is only safe for a single
+# supervised trade.
+SPENT = 0.0
+MAX_SPEND = float(os.environ.get("MAX_SPEND_USD") or 0)
+
 FILL_SHEET = "Fills"
 FILL_HEADERS = [
     "Timestamp", "Window", "Symbol", "Side", "Asked At c", "Stake",
@@ -189,7 +196,7 @@ def attempt(stop_at=None):
         print("  no markets resolved for this window.")
         return "none"
 
-    pick, seen = None, 0
+    picks = []
     for symbol, ticker in markets:
         b, a = book(ticker)
         if b is None or a is None:
@@ -201,16 +208,46 @@ def attempt(stop_at=None):
         flag = ""
         if cy != cn and LO <= entry < HI:
             flag = "  <- SETUP"
-            seen += 1
-            if pick is None:
-                pick = (symbol, ticker, cy, entry)
+            picks.append((symbol, ticker, cy, entry))
         print(f"    {symbol:9s} yes {a:5.1f}c / no {no_ask:5.1f}c{flag}")
 
-    if not pick:
+    if not picks:
         print("    -> nothing in the 20-35c band; waiting for the next window")
         return "none"
 
-    symbol, ticker, holding_yes, entry = pick
+    # EVERY qualifying coin, not just the first. Taking only one was an
+    # artifact of this having started as a single mechanical test of the
+    # exit leg; as a way of running the rule it silently dropped setups
+    # because of where a coin happened to sit in the series list, which is
+    # a selection the strategy never asked for and the backtest does not
+    # make -- it scores all five.
+    #
+    # They are NOT independent bets. Five coins in one window share a market
+    # move, so three setups at once is closer to one larger position than to
+    # three separate ones, which is exactly why the budget below is a total
+    # rather than a per-trade limit.
+    ts = boundary.strftime("%Y-%m-%d %H:%M UTC")
+    seen = len(picks)
+    if seen > 1:
+        print(f"    -> {seen} setups this window; taking all of them")
+    out = "none"
+    for symbol, ticker, holding_yes, entry in picks:
+        r = trade_one(ts, symbol, ticker, holding_yes, entry, seen, stop_at)
+        if r == "traded":
+            out = "traded"
+        elif r == "expired":
+            return "expired"          # the deadline applies to the rest too
+        elif r == "budget":
+            print("  Budget for this run is spent. Scanning only from here.")
+            return out if out == "traded" else "budget"
+        elif out != "traded":
+            out = r
+    return out
+
+
+def trade_one(ts, symbol, ticker, holding_yes, entry, seen, stop_at):
+    """One buy and its resting sell. Returns traded / missed / expired / budget."""
+    global SPENT
     side = "UP" if holding_yes else "DOWN"
 
     # THE LAST GATE, deliberately here and not at the top of the loop. A
@@ -225,11 +262,20 @@ def attempt(stop_at=None):
         print("  Not buying. Still scanning and logging.")
         return "expired"
 
-    print(f"\n  BUYING {symbol} {side} at {entry:.1f}c, ${STAKE:.2f}")
+    # THE SECOND GATE, and the one that matters once a window can produce
+    # five trades instead of one. A deadline alone bounds the TIME but not
+    # the MONEY: at five coins a window, "until 11:45" is a very different
+    # number from what it sounds like. This makes the ceiling a figure that
+    # can be stated in advance and cannot be exceeded by a busy night.
+    if MAX_SPEND and SPENT + STAKE > MAX_SPEND + 1e-9:
+        print(f"\n  SETUP FOUND ({symbol} {side} at {entry:.1f}c) but "
+              f"${SPENT:.2f} of the ${MAX_SPEND:.2f} budget is committed.")
+        return "budget"
 
-    ts = boundary.strftime("%Y-%m-%d %H:%M UTC")
+    print(f"\n  BUYING {symbol} {side} at {entry:.1f}c, ${STAKE:.2f}")
     status, detail, n, cost, oid = live.place(ts, symbol, side, ticker, entry, STAKE)
     print(f"    {status}  {detail or ''}  {n} contracts, ${cost:.2f}, order {oid or '-'}")
+    SPENT += cost
     # Logged for EVERY attempt, filled or not. A log written only on success
     # measures nothing: the misses are the whole point of the tab.
     log_attempt([
@@ -238,36 +284,18 @@ def attempt(stop_at=None):
         status, n, round(cost, 2), detail or "", seen, oid or "",
     ])
     if status != "PLACED" or n < 1:
-        print("\n  Entry did not fill, so there is nothing to sell. "
-              "The exit leg is still untested; will try the next window.")
+        print("  Entry did not fill, so there is nothing to sell.")
         return "missed"
 
     target = min(99.0, round(entry * TAKE, 1))
     exch = live.market_exchange_index(ticker)
-    print(f"\n  RESTING SELL of {n} at {target:.1f}c "
+    print(f"  RESTING SELL of {n} at {target:.1f}c "
           f"(side {'ask' if holding_yes else 'bid'}, good_till_canceled)")
     ok, sdetail, soid = sell(ticker, holding_yes, int(n), target, exch,
                              f"exit-{ts}-{symbol}")
     print(f"    {'ACCEPTED' if ok else 'REFUSED'}  {sdetail}  order {soid or '-'}")
-
-    print("\n  READ BACK")
-    live.verify_positions()
-    try:
-        hdrs = P._kalshi_headers("GET", "/trade-api/v2/portfolio/orders") or {}
-        r = requests.get(f"{live.ORDER_HOST}/trade-api/v2/portfolio/orders",
-                         params={"limit": 5}, headers=hdrs, timeout=10)
-        if r.ok:
-            for o in (r.json().get("orders") or [])[:5]:
-                print(f"    {str(o.get('ticker'))[:26]:26s} {str(o.get('side')):4s} "
-                      f"status={str(o.get('status')):10s} "
-                      f"price={o.get('yes_price_dollars') or o.get('price')} "
-                      f"left={o.get('remaining_count_fp') or o.get('remaining_count')}")
-    except Exception as e:
-        print(f"    (could not read orders: {e})")
-
-    print("\n  WHAT TO LOOK FOR: the sell should show as resting with the full")
-    print("  count left. If it filled instantly the target was already through;")
-    print("  if it was refused, the message above says why.")
+    print(f"    committed so far this run: ${SPENT:.2f}"
+          + (f" of ${MAX_SPEND:.2f}" if MAX_SPEND else ""))
     return "traded"
 
 
@@ -311,8 +339,9 @@ def main():
     print("BOUNCE EXIT TEST -- $5 a buy, each with a resting sell at 2x")
     if many:
         print(f"  buying until {stop_at:%Y-%m-%d %H:%M} UTC, then scanning only")
-        print(f"  up to {windows} windows · max ${windows * STAKE:.0f} at risk "
-              f"if every one fills")
+        print(f"  every qualifying coin each window · {windows} windows")
+        print(f"  ceiling: ${MAX_SPEND:.2f}" if MAX_SPEND else
+              "  NO SPEND CEILING SET (MAX_SPEND_USD)")
     else:
         print(f"  waiting up to {windows} windows; stops at the first trade")
     print("=" * 66)
@@ -340,6 +369,10 @@ def main():
             if not many:
                 print("=" * 66)
                 return 0
+        elif r == "budget":
+            print(f"\n  Stopping: ${SPENT:.2f} committed, budget "
+                  f"${MAX_SPEND:.2f}.")
+            break
         elif r == "missed":
             missed += 1
         elif r == "expired":
