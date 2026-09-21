@@ -469,8 +469,16 @@ def attempt(stop_at=None, entry_s=ENTRY_S, done=None):
         flag = ""
         if COMBO:
             take = combo_take(symbol, entry, entry_s)
-            if take:
-                flag = f"  <- SETUP (sell {take}x)"
+            # `is not None`, NOT a truth test. A take of 0.0 means HOLD TO
+            # SETTLEMENT, and 0.0 is falsy, so `if take:` threw away every
+            # sub10 setup and printed "nothing qualifies" -- three coins
+            # under 10c were skipped in a single read while the log claimed
+            # the market was quiet. Falsy-but-meaningful is the whole trap:
+            # None means no rule matched, 0.0 means a rule matched and says
+            # never sell.
+            if take is not None:
+                flag = ("  <- SETUP (hold to settlement)" if not take
+                        else f"  <- SETUP (sell {take}x)")
                 picks.append((symbol, ticker, cheap_yes, entry, take))
         else:
             cy, cn = a <= HI, no_ask <= HI
