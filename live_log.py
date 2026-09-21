@@ -69,6 +69,37 @@ CHANGES = [
                "separately, which managed +$1.11",
         "stake": 5.0,
     },
+    {
+        "at": "2026-09-21 15:48",
+        "what": "cheap band only",
+        "rules": "10-20c at +3min, sell 3x; nothing else",
+        "why": "ten live trades went about 3-7. The hit rate was normal; the "
+               "losses came from WHERE it fired. At 24-40c entries a 2x exit "
+               "pays about what a loss costs, so a 30% hit rate is quietly "
+               "ruinous. The asymmetry only exists when the entry is cheap, "
+               "and every number that motivated this came from 10-20c",
+        "stake": 5.0,
+    },
+    {
+        "at": "2026-09-21 17:23",
+        "what": "entry floor lowered to 10c",
+        "rules": "unchanged; live.py was refusing the orders",
+        "why": "a 20c floor left over from v6 refused every 10-20c order "
+               "locally, before it reached Kalshi, and reported it exactly "
+               "like a market that moved away. Three setups were read as a "
+               "liquidity wall when the band had never been tested at all",
+        "stake": 5.0,
+    },
+    {
+        "at": "2026-09-21 17:35",
+        "what": "cheap band, target cut to 2.5x",
+        "rules": "10-20c at +3min, sell 2.5x",
+        "why": "book depth at the exit, from the logged sizes: at 2.5x the "
+               "median trade can sell its whole position and 73% can sell in "
+               "full, against 33% at 3x. 3x is the only target in the band "
+               "with a liquidity problem, and it was the one being used",
+        "stake": 5.0,
+    },
 ]
 
 
