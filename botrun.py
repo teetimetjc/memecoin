@@ -32,6 +32,7 @@ Usage:  python botrun.py <edgehunter|kapelame> <seconds>
 """
 
 import json
+import math
 import os
 import subprocess
 import sqlite3
@@ -147,7 +148,65 @@ def scrub(rows):
 
 
 _TOLD = set()
-_TALLY = {"w": 0, "l": 0, "pnl": 0.0}
+_TALLY = {"w": 0, "l": 0, "pnl": 0.0, "ten": 0.0, "loaded": False}
+
+FLAT_STAKE = 10.0
+ASK_SLIP = 0.01          # you pay the ask; the bot books the mid
+
+
+def ten_dollar_pnl(entry, won):
+    """What a flat $10 bet would really have returned on this trade.
+
+    Two corrections the bot's own P&L does not make. It books the MID, which
+    is not a price anyone can buy at, so a penny is added to reach the ask.
+    And it sizes off a simulated bankroll rather than a flat stake, so the
+    contract count is recomputed. Kalshi's fee is charged on entry only --
+    a winner settles at $1.00 with nothing left to sell."""
+    pr = min((entry or 0) + ASK_SLIP, 0.99)
+    if pr <= 0:
+        return 0.0
+    c = int(FLAT_STAKE / pr)
+    if c < 1:
+        return 0.0
+    fee = math.ceil(round(0.07 * c * pr * (1 - pr), 9) * 100) / 100.0
+    return (c if won else 0) - (c * pr + fee)
+
+
+def load_history(tab):
+    """Every settled trade already in the tab, so the running total spans
+    sessions instead of resetting to zero every four hours.
+
+    Rows are deduplicated on (run, trade id) keeping the LAST copy, because
+    a trade is written once unsettled and again when it settles -- counting
+    both would inflate the record with phantom losses."""
+    if _TALLY["loaded"]:
+        return
+    _TALLY["loaded"] = True
+    try:
+        ws = _sheet(tab)
+        latest = {}
+        for row in ws.get_all_values()[1:]:
+            if len(row) < 4 or not str(row[2]).startswith("db:trades"):
+                continue
+            try:
+                d = json.loads(row[3])
+            except Exception:
+                continue
+            latest[(row[0], d.get("id"))] = d
+        for (run, tid), d in latest.items():
+            s = d.get("settled")
+            if not s or str(s).lower() in ("none", "null"):
+                continue
+            won = (d.get("pnl") or 0) > 0
+            _TOLD.add((run, d.get("ticker"), tid))   # never re-alert history
+            _TALLY["w" if won else "l"] += 1
+            _TALLY["pnl"] += d.get("pnl") or 0.0
+            _TALLY["ten"] += ten_dollar_pnl(d.get("entry_price"), won)
+        n = _TALLY["w"] + _TALLY["l"]
+        print(f"  [history] {n} settled trade(s) already logged "
+              f"({_TALLY['w']}W/{_TALLY['l']}L)")
+    except Exception as e:
+        print(f"  [history] could not load, totals start at 0: {str(e)[:70]}")
 
 
 def notify_settled(rows, bot):
@@ -170,6 +229,7 @@ def notify_settled(rows, bot):
         import predictor as P
     except Exception:
         return
+    load_history(BOTS[bot]["tab"])
     for r in rows:
         if not str(r[2]).startswith("db:trades"):
             continue
@@ -186,22 +246,29 @@ def notify_settled(rows, bot):
         _TOLD.add(tag)
         pnl = d.get("pnl") or 0.0
         won = pnl > 0
+        entry = d.get("entry_price")
         _TALLY["w" if won else "l"] += 1
         _TALLY["pnl"] += pnl
+        _TALLY["ten"] += ten_dollar_pnl(entry, won)
         n = _TALLY["w"] + _TALLY["l"]
+        this_ten = ten_dollar_pnl(entry, won)
         try:
             P.send_pushover(
                 f"{'WIN' if won else 'LOSS'} (paper) {d.get('asset','')} "
                 f"{d.get('side','')}",
-                f"{d.get('asset','')} {d.get('side','')} x{d.get('contracts','?')} "
-                f"@ {float(d.get('entry_price') or 0)*100:.1f}c\n"
-                f"settled {settled} -> {'WIN' if won else 'LOSS'} "
-                f"${pnl:+.2f}\n"
-                f"Session: {_TALLY['w']}W / {_TALLY['l']}L "
-                f"({_TALLY['w']/max(n,1)*100:.0f}%)  ${_TALLY['pnl']:+.2f}\n"
-                f"PAPER ONLY - no real money was staked")
+                f"{d.get('asset','')} {d.get('side','')} "
+                f"x{d.get('contracts','?')} @ "
+                f"{float(entry or 0)*100:.1f}c -> settled {settled}\n"
+                f"This bet at $10: ${this_ten:+.2f}\n"
+                f"\n"
+                f"TOTAL: {_TALLY['w']}/{n} = "
+                f"{_TALLY['w']/max(n,1)*100:.0f}%\n"
+                f"At $10 a bet you'd be ${_TALLY['ten']:+.2f}\n"
+                f"\n"
+                f"PAPER ONLY - no real money staked")
             print(f"  [alert] {d.get('asset')} {d.get('side')} "
-                  f"{'WIN' if won else 'LOSS'} {pnl:+.2f}")
+                  f"{'WIN' if won else 'LOSS'}  $10-basis {this_ten:+.2f}  "
+                  f"total {_TALLY['w']}/{n} {_TALLY['ten']:+.2f}")
         except Exception as e:
             print(f"  [alert] send failed: {str(e)[:60]}")
 
