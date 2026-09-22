@@ -26,9 +26,14 @@ name: CG Experiments (read-only)
 # last 20% of windows cannot be reached by re-running the ordinary case.
 # It stays unrun until a specification is frozen in writing.
 #
-# probe-auth asks which of two explanations is true for the paper bots'
-# empty market data -- missing credentials, or a query that picks a market
-# with no quote. The two call for completely different fixes.
+# probe-auth asked which of two explanations was true for the paper bots'
+# empty market data. Answer: neither credentials nor the query -- Kalshi
+# changed the response shape. Signed and unsigned replies were identical.
+#
+# probe-ws asks the same question of the market-data SOCKET, which is a
+# different endpoint and may not share the REST answer. It decides whether
+# EdgeHunter needs a key at all, and is deliberately run BEFORE any secret
+# is handed to third-party code.
 #
 # Read-only otherwise -- no order path is reachable from this workflow.
 
@@ -36,9 +41,9 @@ on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth'
+        description: 'cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
-        default: 'probe-auth'
+        default: 'probe-ws'
 
 jobs:
   run:
@@ -51,7 +56,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install requests gspread google-auth cryptography
+      - run: pip install requests gspread google-auth cryptography websockets
       - name: Run the experiment
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
@@ -67,5 +72,6 @@ jobs:
             maker) python maker.py ;;
             maker-holdout) python maker.py --holdout ;;
             probe-auth) python probe_auth.py ;;
+            probe-ws) python probe_ws.py ;;
             *)   echo "unknown experiment: ${{ inputs.experiment }}"; exit 1 ;;
           esac
