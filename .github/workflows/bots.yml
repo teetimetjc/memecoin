@@ -27,16 +27,18 @@ name: Paper Bots (EdgeHunter + Kapelame)
 # headers. Tracking a default branch would mean whatever the owners push
 # next runs here, with credentials, unreviewed.
 #
-# A run is capped at 5h30m so it fits inside the 6h job ceiling with room
-# to write results; the cron restarts it, giving near-continuous cover.
+# FOUR HOURS ON A SIX HOUR CRON, deliberately. At 5h30m the schedule held
+# the concurrency group almost continuously, so any dispatch sat "pending"
+# with no jobs and no explanation -- indistinguishable from a slow runner.
+# The 2h gap is room to dispatch without a fight.
 
 on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: 'How long each bot runs (900 = 15min canary, 19800 = 5h30m)'
+        description: 'How long each bot runs (600 = 10min check, 14400 = 4h session)'
         required: true
-        default: '900'
+        default: '14400'
   schedule:
     - cron: '7 */6 * * *'
 
@@ -51,7 +53,7 @@ env:
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 260
     strategy:
       fail-fast: false
       matrix:
@@ -142,11 +144,11 @@ jobs:
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
         run: |
-          python botrun.py edgehunter ${{ github.event.inputs.seconds || '19800' }}
+          python botrun.py edgehunter ${{ github.event.inputs.seconds || '14400' }}
 
       - name: Run Kapelame (public data, no credentials) and log to the sheet
         if: matrix.bot == 'kapelame'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: |
-          python botrun.py kapelame ${{ github.event.inputs.seconds || '19800' }}
+          python botrun.py kapelame ${{ github.event.inputs.seconds || '14400' }}
