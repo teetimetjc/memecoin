@@ -149,9 +149,17 @@ def scrub(rows):
 
 _TOLD = set()
 _TALLY = {"w": 0, "l": 0, "pnl": 0.0, "ten": 0.0, "loaded": False}
+_PENDING = []            # settled trades not yet reported
+_LAST_DIGEST = [0.0]     # list so the closure can rebind it
 
 FLAT_STAKE = 10.0
 ASK_SLIP = 0.01          # you pay the ask; the bot books the mid
+# One digest, not one message per bet. At roughly five settlements an hour
+# a per-trade alert is about 130 notifications a day, which is not a
+# scoreboard, it is noise -- and noise gets muted, which would defeat the
+# point. Thirty minutes keeps it glanceable.
+DIGEST_EVERY_S = float(os.environ.get("BOT_DIGEST_S") or 1800)
+PUSHOVER_LIMIT = 900     # leave headroom under Pushover's 1024
 
 
 def ten_dollar_pnl(entry, won):
@@ -247,30 +255,61 @@ def notify_settled(rows, bot):
         pnl = d.get("pnl") or 0.0
         won = pnl > 0
         entry = d.get("entry_price")
+        this_ten = ten_dollar_pnl(entry, won)
         _TALLY["w" if won else "l"] += 1
         _TALLY["pnl"] += pnl
-        _TALLY["ten"] += ten_dollar_pnl(entry, won)
-        n = _TALLY["w"] + _TALLY["l"]
-        this_ten = ten_dollar_pnl(entry, won)
+        _TALLY["ten"] += this_ten
+        _PENDING.append({"asset": d.get("asset", ""), "side": d.get("side", ""),
+                         "entry": entry or 0, "won": won, "ten": this_ten,
+                         "res": settled})
+        print(f"  [settled] {d.get('asset')} {d.get('side')} "
+              f"{'WIN' if won else 'LOSS'}  $10-basis {this_ten:+.2f}")
+    send_digest(P)
+
+
+def send_digest(P=None, force=False):
+    """One message listing everything settled since the last one.
+
+    Held back until there is something to say, and never more often than
+    DIGEST_EVERY_S, so the phone gets a scoreboard rather than a stream.
+    The newest rows are kept when the list is long, because the old ones
+    are already in the running total underneath."""
+    if not _PENDING:
+        return
+    now = time.time()
+    if not force and now - _LAST_DIGEST[0] < DIGEST_EVERY_S:
+        return
+    if P is None:
         try:
-            P.send_pushover(
-                f"{'WIN' if won else 'LOSS'} (paper) {d.get('asset','')} "
-                f"{d.get('side','')}",
-                f"{d.get('asset','')} {d.get('side','')} "
-                f"x{d.get('contracts','?')} @ "
-                f"{float(entry or 0)*100:.1f}c -> settled {settled}\n"
-                f"This bet at $10: ${this_ten:+.2f}\n"
-                f"\n"
-                f"TOTAL: {_TALLY['w']}/{n} = "
-                f"{_TALLY['w']/max(n,1)*100:.0f}%\n"
-                f"At $10 a bet you'd be ${_TALLY['ten']:+.2f}\n"
-                f"\n"
-                f"PAPER ONLY - no real money staked")
-            print(f"  [alert] {d.get('asset')} {d.get('side')} "
-                  f"{'WIN' if won else 'LOSS'}  $10-basis {this_ten:+.2f}  "
-                  f"total {_TALLY['w']}/{n} {_TALLY['ten']:+.2f}")
-        except Exception as e:
-            print(f"  [alert] send failed: {str(e)[:60]}")
+            import predictor as P
+        except Exception:
+            return
+    rows, cut = list(_PENDING), 0
+    while True:
+        lines = [f"{r['asset']:<4}{r['side']:<4}{r['entry']*100:>5.1f}c "
+                 f"{'WIN ' if r['won'] else 'LOSS'} {r['ten']:>+7.2f}"
+                 for r in rows]
+        if cut:
+            lines.insert(0, f"(+{cut} older not shown)")
+        n = _TALLY["w"] + _TALLY["l"]
+        body = ("\n".join(lines) + "\n\n"
+                + f"TOTAL {_TALLY['w']}/{n} = "
+                  f"{_TALLY['w']/max(n,1)*100:.0f}%\n"
+                + f"At $10 a bet: ${_TALLY['ten']:+.2f}\n\n"
+                + "PAPER ONLY - no real money staked")
+        if len(body) <= PUSHOVER_LIMIT or len(rows) <= 1:
+            break
+        rows = rows[1:]          # drop oldest; it is already in the total
+        cut += 1
+    w = sum(1 for r in _PENDING if r["won"])
+    try:
+        P.send_pushover(f"{len(_PENDING)} settled - {w}W/{len(_PENDING)-w}L "
+                        f"(paper)", body)
+        print(f"  [digest] sent, {len(_PENDING)} settlement(s)")
+        _PENDING.clear()
+        _LAST_DIGEST[0] = now
+    except Exception as e:
+        print(f"  [digest] send failed, will retry: {str(e)[:60]}")
 
 
 def dump_db(path, run_id, stamp, since=None, quiet=False):
@@ -472,6 +511,11 @@ def main():
     except Exception as e:
         status = f"launch-failed: {str(e)[:70]}"
         print(f"  [run] {status}")
+
+    # Whatever settled in the last few minutes still gets reported, rather
+    # than being swallowed because the run ended before the timer came round.
+    if os.environ.get("BOT_ALERTS", "1") == "1":
+        send_digest(force=True)
 
     if pem_path and os.path.exists(pem_path):
         try:
