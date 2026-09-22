@@ -26,15 +26,19 @@ name: CG Experiments (read-only)
 # last 20% of windows cannot be reached by re-running the ordinary case.
 # It stays unrun until a specification is frozen in writing.
 #
+# probe-auth asks which of two explanations is true for the paper bots'
+# empty market data -- missing credentials, or a query that picks a market
+# with no quote. The two call for completely different fixes.
+#
 # Read-only otherwise -- no order path is reachable from this workflow.
 
 on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'cg1 | cg7 | cg9 | v6 (re-grade) | maker (train+dev) | maker-holdout (FROZEN SPEC ONLY)'
+        description: 'cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth'
         required: true
-        default: 'maker'
+        default: 'probe-auth'
 
 jobs:
   run:
@@ -62,5 +66,6 @@ jobs:
             v6)  python settle_fetch.py; echo; python v6_regrade.py ;;
             maker) python maker.py ;;
             maker-holdout) python maker.py --holdout ;;
+            probe-auth) python probe_auth.py ;;
             *)   echo "unknown experiment: ${{ inputs.experiment }}"; exit 1 ;;
           esac
