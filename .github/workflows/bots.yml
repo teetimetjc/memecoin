@@ -71,11 +71,7 @@ jobs:
             .venv/bin/pip install -q xgboost
             cp -n .env.example .env || true
             # Assert rather than hope. A warning in a log is not a check.
-            .venv/bin/python -c "
-from model.xgboost_pricer import XGBoostPricer
-p = XGBoostPricer()
-assert p._loaded, 'xgboost model did NOT load -- would take zero trades'
-print('model loaded OK')"
+            .venv/bin/python -c "from model.xgboost_pricer import XGBoostPricer as X; p = X(); assert p._loaded, 'xgboost model did NOT load -- bot would take zero trades'; print('model loaded OK')"
           else
             cd bots/kalshi-crypto-bot
             python -m venv .venv
@@ -106,5 +102,4 @@ print('model loaded OK')"
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: |
-          python botrun.py ${{ matrix.bot }} \
-            ${{ github.event.inputs.seconds || '19800' }}
+          python botrun.py ${{ matrix.bot }} ${{ github.event.inputs.seconds || '19800' }}
