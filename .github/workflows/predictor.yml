@@ -36,19 +36,16 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
-          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
-          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          # NO PUSHOVER CREDENTIALS. Not merely "alerts off" -- the tokens are
+          # not present, so no code path reachable from this scheduled job can
+          # send a notification even if a flag were wrong. Removed after the
+          # hourly pulse kept firing while every flag said it would not.
           # Still logging the order each signal WOULD send.
           DRY_RUN_ORDERS: "1"
-          # PHONE ALERTS. The order API cannot trade from here -- every order
-          # is refused with market_not_found for markets that are live and
-          # priced -- so the bot names the bets and a human places them in the
-          # Kalshi app. Fires ~35 seconds into the window, which is the entry
-          # the whole history is priced at.
-          # OFF alongside live betting. An alert that names a bet is a
-          # prompt to place one by hand, and there is no longer a reason to
-          # place one: the edge it was naming does not survive being scored
-          # the way Kalshi settles. Silent collection continues.
+          # PHONE ALERTS. OFF alongside live betting. An alert that names a
+          # bet is a prompt to place one by hand, and there is no longer a
+          # reason to place one: the edge it was naming does not survive
+          # being scored the way Kalshi settles. Silent collection continues.
           BET_ALERTS: "0"
           ALERT_STAKE: "5"
           ALERT_TZ: "America/Chicago"
@@ -62,46 +59,33 @@ jobs:
           # window. The ordering is fixed, but the sleep still delays every
           # answer about what a window did, and 163 rows already say the
           # hold-versus-sell difference is nowhere near significant.
-          #
-          # Getting bets placed at the right second, and being able to see the
-          # result within a minute, matters more than finishing that study.
           MEASURE_MIDWINDOW: "0"
-          # BETTING IS LIVE. Turned on 18 Sep after the exchange_index bug was
-          # found and a real order filled at the 35-second entry: SOL DOWN,
-          # 10 contracts at 45.8c against a 47c quote, on the correct side
-          # (confirmed "Sold Yes" in the app).
+          # BETTING IS HALTED. Turned off 2026-09-18 after re-scoring the
+          # forward test the way Kalshi actually settles, and left off after
+          # the 21 Sep live tests lost about $50 across ~20 bets.
           #
-          # $5 a bet, every qualifying signal, no per-window cap.
-          #
-          # HALTED 2026-09-18 at the user's instruction, after re-scoring the
-          # forward test the way Kalshi actually settles. Every "Correct?"
-          # column graded whether spot finished above or below the SAMPLE
-          # price; Kalshi pays on whether it finished above or below the
-          # STRIKE. 10.1% of 1,478 signals were graded wrong, and correcting
-          # them turns +$803 into -$402. The cheap-entry edge the strategy was
-          # built on inverts outright: under 40c goes 47.6% -> 30.8%.
-          #
-          # Measured edge against the price paid is +0.77pp, 95% CI -4.15 to
-          # +5.68 -- zero, against a book that grades out well calibrated.
-          # See grade_check.py, which reproduces all of it from an export.
+          # v6_regrade.py has since re-scored it against Kalshi's own result
+          # field rather than our spot-vs-strike arithmetic: -$0.07 a bet
+          # over 2,375 bets, 95% CI -0.88 to +0.74. Not the -$402 previously
+          # reported -- about 60% of that was a grading artifact -- but still
+          # indistinguishable from zero, and the +2.3pp gross edge at 40-60c
+          # is roughly the size of the fee.
           #
           # Do NOT set this back to "1" until a rule has been shown to beat
-          # the market's own price on the STRIKE question. Nothing has.
+          # the market's own price on the STRIKE question, out of sample,
+          # after fees. Eleven strategies have now failed that test.
           LIVE_TRADING: "0"
           ALLOW_LIVE_TRADING: "0"
           # Confirmed against a real fill: DOWN sends an ask, which opens a
           # NO position. Kalshi's own order history reads "Sold Yes".
           LIVE_ALLOW_DOWN: "1"
           # OFF. This measured whether the edge survived the 3-4 minute entry a
-          # BOT would have been stuck with. Bets are now placed by hand from
-          # the phone alert at ~35 seconds -- the entry the history is already
-          # priced at -- so there is no delay left to measure. It also slept
-          # four minutes on every run. Set back to "1" if automated betting
-          # ever becomes possible.
+          # BOT would have been stuck with. Set back to "1" if automated
+          # betting ever becomes possible.
           MEASURE_ENTRY_DECAY: "0"
           # PRICE PATH. On. Samples every coin's market every 30 seconds for
-          # the first 13.5 minutes of the window -- the data the cash-out
-          # idea needs and that nothing collected so far can provide.
+          # the first 13.5 minutes of the window -- the data behind the maker
+          # study and every order-book experiment since.
           #
           # It makes this job run almost the full 15 minutes, so runs now
           # overlap slightly. That is safe: the workflow declares no
@@ -119,28 +103,13 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python predictor.py --report --sheet
 
-      # --- hourly pulse ----------------------------------------------------
-      # One summary per hour, not one message per bet. Rides on this workflow
-      # because this repo's cron never fires but this workflow demonstrably
-      # runs every 15 minutes.
-      - name: Hourly pulse
-        continue-on-error: true
-        env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
-          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
-          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
-          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
-        run: |
-          if [ "$(date -u +%M)" -ge 15 ]; then
-            echo "Not the top of the hour; no pulse."
-            exit 0
-          fi
-          python -c "import predictor as P, live; live.pulse(P._get_client())"
+      # The hourly pulse used to live here. It called live.pulse() inline via
+      # `python -c "import predictor as P, live; ..."`, which is why grepping
+      # .py files for callers and workflow files for "live.py" both found
+      # nothing while it kept firing every hour. Deleted, not disabled.
 
       # --- dashboard data -------------------------------------------------
       # LAST, and continue-on-error, so nothing below can affect collection.
-      # Only on the hour, to keep repo churn sane.
       - name: Rebuild dashboard data
         continue-on-error: true
         env:
