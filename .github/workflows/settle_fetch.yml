@@ -1,0 +1,40 @@
+name: Fetch Settlements (read-only)
+
+# CG0 -- the fix that unblocks CG1 through CG5.
+#
+# Every cheap-contract calibration number was computed from a flag we
+# derived ourselves (Price at Eval > K Target). Against the order book's own
+# verdict 90 seconds from settlement that flag is wrong about 19% of the
+# time, and the mislabelling fully explains the "anomaly" it was used to
+# find. This asks Kalshi what each market actually settled to.
+#
+# Read-only against the exchange: it GETs market records and writes one
+# spreadsheet tab. No order path is reachable from here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Max tickers to fetch this run. 0 = all of them.'
+        required: false
+        default: '0'
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    # ~1,000 tickers at a gentle rate, plus slack.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Ask Kalshi what each market settled to
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python settle_fetch.py "${{ inputs.limit }}"
