@@ -20,15 +20,21 @@ name: CG Experiments (read-only)
 # half-filled tab silently drops the oldest signals and reports what is
 # left as though it were the whole sample.
 #
+# maker asks the one question none of the above touch: whether RESTING an
+# order collects more than it gives up, rather than crossing the spread.
+# maker-holdout is a deliberately separate dispatch so that the held-back
+# last 20% of windows cannot be reached by re-running the ordinary case.
+# It stays unrun until a specification is frozen in writing.
+#
 # Read-only otherwise -- no order path is reachable from this workflow.
 
 on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'cg1 (calibration) | cg7 (yes+no arbitrage) | cg9 (book momentum) | v6 (re-grade the forward test)'
+        description: 'cg1 | cg7 | cg9 | v6 (re-grade) | maker (train+dev) | maker-holdout (FROZEN SPEC ONLY)'
         required: true
-        default: 'cg7'
+        default: 'maker'
 
 jobs:
   run:
@@ -54,5 +60,7 @@ jobs:
             cg9) python cg9.py ;;
             all) python cg7.py; echo; python cg9.py ;;
             v6)  python settle_fetch.py; echo; python v6_regrade.py ;;
+            maker) python maker.py ;;
+            maker-holdout) python maker.py --holdout ;;
             *)   echo "unknown experiment: ${{ inputs.experiment }}"; exit 1 ;;
           esac
