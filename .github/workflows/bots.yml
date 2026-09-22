@@ -13,6 +13,15 @@ name: Paper Bots (EdgeHunter + Kapelame)
 # codebase, and kalshi-crypto-bot's paper_trader.py contains no order path
 # at all. trader.py IS a real live trader and is never invoked here.
 #
+# NO CREDENTIALS ARE NEEDED FOR MARKET DATA. probe_auth.py asked Kalshi the
+# same questions signed and unsigned and got identical answers: the order
+# book is fully public. The blank market data seen overnight was an API
+# shape change, fixed by patch_kapelame.py, not a missing key.
+#
+# THE CLONES ARE PINNED to commits audited on 2026-09-22. Tracking a
+# default branch would mean whatever the owners push next runs here with
+# no review -- the one real exposure in using someone else's trading code.
+#
 # A run is capped at 5h30m so it fits inside the 6h job ceiling with room
 # to write results; the cron restarts it, giving near-continuous cover.
 
@@ -29,6 +38,10 @@ on:
 concurrency:
   group: paper-bots
   cancel-in-progress: false
+
+env:
+  EDGEHUNTER_SHA: da357972950d0094c883ef34aa5172b5ecc7c60a
+  KAPELAME_SHA: eb129b4fe2fe9a05d8e9f5439e7a97a8e77ae550
 
 jobs:
   bot:
@@ -49,14 +62,25 @@ jobs:
 
       - run: pip install requests gspread google-auth cryptography
 
-      - name: Clone the bot
+      - name: Clone the bot at a pinned, audited commit
         run: |
+          set -e
           mkdir -p bots && cd bots
           if [ "${{ matrix.bot }}" = "edgehunter" ]; then
-            git clone --depth 1 https://github.com/Franzi317/EdgeHunter.git
+            url=https://github.com/Franzi317/EdgeHunter.git
+            dir=EdgeHunter; want=$EDGEHUNTER_SHA
           else
-            git clone --depth 1 https://github.com/kapelame/kalshi-crypto-bot.git
+            url=https://github.com/kapelame/kalshi-crypto-bot.git
+            dir=kalshi-crypto-bot; want=$KAPELAME_SHA
           fi
+          git clone --quiet "$url" "$dir"
+          cd "$dir"
+          git checkout --quiet "$want"
+          got=$(git rev-parse HEAD)
+          if [ "$got" != "$want" ]; then
+            echo "::error::pinned $want but got $got"; exit 1
+          fi
+          echo "pinned at $got"
 
       - name: Install (with the deps upstream forgot to declare)
         run: |
@@ -79,6 +103,10 @@ jobs:
             .venv/bin/pip install -q -r requirements.txt
             .venv/bin/pip install -q nest_asyncio
           fi
+
+      - name: Patch Kapelame's market reads for the current Kalshi API
+        if: matrix.bot == 'kapelame'
+        run: python patch_kapelame.py bots/kalshi-crypto-bot/paper_trader.py
 
       - name: Confirm no live order path is reachable
         run: |
