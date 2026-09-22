@@ -55,6 +55,21 @@ BOTS = {
         # stdout lines from this bot and hung, because the reader blocked on
         # a pipe that was never going to speak.
         "logs": ["logs/edgehunter.jsonl"],
+        # THE ONLY BOT THAT GETS CREDENTIALS, and only because it was
+        # measured to need them: probe_ws found Kalshi's market-data socket
+        # returns HTTP 401 unsigned and streams normally when signed. The
+        # REST side is public either way, so Kapelame still gets nothing.
+        #
+        # NOTE THE CROSSOVER, which is a real trap. EdgeHunter's
+        # KALSHI_API_KEY is the ACCESS KEY ID (a UUID, sent as the
+        # KALSHI-ACCESS-KEY header). This repo's secret of the same name is
+        # the PEM. Passing them straight through would send the whole
+        # private key as the key-id header and sign with nothing -- failing
+        # with 401s indistinguishable from a wrong key.
+        "creds": {"env": {"KALSHI_API_KEY": "KALSHI_KEY_ID",
+                          "KALSHI_PRIVATE_KEY_PATH": "keys/kalshi_private.pem"},
+                  "pem_from": "KALSHI_API_KEY",
+                  "pem_at": "keys/kalshi_private.pem"},
     },
     "kapelame": {
         "tab": "Kapelame Paper",
@@ -147,11 +162,43 @@ def main():
     print(f"=== {key} :: run {run_id} :: {secs}s :: tab '{spec['tab']}' ===")
     print(f"    cmd: {' '.join(cmd)}  (cwd {spec['dir']})")
 
-    # No Kalshi credentials reach the child. Paper mode needs none, and this
-    # way an upstream change cannot quietly start signing orders.
+    # Strip by default: a bot gets no credentials unless it was MEASURED to
+    # need them, and then only the ones named in its own spec. An allowlist,
+    # not a blanket un-strip, so adding a bot cannot silently widen this.
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("KALSHI_", "AWS_"))}
     env["PYTHONUNBUFFERED"] = "1"
+
+    pem_path = None
+    creds = spec.get("creds")
+    if creds:
+        pem = (os.environ.get(creds["pem_from"]) or "").strip()
+        if not pem:
+            print(f"  [creds] {creds['pem_from']} is empty -- {key} needs a "
+                  f"signed socket and will fail without it")
+            return 1
+        if "\\n" in pem and "\n" not in pem:
+            pem = pem.replace("\\n", "\n")
+        # Parse it HERE, before launching. A malformed PEM otherwise shows up
+        # as a bot that starts, crashes on a file it cannot read, and logs
+        # something that looks like a missing file rather than a bad key.
+        try:
+            from cryptography.hazmat.primitives import serialization
+            serialization.load_pem_private_key(pem.encode(), password=None)
+        except Exception as e:
+            print(f"  [creds] PEM in {creds['pem_from']} does not parse: "
+                  f"{type(e).__name__}")
+            return 1
+        pem_path = os.path.join(spec["dir"], creds["pem_at"])
+        os.makedirs(os.path.dirname(pem_path), exist_ok=True)
+        fd = os.open(pem_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(pem if pem.endswith("\n") else pem + "\n")
+        for child_var, source in creds["env"].items():
+            env[child_var] = (creds["pem_at"] if source == creds["pem_at"]
+                              else os.environ.get(source, ""))
+        print(f"  [creds] wrote PEM (0600) to {pem_path}; "
+              f"key id present: {bool(env.get('KALSHI_API_KEY'))}")
 
     lines, status, rc = [], "ok", None
     t0 = time.time()
@@ -202,6 +249,13 @@ def main():
         status = f"launch-failed: {str(e)[:70]}"
         print(f"  [run] {status}")
 
+    if pem_path and os.path.exists(pem_path):
+        try:
+            os.remove(pem_path)
+            print(f"  [creds] removed {pem_path}")
+        except Exception as e:
+            print(f"  [creds] COULD NOT REMOVE {pem_path}: {str(e)[:60]}")
+
     elapsed = time.time() - t0
     print(f"=== finished: status={status} rc={rc} elapsed={elapsed:.0f}s "
           f"stdout_lines={len(lines)} ===")
@@ -249,6 +303,36 @@ def main():
 
     for db in spec["dbs"]:
         rows += dump_db(os.path.join(spec["dir"], db), run_id, stamp)
+
+    # LAST LINE OF DEFENCE before anything leaves for the sheet. EdgeHunter
+    # was audited and never logs its key or headers -- but the audit covers
+    # one pinned commit, and the sheet is somewhere a secret can never be
+    # recalled from. Cheap to check, permanent if missed.
+    # Whole secrets AND their individual PEM body lines. An adversarial test
+    # showed why: a child that prints the base64 body without its header
+    # matches no marker and is not equal to the whole key, so a naive check
+    # passes it straight through. Any single 64-char body line is already a
+    # disclosure, so each is matched on its own.
+    SECRETS = []
+    for v in (os.environ.get("KALSHI_API_KEY"), os.environ.get("KALSHI_KEY_ID")):
+        if not v:
+            continue
+        v = v.replace("\\n", "\n")
+        if len(v) > 12:
+            SECRETS.append(v)
+        SECRETS += [ln.strip() for ln in v.splitlines()
+                    if len(ln.strip()) >= 32 and "-----" not in ln]
+    MARKERS = ("PRIVATE KEY", "BEGIN RSA", "KALSHI-ACCESS-SIGNATURE")
+    scrubbed = 0
+    for row in rows:
+        cell = str(row[3])
+        hit = any(m in cell for m in MARKERS) or any(s in cell for s in SECRETS)
+        if hit:
+            row[3] = "[REDACTED: line matched a credential marker]"
+            scrubbed += 1
+    if scrubbed:
+        print(f"  [scrub] REDACTED {scrubbed} row(s) before upload -- "
+              f"investigate, the bot should never emit these")
 
     try:
         ws = _sheet(spec["tab"])
