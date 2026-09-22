@@ -41,6 +41,7 @@ import time
 
 MAX_ROWS_PER_TABLE = 4000        # a night of ticks, bounded
 MAX_LOG_LINES = 600
+FLUSH_EVERY_S = 300           # push new rows to the sheet every 5 minutes
 TAIL_KEEP = 400
 
 BOTS = {
@@ -116,32 +117,86 @@ def _append(ws, rows):
     return n
 
 
-def dump_db(path, run_id, stamp):
-    """Every row of every table, as JSON. No schema assumed."""
+def scrub(rows):
+    """Redact anything credential-shaped before it leaves for the sheet.
+
+    Applied on EVERY write path, not just the final one. A secret cannot be
+    recalled from a spreadsheet, so the incremental flushes have to be as
+    careful as the last one -- and it is the periodic path, running
+    unattended, that would be easiest to forget."""
+    secrets = []
+    for v in (os.environ.get("KALSHI_API_KEY"), os.environ.get("KALSHI_KEY_ID")):
+        if not v:
+            continue
+        v = v.replace("\\n", "\n")
+        if len(v) > 12:
+            secrets.append(v)
+        secrets += [ln.strip() for ln in v.splitlines()
+                    if len(ln.strip()) >= 32 and "-----" not in ln]
+    markers = ("PRIVATE KEY", "BEGIN RSA", "KALSHI-ACCESS-SIGNATURE")
+    n = 0
+    for row in rows:
+        cell = str(row[3])
+        if any(m in cell for m in markers) or any(s in cell for s in secrets):
+            row[3] = "[REDACTED: line matched a credential marker]"
+            n += 1
+    if n:
+        print(f"  [scrub] REDACTED {n} row(s) -- investigate, the bot should "
+              f"never emit these")
+    return rows
+
+
+def dump_db(path, run_id, stamp, since=None, quiet=False):
+    """Rows as JSON, schema-agnostic.
+
+    `since` is a dict of table -> highest id already written. When given,
+    only newer rows come back and the dict is updated in place, which is
+    what lets a four-hour run report progress instead of going dark until
+    it ends. Tables without an integer id are skipped while incremental and
+    written in full by the final pass."""
     out = []
     if not os.path.exists(path):
-        print(f"  [db] {path} not present")
+        if not quiet:
+            print(f"  [db] {path} not present")
         return out
     try:
-        con = sqlite3.connect(path)
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
         con.row_factory = sqlite3.Row
         tabs = [r[0] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-        print(f"  [db] {path}: tables {tabs}")
+        if not quiet:
+            print(f"  [db] {path}: tables {tabs}")
         for t in tabs:
             try:
-                cur = con.execute(f'SELECT * FROM "{t}" LIMIT {MAX_ROWS_PER_TABLE}')
+                cols = [c[1] for c in con.execute(f'PRAGMA table_info("{t}")')]
+                has_id = "id" in cols
+                if since is not None:
+                    if not has_id:
+                        continue          # full dump happens at the end
+                    last = since.get(t, 0)
+                    cur = con.execute(
+                        f'SELECT * FROM "{t}" WHERE id > ? ORDER BY id '
+                        f'LIMIT {MAX_ROWS_PER_TABLE}', (last,))
+                else:
+                    cur = con.execute(
+                        f'SELECT * FROM "{t}" LIMIT {MAX_ROWS_PER_TABLE}')
                 got = 0
                 for r in cur:
+                    d = dict(r)
                     out.append([run_id, stamp, f"db:{t}",
-                                json.dumps(dict(r), default=str)[:45000]])
+                                json.dumps(d, default=str)[:45000]])
                     got += 1
-                print(f"  [db]   {t}: {got} rows")
+                    if since is not None and has_id and d.get("id") is not None:
+                        since[t] = max(since.get(t, 0), int(d["id"]))
+                if not quiet:
+                    print(f"  [db]   {t}: {got} rows")
             except Exception as e:
-                print(f"  [db]   {t}: {str(e)[:70]}")
+                if not quiet:
+                    print(f"  [db]   {t}: {str(e)[:70]}")
         con.close()
     except Exception as e:
-        print(f"  [db] {path}: {str(e)[:80]}")
+        if not quiet:
+            print(f"  [db] {path}: {str(e)[:80]}")
     return out
 
 
@@ -230,6 +285,42 @@ def main():
         wd = threading.Timer(secs + 60, _stop)
         wd.daemon = True
         wd.start()
+
+        # PERIODIC FLUSH. A four-hour run used to write nothing until it
+        # ended, so there was no way to see how it was doing without waiting
+        # for the whole session. This pushes new database rows to the sheet
+        # every few minutes instead.
+        #
+        # It is a TIMER THREAD, not a check inside the read loop below, for
+        # the same reason the watchdog is: EdgeHunter writes nothing to
+        # stdout, so anything driven by arriving lines never runs for it.
+        stop_flush = threading.Event()
+        seen = {}
+
+        def _flusher():
+            ws = None
+            while not stop_flush.wait(FLUSH_EVERY_S):
+                try:
+                    rows = []
+                    for db in spec["dbs"]:
+                        rows += dump_db(os.path.join(spec["dir"], db),
+                                        run_id, time.strftime(
+                                            "%Y-%m-%d %H:%M:%S UTC",
+                                            time.gmtime()),
+                                        since=seen, quiet=True)
+                    if not rows:
+                        continue
+                    if ws is None:
+                        ws = _sheet(spec["tab"])
+                    wrote = _append(ws, scrub(rows))
+                    print(f"  [flush] +{wrote} row(s) at "
+                          f"{time.strftime('%H:%M:%S', time.gmtime())}")
+                except Exception as e:
+                    # Never let a flush failure touch the run itself.
+                    print(f"  [flush] failed, will retry: {str(e)[:70]}")
+
+        fl = threading.Thread(target=_flusher, daemon=True)
+        fl.start()
         try:
             for line in p.stdout:
                 line = line.rstrip()
@@ -242,6 +333,8 @@ def main():
             status = "timeout"
         finally:
             wd.cancel()
+            stop_flush.set()
+            fl.join(timeout=30)
         if fired["watchdog"]:
             # Expected for a bot with no duration flag. Not an error.
             status = "stopped-by-watchdog"
@@ -301,38 +394,13 @@ def main():
         except Exception as e:
             print(f"  [log] {path}: {str(e)[:70]}")
 
+    # Only what the periodic flush has not already sent, so a long run does
+    # not duplicate every tick at the end.
     for db in spec["dbs"]:
-        rows += dump_db(os.path.join(spec["dir"], db), run_id, stamp)
+        rows += dump_db(os.path.join(spec["dir"], db), run_id, stamp,
+                        since=seen)
 
-    # LAST LINE OF DEFENCE before anything leaves for the sheet. EdgeHunter
-    # was audited and never logs its key or headers -- but the audit covers
-    # one pinned commit, and the sheet is somewhere a secret can never be
-    # recalled from. Cheap to check, permanent if missed.
-    # Whole secrets AND their individual PEM body lines. An adversarial test
-    # showed why: a child that prints the base64 body without its header
-    # matches no marker and is not equal to the whole key, so a naive check
-    # passes it straight through. Any single 64-char body line is already a
-    # disclosure, so each is matched on its own.
-    SECRETS = []
-    for v in (os.environ.get("KALSHI_API_KEY"), os.environ.get("KALSHI_KEY_ID")):
-        if not v:
-            continue
-        v = v.replace("\\n", "\n")
-        if len(v) > 12:
-            SECRETS.append(v)
-        SECRETS += [ln.strip() for ln in v.splitlines()
-                    if len(ln.strip()) >= 32 and "-----" not in ln]
-    MARKERS = ("PRIVATE KEY", "BEGIN RSA", "KALSHI-ACCESS-SIGNATURE")
-    scrubbed = 0
-    for row in rows:
-        cell = str(row[3])
-        hit = any(m in cell for m in MARKERS) or any(s in cell for s in SECRETS)
-        if hit:
-            row[3] = "[REDACTED: line matched a credential marker]"
-            scrubbed += 1
-    if scrubbed:
-        print(f"  [scrub] REDACTED {scrubbed} row(s) before upload -- "
-              f"investigate, the bot should never emit these")
+    rows = scrub(rows)
 
     try:
         ws = _sheet(spec["tab"])
