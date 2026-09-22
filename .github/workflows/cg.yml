@@ -1,0 +1,43 @@
+name: CG Experiments (read-only)
+
+# The numbered experiments from the external review. Each one reads the
+# sheet, prints a result, and writes nothing.
+#
+# CG0 is not here: it is the settlement fetch, which writes a tab, and it
+# lives in settle_fetch.yml. Everything from CG1 to CG5 depends on it
+# having run, because they all need a settlement outcome that is not our
+# own arithmetic.
+#
+# Read-only, and handed no trading key it needs -- no order path is
+# reachable from this workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: 'Which experiment to run: cg1 (more to come)'
+        required: true
+        default: 'cg1'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Run the experiment
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: |
+          case "${{ inputs.experiment }}" in
+            cg1) python cg1.py ;;
+            *)   echo "unknown experiment: ${{ inputs.experiment }}"; exit 1 ;;
+          esac
