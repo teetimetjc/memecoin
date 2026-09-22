@@ -4,20 +4,25 @@ name: CG Experiments (read-only)
 # sheet, prints a result, and writes nothing.
 #
 # CG0 is not here: it is the settlement fetch, which writes a tab, and it
-# lives in settle_fetch.yml. Everything from CG1 to CG5 depends on it
-# having run, because they all need a settlement outcome that is not our
-# own arithmetic.
+# lives in settle_fetch.yml. CG1 through CG5 depend on it having run,
+# because they all need a settlement outcome that is not our own
+# arithmetic.
 #
-# Read-only, and handed no trading key it needs -- no order path is
-# reachable from this workflow.
+# CG7 and CG9 do NOT depend on it, and that is the point of them: one asks
+# whether YES and NO can both be bought for under a dollar, the other
+# whether a contract's price move predicts its next price move. Neither
+# uses a settlement outcome at all, so neither could have been damaged by
+# the flag that turned out to be 19% wrong.
+#
+# Read-only -- no order path is reachable from this workflow.
 
 on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'Which experiment to run: cg1 (more to come)'
+        description: 'cg1 (calibration) | cg7 (yes+no arbitrage) | cg9 (book momentum)'
         required: true
-        default: 'cg1'
+        default: 'cg7'
 
 jobs:
   run:
@@ -39,5 +44,8 @@ jobs:
         run: |
           case "${{ inputs.experiment }}" in
             cg1) python cg1.py ;;
+            cg7) python cg7.py ;;
+            cg9) python cg9.py ;;
+            all) python cg7.py; echo; python cg9.py ;;
             *)   echo "unknown experiment: ${{ inputs.experiment }}"; exit 1 ;;
           esac
