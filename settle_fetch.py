@@ -77,22 +77,43 @@ def main():
     client = P._get_client()
     sh = client.open_by_key(P.SPREADSHEET_ID)
 
-    rows = sh.worksheet("Path").get_all_values()
-    if len(rows) < 2:
-        print("no Path rows")
-        return 1
-    hi = {h: i for i, h in enumerate(rows[0])}
-    ti = hi.get("Ticker", -1)
-    if ti < 0:
-        print("Path has no Ticker column")
-        return 1
+    # Two sources, because they cover different eras. The Path sampler only
+    # started logging in mid-September; the Predictions tab goes back to the
+    # start of the v6 forward test. Fetching Path alone would leave the
+    # oldest v6 signals with no authoritative result and silently re-grade a
+    # truncated sample -- which would look like an answer.
     tickers = []
     seen = set()
-    for r in rows[1:]:
-        t = (r[ti] if ti < len(r) else "").strip()
-        if t and t not in seen:
-            seen.add(t)
-            tickers.append(t)
+
+    def harvest(tab, cols):
+        try:
+            rows = sh.worksheet(tab).get_all_values()
+        except Exception as e:
+            print(f"  {tab}: unreadable ({str(e)[:50]})")
+            return
+        if len(rows) < 2:
+            print(f"  {tab}: empty")
+            return
+        hi = {h: i for i, h in enumerate(rows[0])}
+        idx = [hi[c] for c in cols if c in hi]
+        if not idx:
+            print(f"  {tab}: none of {cols} present")
+            return
+        got = 0
+        for r in rows[1:]:
+            for i in idx:
+                t = (r[i] if i < len(r) else "").strip()
+                if t and t not in seen:
+                    seen.add(t)
+                    tickers.append(t)
+                    got += 1
+        print(f"  {tab}: {got} new tickers from {', '.join(cols)}")
+
+    harvest("Path", ["Ticker"])
+    harvest("Predictions", ["K Late Ticker", "K Early Ticker"])
+    if not tickers:
+        print("no tickers found in either tab")
+        return 1
 
     # Already-fetched tickers are skipped, so this can be re-run to top up
     # without paying for the whole history again.
