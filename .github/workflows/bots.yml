@@ -1,0 +1,110 @@
+name: Paper Bots (EdgeHunter + Kapelame)
+
+# Runs the two third-party paper-trading bots and lands whatever they
+# produce in their own sheet tabs.
+#
+# WHY HERE AND NOT LOCALLY: the development sandbox blocks
+# api.elections.kalshi.com, api.coinbase.com, ws.kraken.com and
+# stream.binance.com, so both bots are mute there. A runner has open
+# egress, which makes this the only place they can actually collect.
+#
+# PAPER ONLY, enforced by omission: no KALSHI_* secret is passed to either
+# job. EdgeHunter's LiveExecutionEngine is never instantiated in its own
+# codebase, and kalshi-crypto-bot's paper_trader.py contains no order path
+# at all. trader.py IS a real live trader and is never invoked here.
+#
+# A run is capped at 5h30m so it fits inside the 6h job ceiling with room
+# to write results; the cron restarts it, giving near-continuous cover.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'How long each bot runs (900 = 15min canary, 19800 = 5h30m)'
+        required: true
+        default: '900'
+  schedule:
+    - cron: '7 */6 * * *'
+
+concurrency:
+  group: paper-bots
+  cancel-in-progress: false
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        bot: [edgehunter, kapelame]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Clone the bot
+        run: |
+          mkdir -p bots && cd bots
+          if [ "${{ matrix.bot }}" = "edgehunter" ]; then
+            git clone --depth 1 https://github.com/Franzi317/EdgeHunter.git
+          else
+            git clone --depth 1 https://github.com/kapelame/kalshi-crypto-bot.git
+          fi
+
+      - name: Install (with the deps upstream forgot to declare)
+        run: |
+          set -e
+          if [ "${{ matrix.bot }}" = "edgehunter" ]; then
+            cd bots/EdgeHunter
+            python -m venv .venv
+            .venv/bin/pip install -q --upgrade pip
+            .venv/bin/pip install -q -r requirements.txt
+            # NOT optional: without xgboost the pricer degrades silently to a
+            # zero-confidence echo and the bot takes no trades, ever.
+            .venv/bin/pip install -q xgboost
+            cp -n .env.example .env || true
+            # Assert rather than hope. A warning in a log is not a check.
+            .venv/bin/python -c "
+from model.xgboost_pricer import XGBoostPricer
+p = XGBoostPricer()
+assert p._loaded, 'xgboost model did NOT load -- would take zero trades'
+print('model loaded OK')"
+          else
+            cd bots/kalshi-crypto-bot
+            python -m venv .venv
+            .venv/bin/pip install -q --upgrade pip
+            .venv/bin/pip install -q -r requirements.txt
+            .venv/bin/pip install -q nest_asyncio
+          fi
+
+      - name: Confirm no live order path is reachable
+        run: |
+          if [ "${{ matrix.bot }}" = "edgehunter" ]; then
+            cd bots/EdgeHunter
+            if grep -rn "LiveExecutionEngine(" --include=*.py . ; then
+              echo "::error::LiveExecutionEngine is CONSTRUCTED somewhere - refusing to run"
+              exit 1
+            fi
+            echo "OK: LiveExecutionEngine defined but never instantiated"
+          else
+            cd bots/kalshi-crypto-bot
+            if grep -n "portfolio/orders" paper_trader.py ; then
+              echo "::error::paper_trader.py contains an order path - refusing to run"
+              exit 1
+            fi
+            echo "OK: paper_trader.py has no order path"
+          fi
+
+      - name: Run and log to the sheet
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          python botrun.py ${{ matrix.bot }} \
+            ${{ github.event.inputs.seconds || '19800' }}
