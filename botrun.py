@@ -36,6 +36,7 @@ import os
 import subprocess
 import sqlite3
 import sys
+import threading
 import time
 
 MAX_ROWS_PER_TABLE = 4000        # a night of ticks, bounded
@@ -46,16 +47,23 @@ BOTS = {
     "edgehunter": {
         "tab": "EdgeHunter Paper",
         "dir": "bots/EdgeHunter",
+        # main.py takes no duration and runs until killed. The watchdog below
+        # is the ONLY thing that stops it.
         "cmd": [".venv/bin/python", "main.py"],
         "dbs": ["edgehunter.db"],
+        # structlog writes here, NOT to stdout. A first canary captured 0
+        # stdout lines from this bot and hung, because the reader blocked on
+        # a pipe that was never going to speak.
+        "logs": ["logs/edgehunter.jsonl"],
     },
     "kapelame": {
         "tab": "Kapelame Paper",
         "dir": "bots/kalshi-crypto-bot",
         # --duration is parsed by hand in that file, not argparse; it still
-        # works, and the subprocess timeout below is the real backstop.
+        # works, and the watchdog below is the real backstop.
         "cmd": [".venv/bin/python", "paper_trader.py", "--duration"],
         "dbs": ["kalshi_live_paper.db"],
+        "logs": ["kalshi_live_paper.log"],
     },
 }
 
@@ -147,25 +155,49 @@ def main():
 
     lines, status, rc = [], "ok", None
     t0 = time.time()
+    fired = {"watchdog": False}
     try:
         p = subprocess.Popen(cmd, cwd=spec["dir"], env=env,
                              stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True,
                              bufsize=1)
+
+        # THE WATCHDOG, and why it is a timer rather than a check inside the
+        # read loop. The first version tested the clock only when a line
+        # arrived on stdout. EdgeHunter logs through structlog to a FILE and
+        # says almost nothing on stdout, so the reader blocked on a pipe that
+        # was never going to speak, the clock was never consulted, and a
+        # 15-minute canary was still running 17 minutes later. A timer runs
+        # whether or not the child ever writes a byte; killing it closes the
+        # pipe, which is what ends the loop below.
+        def _stop():
+            fired["watchdog"] = True
+            for finish in (p.terminate, p.kill):
+                try:
+                    finish()
+                    p.wait(timeout=20)
+                    return
+                except Exception:
+                    continue
+
+        wd = threading.Timer(secs + 60, _stop)
+        wd.daemon = True
+        wd.start()
         try:
             for line in p.stdout:
                 line = line.rstrip()
                 lines.append(line)
-                if len(lines) <= 80 or len(lines) % 50 == 0:
+                if len(lines) <= 80 or len(lines) % 200 == 0:
                     print(f"    | {line[:150]}")
-                if time.time() - t0 > secs + 120:
-                    p.kill()
-                    status = "killed-overrun"
-                    break
             rc = p.wait(timeout=120)
         except subprocess.TimeoutExpired:
             p.kill()
             status = "timeout"
+        finally:
+            wd.cancel()
+        if fired["watchdog"]:
+            # Expected for a bot with no duration flag. Not an error.
+            status = "stopped-by-watchdog"
     except Exception as e:
         status = f"launch-failed: {str(e)[:70]}"
         print(f"  [run] {status}")
@@ -188,6 +220,25 @@ def main():
         if len(lines) > MAX_LOG_LINES else lines
     for ln in keep:
         rows.append([run_id, stamp, "stdout", ln[:45000]])
+
+    # Log FILES, which for EdgeHunter are where the real output lives.
+    for rel in spec.get("logs", []):
+        path = os.path.join(spec["dir"], rel)
+        if not os.path.exists(path):
+            print(f"  [log] {path} not present")
+            continue
+        try:
+            with open(path, errors="replace") as f:
+                flines = [l.rstrip() for l in f]
+            keep = (flines if len(flines) <= MAX_LOG_LINES
+                    else flines[:MAX_LOG_LINES - TAIL_KEEP]
+                    + [f"... {len(flines) - MAX_LOG_LINES} lines omitted ..."]
+                    + flines[-TAIL_KEEP:])
+            for ln in keep:
+                rows.append([run_id, stamp, f"log:{rel}", ln[:45000]])
+            print(f"  [log] {path}: {len(flines)} lines, kept {len(keep)}")
+        except Exception as e:
+            print(f"  [log] {path}: {str(e)[:70]}")
 
     for db in spec["dbs"]:
         rows += dump_db(os.path.join(spec["dir"], db), run_id, stamp)
