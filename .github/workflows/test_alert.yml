@@ -1,0 +1,30 @@
+name: Practice Notification
+
+# Sends ONE digest through the same send_digest() the live sessions use,
+# with invented numbers and a banner saying so. Proves the whole chain --
+# credentials, assembly, character limit, how it renders on a phone --
+# without waiting for a market to settle.
+#
+# Deliberately its own workflow rather than a case in cg.yml: that one
+# carries Kalshi credentials, and this has no use for them. Pushover only.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Send the practice digest
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: python test_alert.py
