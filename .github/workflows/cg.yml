@@ -14,20 +14,26 @@ name: CG Experiments (read-only)
 # uses a settlement outcome at all, so neither could have been damaged by
 # the flag that turned out to be 19% wrong.
 #
-# Read-only -- no order path is reachable from this workflow.
+# v6 is the re-grade of the original forward test against that same
+# authoritative result. It is the one case here that writes anything: it
+# tops up the Settled tab before scoring, because a re-grade run against a
+# half-filled tab silently drops the oldest signals and reports what is
+# left as though it were the whole sample.
+#
+# Read-only otherwise -- no order path is reachable from this workflow.
 
 on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'cg1 (calibration) | cg7 (yes+no arbitrage) | cg9 (book momentum)'
+        description: 'cg1 (calibration) | cg7 (yes+no arbitrage) | cg9 (book momentum) | v6 (re-grade the forward test)'
         required: true
         default: 'cg7'
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,5 +53,6 @@ jobs:
             cg7) python cg7.py ;;
             cg9) python cg9.py ;;
             all) python cg7.py; echo; python cg9.py ;;
+            v6)  python settle_fetch.py; echo; python v6_regrade.py ;;
             *)   echo "unknown experiment: ${{ inputs.experiment }}"; exit 1 ;;
           esac
