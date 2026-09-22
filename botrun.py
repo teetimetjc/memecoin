@@ -146,14 +146,80 @@ def scrub(rows):
     return rows
 
 
+_TOLD = set()
+_TALLY = {"w": 0, "l": 0, "pnl": 0.0}
+
+
+def notify_settled(rows, bot):
+    """Push one message per paper bet as it settles.
+
+    WHY THIS EXISTS AND THE HOURLY PULSE DID NOT. The pulse was removed
+    because it summarised betting that was halted -- it reported nothing, on
+    a schedule. This reports a result the moment there is one, which is the
+    thing that was actually missing: paper outcomes were invisible until a
+    six-hour export.
+
+    NO MONEY IS INVOLVED, and the message says so, because a notification
+    naming a winning bet is exactly the kind of prompt that has led to a
+    hand-placed order before. It is a scoreboard, not a tip.
+
+    Fail-soft throughout: a notification problem must never disturb a run."""
+    if os.environ.get("BOT_ALERTS", "1") != "1":
+        return
+    try:
+        import predictor as P
+    except Exception:
+        return
+    for r in rows:
+        if not str(r[2]).startswith("db:trades"):
+            continue
+        try:
+            d = json.loads(r[3])
+        except Exception:
+            continue
+        settled = d.get("settled")
+        if not settled or str(settled).lower() in ("none", "null"):
+            continue                      # still open
+        tag = (bot, d.get("ticker"), d.get("id"))
+        if tag in _TOLD:
+            continue                      # already reported this one
+        _TOLD.add(tag)
+        pnl = d.get("pnl") or 0.0
+        won = pnl > 0
+        _TALLY["w" if won else "l"] += 1
+        _TALLY["pnl"] += pnl
+        n = _TALLY["w"] + _TALLY["l"]
+        try:
+            P.send_pushover(
+                f"{'WIN' if won else 'LOSS'} (paper) {d.get('asset','')} "
+                f"{d.get('side','')}",
+                f"{d.get('asset','')} {d.get('side','')} x{d.get('contracts','?')} "
+                f"@ {float(d.get('entry_price') or 0)*100:.1f}c\n"
+                f"settled {settled} -> {'WIN' if won else 'LOSS'} "
+                f"${pnl:+.2f}\n"
+                f"Session: {_TALLY['w']}W / {_TALLY['l']}L "
+                f"({_TALLY['w']/max(n,1)*100:.0f}%)  ${_TALLY['pnl']:+.2f}\n"
+                f"PAPER ONLY - no real money was staked")
+            print(f"  [alert] {d.get('asset')} {d.get('side')} "
+                  f"{'WIN' if won else 'LOSS'} {pnl:+.2f}")
+        except Exception as e:
+            print(f"  [alert] send failed: {str(e)[:60]}")
+
+
 def dump_db(path, run_id, stamp, since=None, quiet=False):
     """Rows as JSON, schema-agnostic.
 
-    `since` is a dict of table -> highest id already written. When given,
-    only newer rows come back and the dict is updated in place, which is
-    what lets a four-hour run report progress instead of going dark until
-    it ends. Tables without an integer id are skipped while incremental and
-    written in full by the final pass."""
+    `since` is a dict of (table, id) -> content hash. A row is returned when
+    it is NEW or when its contents have CHANGED, and the dict is updated in
+    place. That lets a four-hour run report progress instead of going dark
+    until it ends.
+
+    IT TRACKS CONTENT, NOT JUST THE HIGHEST ID, and that distinction is the
+    whole point. paper_trader.py INSERTs a trade at entry with settled NULL
+    and UPDATEs the same row at settlement. A cursor of "id greater than the
+    last one seen" captures every trade unsettled and never looks again, so
+    the win or loss -- the only part anyone cares about -- would never reach
+    the sheet. Hashing catches the update."""
     out = []
     if not os.path.exists(path):
         if not quiet:
@@ -170,26 +236,23 @@ def dump_db(path, run_id, stamp, since=None, quiet=False):
             try:
                 cols = [c[1] for c in con.execute(f'PRAGMA table_info("{t}")')]
                 has_id = "id" in cols
-                if since is not None:
-                    if not has_id:
-                        continue          # full dump happens at the end
-                    last = since.get(t, 0)
-                    cur = con.execute(
-                        f'SELECT * FROM "{t}" WHERE id > ? ORDER BY id '
-                        f'LIMIT {MAX_ROWS_PER_TABLE}', (last,))
-                else:
-                    cur = con.execute(
-                        f'SELECT * FROM "{t}" LIMIT {MAX_ROWS_PER_TABLE}')
+                cur = con.execute(f'SELECT * FROM "{t}" '
+                                  f'LIMIT {MAX_ROWS_PER_TABLE}')
                 got = 0
                 for r in cur:
                     d = dict(r)
-                    out.append([run_id, stamp, f"db:{t}",
-                                json.dumps(d, default=str)[:45000]])
+                    js = json.dumps(d, default=str)[:45000]
+                    if since is not None:
+                        key = (t, d["id"]) if has_id and d.get("id") is not None \
+                            else (t, js)
+                        h = hash(js)
+                        if since.get(key) == h:
+                            continue      # unchanged; already sent
+                        since[key] = h
+                    out.append([run_id, stamp, f"db:{t}", js])
                     got += 1
-                    if since is not None and has_id and d.get("id") is not None:
-                        since[t] = max(since.get(t, 0), int(d["id"]))
                 if not quiet:
-                    print(f"  [db]   {t}: {got} rows")
+                    print(f"  [db]   {t}: {got} new/changed rows")
             except Exception as e:
                 if not quiet:
                     print(f"  [db]   {t}: {str(e)[:70]}")
@@ -308,6 +371,7 @@ def main():
                                             "%Y-%m-%d %H:%M:%S UTC",
                                             time.gmtime()),
                                         since=seen, quiet=True)
+                    notify_settled(rows, key)
                     if not rows:
                         continue
                     if ws is None:
