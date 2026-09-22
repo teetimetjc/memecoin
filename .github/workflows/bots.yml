@@ -8,19 +8,24 @@ name: Paper Bots (EdgeHunter + Kapelame)
 # stream.binance.com, so both bots are mute there. A runner has open
 # egress, which makes this the only place they can actually collect.
 #
-# PAPER ONLY, enforced by omission: no KALSHI_* secret is passed to either
-# job. EdgeHunter's LiveExecutionEngine is never instantiated in its own
-# codebase, and kalshi-crypto-bot's paper_trader.py contains no order path
-# at all. trader.py IS a real live trader and is never invoked here.
+# PAPER ONLY. Neither bot's runnable code can place an order: EdgeHunter
+# defines LiveExecutionEngine and never instantiates it, and Kapelame's
+# paper_trader.py contains no order path at all. Both are re-checked at
+# runtime below and the job FAILS rather than proceeding. trader.py, which
+# is a real live trader with an empty strategy stub, is never invoked.
 #
-# NO CREDENTIALS ARE NEEDED FOR MARKET DATA. probe_auth.py asked Kalshi the
-# same questions signed and unsigned and got identical answers: the order
-# book is fully public. The blank market data seen overnight was an API
-# shape change, fixed by patch_kapelame.py, not a missing key.
+# CREDENTIALS GO TO EDGEHUNTER ONLY, because that is where they were
+# measured to be necessary. probe_auth showed Kalshi's REST endpoints
+# return identical data signed and unsigned -- the order book is fully
+# public -- so Kapelame needs nothing and is given nothing. probe_ws then
+# showed the market-data SOCKET is different: HTTP 401 unsigned, full
+# orderbook stream when signed. EdgeHunter reads its key unconditionally at
+# startup, so without it the feed never opens and no price ever arrives.
 #
-# THE CLONES ARE PINNED to commits audited on 2026-09-22. Tracking a
-# default branch would mean whatever the owners push next runs here with
-# no review -- the one real exposure in using someone else's trading code.
+# THE CLONES ARE PINNED to commits audited on 2026-09-22, whose only
+# outbound hosts are Kalshi and Coinbase and which never log the key or its
+# headers. Tracking a default branch would mean whatever the owners push
+# next runs here, with credentials, unreviewed.
 #
 # A run is capped at 5h30m so it fits inside the 6h job ceiling with room
 # to write results; the cron restarts it, giving near-continuous cover.
@@ -126,8 +131,22 @@ jobs:
             echo "OK: paper_trader.py has no order path"
           fi
 
-      - name: Run and log to the sheet
+      # Secrets reach the edgehunter leg only. botrun.py holds the matching
+      # allowlist and strips KALSHI_* for every other bot, so if these two
+      # ever disagree the bot simply receives nothing rather than silently
+      # inheriting a key it was never measured to need.
+      - name: Run EdgeHunter (signed feed) and log to the sheet
+        if: matrix.bot == 'edgehunter'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: |
+          python botrun.py edgehunter ${{ github.event.inputs.seconds || '19800' }}
+
+      - name: Run Kapelame (public data, no credentials) and log to the sheet
+        if: matrix.bot == 'kapelame'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: |
-          python botrun.py ${{ matrix.bot }} ${{ github.event.inputs.seconds || '19800' }}
+          python botrun.py kapelame ${{ github.event.inputs.seconds || '19800' }}
