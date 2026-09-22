@@ -22,6 +22,11 @@ name: Paper Bots (EdgeHunter + Kapelame)
 # orderbook stream when signed. EdgeHunter reads its key unconditionally at
 # startup, so without it the feed never opens and no price ever arrives.
 #
+# PUSHOVER goes to both, because paper outcomes were invisible until an
+# export hours later. One message per bet as it settles, each one saying it
+# is paper and that no real money was staked. Pushover cannot place an
+# order, so this widens nothing. BOT_ALERTS=0 silences it.
+#
 # THE CLONES ARE PINNED to commits audited on 2026-09-22, whose only
 # outbound hosts are Kalshi and Coinbase and which never log the key or its
 # headers. Tracking a default branch would mean whatever the owners push
@@ -39,6 +44,10 @@ on:
         description: 'How long each bot runs (600 = 10min check, 14400 = 4h session)'
         required: true
         default: '14400'
+      alerts:
+        description: 'Pushover on each paper settlement (1 = on, 0 = off)'
+        required: false
+        default: '1'
   schedule:
     - cron: '7 */6 * * *'
 
@@ -133,16 +142,20 @@ jobs:
             echo "OK: paper_trader.py has no order path"
           fi
 
-      # Secrets reach the edgehunter leg only. botrun.py holds the matching
-      # allowlist and strips KALSHI_* for every other bot, so if these two
-      # ever disagree the bot simply receives nothing rather than silently
-      # inheriting a key it was never measured to need.
+      # KALSHI_* reaches the edgehunter leg only. botrun.py holds the
+      # matching allowlist and strips those vars for every other bot, so if
+      # the two ever disagree the bot receives nothing rather than silently
+      # inheriting a key it was never measured to need. Pushover goes to
+      # both: it reports outcomes and cannot place an order.
       - name: Run EdgeHunter (signed feed) and log to the sheet
         if: matrix.bot == 'edgehunter'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          BOT_ALERTS: ${{ github.event.inputs.alerts || '1' }}
         run: |
           python botrun.py edgehunter ${{ github.event.inputs.seconds || '14400' }}
 
@@ -150,5 +163,8 @@ jobs:
         if: matrix.bot == 'kapelame'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          BOT_ALERTS: ${{ github.event.inputs.alerts || '1' }}
         run: |
           python botrun.py kapelame ${{ github.event.inputs.seconds || '14400' }}
