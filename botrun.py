@@ -237,6 +237,13 @@ def main():
             for ln in keep:
                 rows.append([run_id, stamp, f"log:{rel}", ln[:45000]])
             print(f"  [log] {path}: {len(flines)} lines, kept {len(keep)}")
+            # Echo a sample into the JOB log too. Zero signals can mean "saw
+            # nothing worth trading" or "never connected to a feed", and the
+            # row count cannot tell those apart -- which is the distinction
+            # that decides whether a night was worth anything.
+            for ln in flines[:6] + (["  ..."] + flines[-6:]
+                                    if len(flines) > 12 else []):
+                print(f"  [log]   {ln[:220]}")
         except Exception as e:
             print(f"  [log] {path}: {str(e)[:70]}")
 
