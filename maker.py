@@ -243,17 +243,28 @@ def drift_cents(o, h):
 
 def cluster(vals_by_window):
     """Mean with a window-clustered 95% interval. Five coins in one window
-    share a market move; treating them as independent shrinks the interval
-    by about sqrt(5) and manufactures significance."""
+    share a market move; treating them as independent understates the
+    interval and manufactures significance.
+
+    THE STANDARD SANDWICH ESTIMATOR, and not the thing that looks like it.
+    An earlier version here averaged the window means and divided by the
+    window count, which inflates the interval by roughly the square root of
+    the observations per window -- 7.5x on a 50-per-window test where the
+    right answer is known because the data is uncorrelated by construction.
+    That error is conservative, so it never invented an edge; it hid them.
+    The estimator below reduces to sigma/sqrt(N) when clusters carry no
+    correlation, which is the property worth testing and is tested."""
     g = {k: v for k, v in vals_by_window.items() if v}
-    if len(g) < 3:
+    G = len(g)
+    if G < 3:
         return None
     nb = sum(len(v) for v in g.values())
     m = sum(sum(v) for v in g.values()) / nb
-    cl = [sum(v) / len(v) for v in g.values()]
-    var = sum(len(v) * (c - m) ** 2 for v, c in zip(g.values(), cl)) / (len(cl) - 1)
-    half = 1.96 * math.sqrt(var / len(cl))
-    return {"m": m, "lo": m - half, "hi": m + half, "n": nb, "w": len(cl)}
+    # Sum of within-cluster residuals, squared and summed across clusters.
+    ss = sum((sum(v) - len(v) * m) ** 2 for v in g.values())
+    var = (G / (G - 1.0)) * ss / (nb ** 2)
+    half = 1.96 * math.sqrt(var)
+    return {"m": m, "lo": m - half, "hi": m + half, "n": nb, "w": G}
 
 
 def boot(vals_by_window, reps=2000, rng=None):
@@ -410,8 +421,12 @@ def main():
             print(f"    {str(k):>16} {c['n']:>8} {pct(c['m']):>9}   "
                   f"{pct(c['lo'])} to {pct(c['hi'])}")
 
-    table("BY COIN", lambda o: o["sym"],
-          ["BTC", "ETH", "SOL", "XRP", "DOGE"])
+    # Derived from the data, never hardcoded. The first version of this
+    # listed ["BTC", ...] while the sheet holds "BTCUSDT", so every key
+    # missed and the table printed NOTHING -- no error, no zero rows, just
+    # an absent section that reads like "no coins qualified". That is the
+    # exact failure mode this project keeps paying for.
+    table("BY COIN", lambda o: o["sym"], sorted({o["sym"] for o in obs}))
     table("BY WINDOW PHASE", lambda o: ("early <5min" if o["secs"] < 300
                                         else "mid 5-10min" if o["secs"] < 600
                                         else "late 10min+"),
@@ -457,44 +472,83 @@ def main():
               f"{pct(bb['lo'])} to {pct(bb['hi'])}")
 
     # ---------------------------------------------------------- null tests
-    print("\n  NULL TESTS (model C, 60s) -- each destroys the link between")
-    print("  quoting and outcome while keeping a different structure intact.")
-    rng = random.Random(SEED)
-    real = cluster(g)
-    print(f"    observed{'':<18}{pct(real['m'])}")
-    filled = [o for o in obs if fills(o, "C") and edge_cents(o, 60) is not None]
+    print("\n  NULL TESTS -- NOT APPLICABLE TO THIS MEASUREMENT, and saying")
+    print("  so rather than printing one is the point.")
+    print("    A permutation null destroys the link between WHICH TRADES A")
+    print("    RULE SELECTS and how they turn out. The statistic here is the")
+    print("    mean over EVERY filled quote -- there is no selection step, so")
+    print("    there is nothing for a permutation to destroy. Any shuffle")
+    print("    returns the observed value exactly, because a mean is the")
+    print("    total over the count and both survive reordering.")
+    print("    An earlier run printed all three nulls at -5.46 against an")
+    print("    observed -5.46. That is not three passed tests; it is the")
+    print("    arithmetic tautology showing through, the same way the first")
+    print("    grid-search null did.")
+    print("    Null tests belong to STEP 10 (selective quoting), where a")
+    print("    filter chooses a subset. They are run there and not before.")
 
-    def shuffled_within(keyfn, label):
-        buckets = collections.defaultdict(list)
-        for o in filled:
-            buckets[keyfn(o)].append(edge_cents(o, 60))
-        best = []
-        for _ in range(200):
-            pool = {k: v[:] for k, v in buckets.items()}
-            for v in pool.values():
-                rng.shuffle(v)
-            gg = collections.defaultdict(list)
-            idx = collections.Counter()
-            for o in filled:
-                k = keyfn(o)
-                gg[o["ts"]].append(pool[k][idx[k]])
-                idx[k] += 1
-            c = cluster(gg)
-            if c:
-                best.append(c["m"])
-        if best:
-            best.sort()
-            print(f"    {label:<26}{pct(stat.mean(best))}   "
-                  f"95% of nulls below {best[int(0.95*len(best))]:+.2f}")
+    # ------------------------------------------------- how bad was the fill
+    print("\n  MODEL C, SPLIT BY HOW FAR THE TOUCH MOVED THROUGH US")
+    print("  This matters: with 30s between snapshots, 'the bid fell below")
+    print("  our price' lumps a routine one-tick fill together with a sweep.")
+    print("  If the loss is concentrated in large moves, model C is not just")
+    print("  conservative, it is selecting for catastrophes.")
+    print(f"    {'touch fell by':>16} {'fills':>8} {'edge':>9}   95% CI")
+    gm = collections.defaultdict(lambda: collections.defaultdict(list))
+    for o in obs:
+        if not fills(o, "C"):
+            continue
+        e = edge_cents(o, 60)
+        if e is None:
+            continue
+        d = o["bid"] - o["next_bid"]
+        k = ("<=0.5c" if d <= 0.5 else "0.5-1c" if d <= 1.0
+             else "1-2c" if d <= 2.0 else "2-5c" if d <= 5.0 else "5c+")
+        gm[k][o["ts"]].append(e)
+    for k in ("<=0.5c", "0.5-1c", "1-2c", "2-5c", "5c+"):
+        if k not in gm:
+            continue
+        c = cluster(gm[k])
+        if c and c["n"] >= MIN_N:
+            print(f"    {k:>16} {c['n']:>8} {pct(c['m']):>9}   "
+                  f"{pct(c['lo'])} to {pct(c['hi'])}")
 
-    shuffled_within(lambda o: int(o["mid"] // 10), "NULL A price-bucket perm")
-    shuffled_within(lambda o: (o["sym"], int(o["mid"] // 10),
-                               int(o["secs"] // 300)),
-                    "NULL C coin/price/time perm")
-    print("    NULL B (whole-window permutation) is omitted: the statistic is")
-    print("    a mean over all filled quotes, which is invariant to moving")
-    print("    windows around. Reporting it would be theatre -- it returns")
-    print("    the observed value by construction.")
+    # ------------------------------------------------ STEP 4: the EV equation
+    print("\n  EXPECTED VALUE PER OPPORTUNITY  =  P(fill) x E[edge | fill]")
+    print("  Reported at $2 and $5, the sizes a $144 account can actually")
+    print("  place, with the fee charged on entry only (hold to settlement).")
+    print(f"\n    {'model':>6} {'stake':>7} {'P(fill)':>9} {'edge/fill':>11} "
+          f"{'fee/contract':>13} {'net/fill':>10} {'EV/opportunity':>15}")
+    for model in ("A", "B", "C"):
+        gg = group(obs, 60, model)
+        c = cluster(gg)
+        if not c:
+            continue
+        pfill = sum(1 for o in obs if fills(o, model)) / len(obs)
+        filled_os = [o for o in obs if fills(o, model)]
+        for s in (2.0, 5.0):
+            fees = []
+            for o in filled_os:
+                p = o["bid"] / 100.0
+                n = int(s / p)
+                if n >= 1:
+                    fees.append(fee_dollars(n, p) / n * 100.0)
+            if not fees:
+                continue
+            fc = stat.mean(fees)
+            print(f"    {model:>6} {'$%g'%s:>7} {pfill*100:>8.1f}% "
+                  f"{pct(c['m']):>11} {fc:>13.2f} {pct(c['m']-fc):>10} "
+                  f"{pct((c['m']-fc)*pfill):>15}")
+    print("\n    ZERO-FEE CHECK -- if makers paid nothing at all:")
+    for model in ("A", "B", "C"):
+        gg = group(obs, 60, model)
+        c = cluster(gg)
+        if not c:
+            continue
+        pfill = sum(1 for o in obs if fills(o, model)) / len(obs)
+        print(f"      model {model}: net/fill {pct(c['m'])}c, "
+              f"EV/opportunity {pct(c['m']*pfill)}c   "
+              f"[{pct(c['lo'])} to {pct(c['hi'])} per fill]")
 
     print("\n" + "=" * 74)
     return 0
