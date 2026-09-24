@@ -233,15 +233,20 @@ def breakouts():
         if an < 8 or bn < 8:
             return
         out.append(f"{label[0]:<7}{aw}/{an} {aw/an*100:.0f}%  |  "
-                   f"{label[1]:<6}{bw}/{bn} {bw/bn*100:.0f}%")
+                   f"{label[1]:<8}{bw}/{bn} {bw/bn*100:.0f}%")
 
     line(("DAY", "NIGHT"),
          _split(lambda h: h["night"] is False),
          _split(lambda h: h["night"] is True))
-    line(("|z|<.6", ">.6"),
+    # Plain words, not the model's variable names. "CERTAIN" is a high |z|:
+    # spot far from the strike with little time left, so the model thinks it
+    # is nearly decided. "DIFFERS" is the model departing from the market
+    # price by 20+ points. Both buckets are where it does worst, which is
+    # the whole reason these lines are on a phone at all.
+    line(("UNSURE", "CERTAIN"),
          _split(lambda h: h["z"] is not None and h["z"] < 0.6),
          _split(lambda h: h["z"] is not None and h["z"] >= 0.6))
-    line(("gap<20", ">20"),
+    line(("AGREES", "DIFFERS"),
          _split(lambda h: h["gap"] is not None and h["gap"] < 0.20),
          _split(lambda h: h["gap"] is not None and h["gap"] >= 0.20))
     return out
