@@ -69,12 +69,19 @@ def q1_series():
     return s
 
 
-def q2_settled_fields():
+def q2_settled_fields(series_ticker=None):
     print("\n" + "=" * 78)
     print("2. DOES A SETTLED MARKET REMEMBER ITS PRICE?")
     print("=" * 78)
     print("  (if yes, calibration is computable from history in bulk)")
-    d = get("/trade-api/v2/markets", status="settled", limit=200)
+    # MUST filter by series. Unfiltered, /markets returns a thousand rows of
+    # whatever one series it feels like -- the first run reported "0 crypto
+    # families open" purely because of that, which is a statement about the
+    # query and not the exchange.
+    params = dict(status="settled", limit=200)
+    if series_ticker:
+        params["series_ticker"] = series_ticker
+    d = get("/trade-api/v2/markets", **params)
     if not d:
         return
     mk = d.get("markets") or []
@@ -96,9 +103,12 @@ def q2_settled_fields():
     byser = collections.Counter()
     for m in mk:
         res = str(m.get("result") or "").lower()
-        lp = m.get("last_price")
+        # The API moved to _dollars-suffixed fields -- the same migration
+        # that turned `orderbook` into `orderbook_fp`. Checking the old
+        # spelling reported 0/200 on a payload that plainly had the data.
+        lp = m.get("last_price_dollars")
         if lp is None:
-            lp = m.get("close_price") or m.get("settlement_value")
+            lp = m.get("previous_price_dollars")
         if res in ("yes", "no") and lp is not None:
             usable += 1
         t = str(m.get("ticker") or "")
@@ -110,42 +120,36 @@ def q2_settled_fields():
         print(f"    {k:<20} {v}")
 
 
-def q3_horizons():
+def q3_horizons(series):
+    """Crypto series by FREQUENCY -- the field that separates a 15-minute
+    coin flip from a market where information actually matters."""
     print("\n" + "=" * 78)
-    print("3. LONGER-HORIZON CRYPTO")
+    print("3. CRYPTO SERIES BY HORIZON")
     print("=" * 78)
-    d = get("/trade-api/v2/markets", status="open", limit=1000)
-    if not d:
-        return
-    mk = d.get("markets") or []
-    print(f"  {len(mk)} open markets scanned")
-    fam = collections.defaultdict(list)
-    for m in mk:
-        fam[str(m.get("ticker") or "").split("-")[0]].append(m)
-    crypto = {k: v for k, v in fam.items()
-              if any(c in k.upper() for c in
-                     ("BTC", "ETH", "SOL", "XRP", "DOGE", "CRYPTO"))}
-    print(f"\n  crypto-ish families open now: {len(crypto)}")
-    print(f"    {'series':<18} {'open':>5} {'vol sum':>9} {'OI sum':>9} "
-          f"{'example':<34}")
-    for k, v in sorted(crypto.items(), key=lambda x: -len(x[1])):
-        vol = sum(int(m.get("volume") or 0) for m in v)
-        oi = sum(int(m.get("open_interest") or 0) for m in v)
-        print(f"    {k:<18} {len(v):>5} {vol:>9} {oi:>9} "
-              f"{str(v[0].get('ticker'))[:34]:<34}")
-    print(f"\n  ALL open families by volume (where the liquidity actually is):")
-    tot = [(sum(int(m.get('volume') or 0) for m in v), k, len(v))
-           for k, v in fam.items()]
-    tot.sort(reverse=True)
-    print(f"    {'series':<20} {'open':>5} {'volume':>10}")
-    for vol, k, n in tot[:20]:
-        print(f"    {k:<20} {n:>5} {vol:>10}")
+    if not series:
+        print("  no series list to work from")
+        return []
+    cry = [s for s in series
+           if "crypto" in str(s.get("category", "")).lower()
+           or any(c in str(s.get("ticker", "")).upper()
+                  for c in ("BTC", "ETH", "SOL", "XRP", "DOGE"))]
+    print(f"  {len(cry)} crypto-ish series of {len(series)} total\n")
+    byfreq = collections.defaultdict(list)
+    for s in cry:
+        byfreq[str(s.get("frequency") or "?")].append(s)
+    print(f"  {'frequency':<16} {'count':>6}   examples")
+    for f, v in sorted(byfreq.items(), key=lambda x: -len(x[1])):
+        ex = ", ".join(str(x.get("ticker")) for x in v[:3])
+        print(f"  {f:<16} {len(v):>6}   {ex[:56]}")
+    return cry
 
 
 def main():
-    q1_series()
-    q2_settled_fields()
-    q3_horizons()
+    series = q1_series()
+    cry = q3_horizons(series)
+    # Check price retention on a series we actually care about, not on
+    # whatever the unfiltered endpoint happens to return.
+    q2_settled_fields("KXBTC15M")
     print("\n" + "=" * 78)
     return 0
 
