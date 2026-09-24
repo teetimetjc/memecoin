@@ -128,7 +128,13 @@ def book(ticker):
         d, err = get(path, depth=3)
         if not d:
             continue
-        ob = d.get("orderbook") or d
+        # The envelope is {"orderbook_fp": {"yes_dollars": [...],
+        # "no_dollars": [...]}} -- the PATH is /orderbook but the KEY
+        # inside it carries the _fp suffix. Looking for d["orderbook"],
+        # finding nothing and falling back to the envelope itself is what
+        # produced 24 rows of empty book columns: the fields were one level
+        # further down the whole time.
+        ob = d.get("orderbook_fp") or d.get("orderbook") or d
         if not isinstance(ob, dict):
             continue
 
