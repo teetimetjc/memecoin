@@ -47,15 +47,31 @@ name: CG Experiments (read-only)
 # volume is, and whether a settled market keeps its last price -- which
 # decides whether calibration across history is an afternoon or a month.
 #
+# calib is what the probe made possible: tests A and C together. It reads
+# each series' price about an hour before close -- NOT the settled
+# last_price, which is the price after the answer is known and so
+# calibrates perfectly against itself -- and asks whether that price
+# matched what happened. Liquidity is printed beside every number, because
+# a mispricing nobody can trade is a curiosity. It sends NOTHING: no
+# Pushover secret is reachable from this workflow, so a result here cannot
+# arrive on a phone and be acted on before it has survived a forward test.
+#
+# `series` narrows calib to named tickers (e.g. "KXBTCD KXETHD") for the
+# test-C horizon comparison. Blank means a sample across frequencies.
+#
 # Read-only otherwise -- no order path is reachable from this workflow.
 
 on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
+        description: 'calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
-        default: 'survey-probe'
+        default: 'calib'
+      series:
+        description: 'calib only: space-separated series tickers, blank for a sample'
+        required: false
+        default: ''
 
 jobs:
   run:
@@ -74,8 +90,12 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          # Through the environment, not interpolated into the script: the
+          # experiment names are a fixed set, but `series` is free text.
+          SERIES: ${{ inputs.series }}
         run: |
           case "${{ inputs.experiment }}" in
+            calib) python calib_survey.py $SERIES ;;
             cg1) python cg1.py ;;
             cg7) python cg7.py ;;
             cg9) python cg9.py ;;
