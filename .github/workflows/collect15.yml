@@ -1,0 +1,67 @@
+name: Collect 15-Minute Markets
+
+# Runs collect15.py, which samples every Kalshi fifteen-minute market at
+# roughly 14, 12, 9, 6, 3 and 1 minutes before it closes and records what
+# the exchange said, plus the settlement Kalshi itself reports.
+#
+# WHY IT RUNS HERE. The sandbox blocks api.elections.kalshi.com, so a
+# collector is mute there. A runner has open egress.
+#
+# WHAT IT DOES NOT HAVE. No Pushover secret is reachable from this
+# workflow. Collection must not be able to buzz a phone: an alert naming a
+# market is a prompt to bet one by hand, and nothing collected here has
+# been tested yet. It also places no orders -- the script contains no order
+# path at all, which the guard step re-checks rather than assumes.
+#
+# 3h45m ON A FOUR HOUR CRON, offset from the paper bots so the two do not
+# start in the same minute. They have separate concurrency groups and run
+# in parallel; the offset only keeps their API bursts apart.
+#
+# THE SHORT RUN MATTERS. `seconds: 600` collects roughly one window and is
+# the right first move after any change to the script. Four of this
+# project's failures were response shapes that had quietly moved --
+# orderbook to orderbook_fp, last_price to last_price_dollars -- and each
+# one produced a well-formed tab full of blanks rather than an error. Ten
+# minutes answers that; an overnight session answers it far too late.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'How long to collect (600 = one-window check, 13500 = 3h45m session)'
+        required: true
+        default: '13500'
+  schedule:
+    - cron: '22 */4 * * *'
+
+concurrency:
+  group: collect15
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Confirm no order path is reachable
+        run: |
+          if grep -n "portfolio/orders\|def place_order\|create_order" collect15.py ; then
+            echo "::error::collect15.py contains an order path - refusing to run"
+            exit 1
+          fi
+          echo "OK: collect15.py has no order path"
+
+      - name: Collect
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python collect15.py ${{ github.event.inputs.seconds || '13500' }}
