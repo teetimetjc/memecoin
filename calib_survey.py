@@ -34,6 +34,7 @@ Read-only. Places nothing, writes nothing, sends nothing.
 import calendar
 import collections
 import json
+import math
 import statistics as st
 import sys
 import time
@@ -44,6 +45,7 @@ HOST = "https://api.elections.kalshi.com"
 PAUSE = 0.10
 MIN_MARKETS = 40          # per series, below this nothing is reported
 MIN_VOLUME = 5            # a market with fewer trades has no meaningful price
+MIN_BUCKETED = 40         # markets landing in usable price buckets, per series
 LOOKBACK_MIN = 60         # how far before close to read the price
 
 
@@ -266,21 +268,39 @@ def early_price(m):
 
 
 def calibrate(rows):
-    """rows of (price, won) -> buckets and a single calibration error."""
+    """rows of (price, won) -> (buckets, error, n, noise_floor).
+
+    THE ERROR ALONE IS UNREADABLE, and that is the trap in this whole
+    measurement. It is a mean of absolute deviations, so it can never be
+    negative and can never be zero: a perfectly calibrated market measured
+    on twenty coin flips per bucket still shows several points of "error"
+    purely from sampling. Reporting 4pp with nothing beside it invites
+    reading it as a 4-point edge, when the honest question is whether it is
+    larger than what noise alone produces.
+
+    So the floor is computed alongside. For a bucket of n draws at true
+    probability p, the expected absolute deviation of the observed rate is
+    about sqrt(2/pi) * sqrt(p(1-p)/n) -- the mean of a half-normal. Summed
+    the same way as the error, it is what a FLAWLESS market would score.
+    Error at or below the floor means nothing was found."""
     b = collections.defaultdict(lambda: [0, 0, 0.0])
     for p, won in rows:
         k = min(int(p * 10), 9)
         b[k][0] += 1
         b[k][1] += 1 if won else 0
         b[k][2] += p
-    err = tot = 0.0
+    err = floor = 0.0
     n = 0
     for k, (cnt, w, sp) in b.items():
         if cnt < 5:
             continue
-        err += abs(w / cnt - sp / cnt) * cnt
+        p = sp / cnt
+        err += abs(w / cnt - p) * cnt
+        floor += math.sqrt(2.0 / math.pi) * math.sqrt(p * (1 - p) / cnt) * cnt
         n += cnt
-    return b, (err / n if n else None), n
+    if not n:
+        return b, None, 0, None
+    return b, err / n, n, floor / n
 
 
 def main():
@@ -342,37 +362,59 @@ def main():
             print(f"  {tk:<16} {freq:<12} early prices unavailable "
                   f"({dict(why.most_common(2))}) -- skipped")
             continue
-        _, err, n = calibrate(rows)
-        _, lerr, ln = calibrate(late)
+        _, err, n, floor = calibrate(rows)
+        _, lerr, ln, _lf = calibrate(late)
+        # n is NOT len(rows): buckets holding fewer than five markets are
+        # dropped, so a series can clear the 20-row gate and still be
+        # measured on a handful. The first run reported a 5.0pp error on
+        # n=5 that way, sitting in a ranked table beside an n=196.
+        if n < MIN_BUCKETED:
+            print(f"  {tk:<16} {freq:<12} only {n} markets land in usable "
+                  f"price buckets -- too thin to rank, skipped")
+            continue
+        # Volume, not liquidity_dollars. Resting depth is a property of an
+        # OPEN book; every market here is settled, so that field is zero
+        # for all of them, and a column of $0 reads like "untradeable
+        # everywhere" when it actually means "asked the wrong question."
+        # Traded volume is what survives settlement and is the honest
+        # proxy for whether a mispricing could have been acted on.
         vol = st.median([_f(m.get("volume_fp")) or 0 for m in usable])
-        liq = st.median([_f(m.get("liquidity_dollars")) or 0 for m in usable])
         lead = st.median(leads) if leads else 0.0
         results.append({"tk": tk, "freq": freq, "n": n, "err": err,
-                        "late_err": lerr, "vol": vol, "liq": liq,
-                        "lead": lead})
+                        "late_err": lerr, "vol": vol, "lead": lead,
+                        "floor": floor})
         print(f"  {tk:<16} {freq:<12} n={n:>4}  early err {err*100:>5.1f}pp  "
-              f"(settlement-price err {(lerr or 0)*100:>4.1f}pp)  "
-              f"lead {lead:>4.0f}min  med vol {vol:>7.0f}  liq ${liq:>8.0f}")
+              f"vs noise floor {(floor or 0)*100:>5.1f}pp  "
+              f"(settlement {(lerr or 0)*100:>4.1f}pp)  "
+              f"lead {lead:>4.0f}min  med vol {vol:>8.0f}")
 
     if not results:
         print("\nnothing measurable -- see the skip reasons above")
         return 0
 
     print("\n" + "=" * 80)
-    print("RANKED BY MISPRICING, with the sanity check beside it")
+    print("RANKED BY MISPRICING ABOVE NOISE  (excess = early - floor)")
     print("=" * 80)
-    print(f"  {'series':<16} {'freq':<12} {'n':>5} {'early':>8} {'settle':>8} "
-          f"{'lead':>6} {'med vol':>9} {'liq $':>10}")
-    for r in sorted(results, key=lambda x: -(x["err"] or 0)):
+    print(f"  {'series':<16} {'freq':<12} {'n':>5} {'early':>8} {'floor':>8} "
+          f"{'excess':>8} {'settle':>8} {'lead':>6} {'med vol':>10}")
+    for r in sorted(results, key=lambda x: -((x["err"] or 0)
+                                             - (x["floor"] or 0))):
+        ex = (r["err"] or 0) - (r["floor"] or 0)
         print(f"  {r['tk']:<16} {r['freq']:<12} {r['n']:>5} "
-              f"{r['err']*100:>7.1f}pp {(r['late_err'] or 0)*100:>7.1f}pp "
-              f"{r['lead']:>5.0f}m {r['vol']:>9.0f} {r['liq']:>10.0f}")
-    print("\n  'early' is the calibration error 'lead' minutes before close")
-    print("  -- the number that matters. 'settle' is the same at settlement")
-    print("  and should be near zero; if it is not, the join is broken.")
+              f"{r['err']*100:>7.1f}pp {(r['floor'] or 0)*100:>7.1f}pp "
+              f"{ex*100:>+7.1f}pp {(r['late_err'] or 0)*100:>7.1f}pp "
+              f"{r['lead']:>5.0f}m {r['vol']:>10.0f}")
+    print("\n  Sorted by EXCESS, not by error. 'floor' is what a flawless")
+    print("  market would score on this many markets from sampling alone,")
+    print("  so a negative excess means nothing was found -- the market")
+    print("  looks better than a perfect one, which only noise explains.")
+    print("  'settle' is the same error measured at settlement and should")
+    print("  be near zero; if it is not, the join is broken.")
     print("  'lead' is not always 60: a 15-minute market does not exist an")
     print("  hour before it closes, so its price is read as early as the")
     print("  market allows. A shorter lead is an easier question.")
+    print("  'med vol' replaces resting depth, which is zero for every")
+    print("  settled market and would read as untradeable everywhere.")
 
     print("\n" + "=" * 80)
     print("BY HORIZON  (test C: does a longer window price differently?)")
@@ -382,10 +424,12 @@ def main():
         g[r["freq"]].append(r)
     for f in sorted(g, key=lambda k: -len(g[k])):
         v = g[f]
-        print(f"  {f:<14} {len(v):>2} series  mean early err "
-              f"{st.mean([x['err'] for x in v])*100:>5.1f}pp  "
+        print(f"  {f:<14} {len(v):>2} series  mean excess "
+              f"{st.mean([(x['err'] or 0) - (x['floor'] or 0) for x in v])*100:>+5.1f}pp"
+              f"  (err {st.mean([x['err'] for x in v])*100:>4.1f}pp vs floor "
+              f"{st.mean([x['floor'] or 0 for x in v])*100:>4.1f}pp)  "
               f"at {st.median([x['lead'] for x in v]):>3.0f}min lead  "
-              f"med vol {st.median([x['vol'] for x in v]):>7.0f}")
+              f"med vol {st.median([x['vol'] for x in v]):>8.0f}")
     print("\n  Read the lead column before comparing rows. These are not the")
     print("  same question at every horizon, and the shorter-lead rows are")
     print("  being asked an easier one.")
