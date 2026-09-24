@@ -39,6 +39,7 @@ import sqlite3
 import sys
 import threading
 import time
+from datetime import datetime
 
 MAX_ROWS_PER_TABLE = 4000        # a night of ticks, bounded
 MAX_LOG_LINES = 600
@@ -162,15 +163,23 @@ DIGEST_EVERY_S = float(os.environ.get("BOT_DIGEST_S") or 1800)
 PUSHOVER_LIMIT = 900     # leave headroom under Pushover's 1024
 
 
-def ten_dollar_pnl(entry, won):
+def ten_dollar_pnl(entry, won, side="YES"):
     """What a flat $10 bet would really have returned on this trade.
 
-    Two corrections the bot's own P&L does not make. It books the MID, which
-    is not a price anyone can buy at, so a penny is added to reach the ask.
-    And it sizes off a simulated bankroll rather than a flat stake, so the
-    contract count is recomputed. Kalshi's fee is charged on entry only --
+    THREE corrections the bot's own P&L does not make.
+
+    entry_price IS ALWAYS THE YES MID, whichever side was taken. Buying NO
+    costs 1 minus that. Treating it as the price paid on both sides
+    understates the cost of every NO trade and inflates its payout -- it
+    reported +$17 where the truth was -$1, and only showed up because the
+    bot's own reconciliation disagreed.
+
+    The mid is not a price anyone can buy at, so a penny reaches the ask.
+    And the bot sizes off a simulated bankroll rather than a flat stake, so
+    the contract count is recomputed. Kalshi's fee is charged on entry only:
     a winner settles at $1.00 with nothing left to sell."""
-    pr = min((entry or 0) + ASK_SLIP, 0.99)
+    y = entry or 0
+    pr = min((y if side == "YES" else 1 - y) + ASK_SLIP, 0.99)
     if pr <= 0:
         return 0.0
     c = int(FLAT_STAKE / pr)
@@ -178,6 +187,64 @@ def ten_dollar_pnl(entry, won):
         return 0.0
     fee = math.ceil(round(0.07 * c * pr * (1 - pr), 9) * 100) / 100.0
     return (c if won else 0) - (c * pr + fee)
+
+
+_HISTORY = []            # every settled trade, for the breakouts
+# Runs that produced the 72% claim. Their trades are excluded from the
+# "since" line, because a number cannot confirm itself and that line is the
+# one worth reading.
+DISCOVERY_RUNS = ("20260922-1339", "20260922-1410")
+
+
+def _remember(d, run, won):
+    """Keep only what the breakouts need, so a long session stays small."""
+    ts = d.get("ts_unix")
+    mp = d.get("model_p")
+    y = d.get("entry_price")
+    side = d.get("side")
+    mkt = None if y is None else (y if side == "YES" else 1 - y)
+    pwin = None if mp is None else (mp if side == "YES" else 1 - mp)
+    _HISTORY.append({
+        "won": won, "run": run, "ts": ts,
+        "ten": ten_dollar_pnl(y, won, side),
+        "z": abs(d["z_score"]) if d.get("z_score") is not None else None,
+        "gap": None if (pwin is None or mkt is None) else pwin - mkt,
+        "night": (None if not ts else
+                  not (8 <= ((datetime.utcfromtimestamp(ts).hour - 5) % 24) < 22)),
+    })
+
+
+def _split(pick):
+    """(wins, n, $10) over the history rows matching a predicate."""
+    s = [h for h in _HISTORY if pick(h)]
+    if not s:
+        return 0, 0, 0.0
+    return sum(h["won"] for h in s), len(s), sum(h["ten"] for h in s)
+
+
+def breakouts():
+    """The findings, recomputed at send time. Lines only appear once their
+    bucket has enough trades to be worth printing -- an early session should
+    not ship a 2/3 split that reads like a result."""
+    out = []
+
+    def line(label, a, b):
+        (aw, an, at), (bw, bn, bt) = a, b
+        if an < 8 or bn < 8:
+            return
+        out.append(f"{label[0]:<7}{aw}/{an} {aw/an*100:.0f}%  |  "
+                   f"{label[1]:<6}{bw}/{bn} {bw/bn*100:.0f}%")
+
+    line(("DAY", "NIGHT"),
+         _split(lambda h: h["night"] is False),
+         _split(lambda h: h["night"] is True))
+    line(("|z|<.6", ">.6"),
+         _split(lambda h: h["z"] is not None and h["z"] < 0.6),
+         _split(lambda h: h["z"] is not None and h["z"] >= 0.6))
+    line(("gap<20", ">20"),
+         _split(lambda h: h["gap"] is not None and h["gap"] < 0.20),
+         _split(lambda h: h["gap"] is not None and h["gap"] >= 0.20))
+    return out
 
 
 def load_history(tab):
@@ -209,7 +276,9 @@ def load_history(tab):
             _TOLD.add((run, d.get("ticker"), tid))   # never re-alert history
             _TALLY["w" if won else "l"] += 1
             _TALLY["pnl"] += d.get("pnl") or 0.0
-            _TALLY["ten"] += ten_dollar_pnl(d.get("entry_price"), won)
+            _TALLY["ten"] += ten_dollar_pnl(d.get("entry_price"), won,
+                                            d.get("side", "YES"))
+            _remember(d, run, won)
         n = _TALLY["w"] + _TALLY["l"]
         print(f"  [history] {n} settled trade(s) already logged "
               f"({_TALLY['w']}W/{_TALLY['l']}L)")
@@ -255,10 +324,11 @@ def notify_settled(rows, bot):
         pnl = d.get("pnl") or 0.0
         won = pnl > 0
         entry = d.get("entry_price")
-        this_ten = ten_dollar_pnl(entry, won)
+        this_ten = ten_dollar_pnl(entry, won, d.get("side", "YES"))
         _TALLY["w" if won else "l"] += 1
         _TALLY["pnl"] += pnl
         _TALLY["ten"] += this_ten
+        _remember(d, d.get("_run") or "live", won)
         _PENDING.append({"asset": d.get("asset", ""), "side": d.get("side", ""),
                          "entry": entry or 0, "won": won, "ten": this_ten,
                          "res": settled})
@@ -284,7 +354,10 @@ def send_digest(P=None, force=False):
             import predictor as P
         except Exception:
             return
-    rows, cut = list(_PENDING), 0
+    # Cap the row list so the breakouts below are never the part
+    # that gets trimmed away -- the findings matter more than the
+    # individual bets, which are already in the totals.
+    rows, cut = list(_PENDING)[-8:], max(0, len(_PENDING) - 8)
     while True:
         lines = [f"{r['asset']:<4}{r['side']:<4}{r['entry']*100:>5.1f}c "
                  f"{'WIN ' if r['won'] else 'LOSS'} {r['ten']:>+7.2f}"
@@ -292,11 +365,18 @@ def send_digest(P=None, force=False):
         if cut:
             lines.insert(0, f"(+{cut} older not shown)")
         n = _TALLY["w"] + _TALLY["l"]
+        sw, sn, sten = _split(lambda h: h["run"] not in DISCOVERY_RUNS)
+        head = [f"ALL   {_TALLY['w']}/{n} {_TALLY['w']/max(n,1)*100:.0f}%  "
+                f"$10 {_TALLY['ten']:+.0f}"]
+        if sn >= 20:
+            # The line that actually means something: everything after the
+            # sample that produced the claim.
+            head.append(f"SINCE {sw}/{sn} {sw/sn*100:.0f}%  $10 {sten:+.0f}"
+                        f"  <- excl. discovery")
         body = ("\n".join(lines) + "\n\n"
-                + f"TOTAL {_TALLY['w']}/{n} = "
-                  f"{_TALLY['w']/max(n,1)*100:.0f}%\n"
-                + f"At $10 a bet: ${_TALLY['ten']:+.2f}\n\n"
-                + "PAPER ONLY - no real money staked")
+                + "\n".join(head)
+                + ("\n\n" + "\n".join(breakouts()) if breakouts() else "")
+                + "\n\nPAPER ONLY - no real money staked")
         if len(body) <= PUSHOVER_LIMIT or len(rows) <= 1:
             break
         rows = rows[1:]          # drop oldest; it is already in the total
