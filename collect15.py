@@ -112,37 +112,91 @@ def close_ts(m):
 
 
 def book(ticker):
-    """Top of book, in DOLLARS.
+    """Top of book, in DOLLARS -- or None if the exchange gave us nothing.
 
-    The _fp/_dollars migration has broken this project four times, so both
-    spellings are read and the dollar one wins. Kalshi runs ONE book: a
-    resting YES bid at p is a NO ask at 1-p, so the YES ask is derived from
-    the NO bid rather than looked up as a separate quote."""
-    d, err = get(f"/trade-api/v2/markets/{ticker}/orderbook_fp", depth=3)
-    if not d:
-        d, err = get(f"/trade-api/v2/markets/{ticker}/orderbook", depth=3)
+    THE SHAPE IS PROBED, NOT ASSUMED. The first run of this collector wrote
+    24 well-formed rows whose every book column was empty, because the path
+    and field names here were written from memory. That is the fifth time
+    this project has produced a green run full of blanks. `probe` below
+    dumps the raw response so the guessing stops.
+
+    Kalshi runs ONE book: a resting YES bid at p IS a NO ask at 1-p. So the
+    YES ask is derived from the NO bid rather than read as its own quote.
+    """
+    for path in (f"/trade-api/v2/markets/{ticker}/orderbook",
+                 f"/trade-api/v2/markets/{ticker}/orderbook_fp"):
+        d, err = get(path, depth=3)
         if not d:
-            return None
-    ob = d.get("orderbook") or d
-    def side(k, kd):
-        lv = ob.get(kd) or ob.get(k) or []
-        if not lv:
-            return None, None
-        try:
-            px, sz = lv[-1][0], lv[-1][1]
-        except Exception:
-            return None, None
-        p = _f(px)
-        if p is None:
-            return None, None
-        return (p / 100.0 if p > 1.5 else p), _f(sz)
-    yb, ybs = side("yes", "yes_dollars")
-    nb, nbs = side("no", "no_dollars")
-    ya = (1.0 - nb) if nb is not None else None
-    return dict(bid=yb, ask=ya, bidsz=ybs, asksz=nbs)
+            continue
+        ob = d.get("orderbook") or d
+        if not isinstance(ob, dict):
+            continue
+
+        def side(*names):
+            """Best (highest) resting bid on one side, with its size."""
+            lv = None
+            for n in names:
+                v = ob.get(n)
+                if v:
+                    lv = v
+                    break
+            if not lv:
+                return None, None
+            best_p = best_s = None
+            for row in lv:
+                try:
+                    p_, s_ = _f(row[0]), _f(row[1])
+                except Exception:
+                    continue
+                if p_ is None:
+                    continue
+                p_ = p_ / 100.0 if p_ > 1.5 else p_
+                if best_p is None or p_ > best_p:
+                    best_p, best_s = p_, s_
+            return best_p, best_s
+
+        yb, ybs = side("yes_dollars", "yes")
+        nb, nbs = side("no_dollars", "no")
+        if yb is None and nb is None:
+            continue                      # this path answered but said nothing
+        ya = (1.0 - nb) if nb is not None else None
+        return dict(bid=yb, ask=ya, bidsz=ybs, asksz=nbs)
+    return None
+
+
+def probe():
+    """Dump the raw orderbook response for one live market and stop.
+
+    Costs one run and settles the shape question that four previous
+    failures were all versions of."""
+    ser = fifteen_min_series()
+    print(f"{len(ser)} fifteen-minute series")
+    for s in ser[:12]:
+        for m in open_markets(s):
+            tk = str(m.get("ticker") or "")
+            ct = close_ts(m)
+            if not tk or not ct or ct - time.time() > 900:
+                continue
+            print(f"\nmarket {tk}   closes in {(ct-time.time())/60:.1f} min")
+            print(f"  market-object price fields: "
+                  f"{ {k: v for k, v in m.items() if 'price' in k.lower()} }")
+            for path in (f"/trade-api/v2/markets/{tk}/orderbook",
+                         f"/trade-api/v2/markets/{tk}/orderbook_fp"):
+                d, err = get(path, depth=3)
+                if not d:
+                    print(f"  {path} -> {err}")
+                    continue
+                print(f"  {path} -> OK")
+                print(f"    verbatim: {json.dumps(d)[:700]}")
+            print(f"  parsed by book(): {book(tk)}")
+            return 0
+    print("no market within 15 minutes of close right now")
+    return 0
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "probe":
+        return probe()
     seconds = int(sys.argv[1]) if len(sys.argv) > 1 else 3600
     deadline = time.time() + seconds
     client = P._get_client()
@@ -213,8 +267,12 @@ def main():
                    if close_ts({"close_time": r["close"]})
                    and close_ts({"close_time": r["close"]}) + SETTLE_GRACE_S < now]:
             rec = rows.pop(tk)
-            if not rec["snap"]:
-                continue                     # nothing observed; not a row
+            # A snapshot dict full of Nones is not an observation. The
+            # first run wrote 24 rows that passed this check and carried no
+            # prices at all, because only the MISSING case was tested.
+            if not any(s.get("bid") is not None or s.get("ask") is not None
+                       for s in rec["snap"].values()):
+                continue
             d, err = get(f"/trade-api/v2/markets/{tk}")
             mk = (d or {}).get("market") or {}
             rec["result"] = str(mk.get("result") or "").lower()
