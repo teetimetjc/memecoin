@@ -137,21 +137,40 @@ def _window(m):
 def _candle_price(c):
     """A traded price out of one candle, as (value, which_field).
 
-    Explicit None checks rather than `a or b`: a price of 0 is falsy, and
-    chaining `or` would skip a real zero and reach for the next field."""
-    for parent, kids in (("price", ("mean", "close", "open")),
-                         ("yes_ask", ("close", "open")),
-                         ("yes_bid", ("close", "open"))):
-        pr = c.get(parent)
-        if isinstance(pr, dict):
-            for k in kids:
-                v = _f(pr.get(k))
-                if v is not None and v > 0:
-                    return v, f"{parent}.{k}"
-    for k in ("price", "mean_price", "close", "last_price"):
+    The _dollars suffix is not decoration. The first run of this probe got
+    a well-formed response with 15 candles and found no price in any of
+    them, because the fields are mean_dollars and close_dollars -- the same
+    migration that turned orderbook into orderbook_fp and last_price into
+    last_price_dollars. Fourth time. The unsuffixed spellings are kept
+    after the suffixed ones so an older response would still parse.
+
+    `price` is {} on a candle with no trades, which is a real answer (that
+    minute was quiet) and not an error; the caller walks on to the next
+    candle. Explicit None checks rather than `a or b`, since a price of 0
+    is falsy and chaining would skip a genuine zero."""
+    pr = c.get("price")
+    if isinstance(pr, dict):
+        for k in ("mean_dollars", "close_dollars", "open_dollars",
+                  "mean", "close", "open"):
+            v = _f(pr.get(k))
+            if v is not None and v > 0:
+                return v, f"price.{k}"
+    for k in ("price_dollars", "mean_price", "last_price"):
         v = _f(c.get(k))
         if v is not None and v > 0:
             return v, k
+
+    # No trade in this candle. The quote can still stand in, but ONLY as a
+    # two-sided midpoint. Taking the ask on its own looks reasonable and is
+    # not: these candles carry a 99c ask against a 0c bid whenever nobody
+    # is quoting, and an earlier draft of this function would have read
+    # that stub as "the market said 99%" and calibrated against it. A
+    # one-sided or absurdly wide quote is an absence of a price, and gets
+    # reported as one.
+    bid = _f((c.get("yes_bid") or {}).get("close_dollars"))
+    ask = _f((c.get("yes_ask") or {}).get("close_dollars"))
+    if bid and ask and 0 < bid < ask and (ask - bid) <= 0.25:
+        return (bid + ask) / 2.0, "quote.mid"
     return None, None
 
 
@@ -212,30 +231,38 @@ def probe_candles(markets):
 def early_price(m):
     """The market's price about an hour before it closed, from candlesticks.
 
-    Returns (price, source). Falls back to None rather than to the
-    settlement price -- substituting the final price here is precisely the
-    mistake this module exists to avoid, and a silent fallback would hide
-    it behind a number that looks fine."""
+    Returns (price, source, lead_minutes). Falls back to None rather than
+    to the settlement price -- substituting the final price here is
+    precisely the mistake this module exists to avoid, and a silent
+    fallback would hide it behind a number that looks fine.
+
+    LEAD IS RETURNED BECAUSE IT IS NOT ALWAYS 60. A 15-minute market does
+    not exist an hour before it closes, so the earliest candle there is
+    about fourteen minutes out, while a weekly market gives the full hour.
+    Comparing calibration across horizons without saying that would be
+    comparing two different questions and calling it one."""
     if not CANDLE["path"]:
-        return None, "endpoint unresolved"
+        return None, "endpoint unresolved", None
     w = _window(m)
     if not w:
-        return None, "no ticker/close"
+        return None, "no ticker/close", None
     ser, tk, start, end = w
     d, err = get(CANDLE["path"].format(ser=ser, tk=tk),
                  start_ts=start, end_ts=end,
                  period_interval=CANDLE["period"])
     if not d:
-        return None, err or "no candles"
+        return None, err or "no candles", None
     cs = d.get("candlesticks") or d.get("data") or []
     if not cs:
-        return None, "empty candles"
+        return None, "empty candles", None
     # earliest candle in the window that carries a traded price
     for c in cs:
         v, _ = _candle_price(c)
         if v is not None:
-            return v / CANDLE["scale"], "candle"
-    return None, "candles carried no price"
+            ts = _f(c.get("end_period_ts"))
+            lead = (end - ts) / 60.0 if ts else None
+            return v / CANDLE["scale"], "candle", lead
+    return None, "candles carried no price", None
 
 
 def calibrate(rows):
@@ -297,14 +324,16 @@ def main():
             continue
         if not CANDLE["probed"] and not probe_candles(usable):
             return 1
-        rows, late, why = [], [], collections.Counter()
+        rows, late, leads, why = [], [], [], collections.Counter()
         for m in usable[:200]:
             won = str(m.get("result")).lower() == "yes"
-            p, src = early_price(m)
+            p, src, lead = early_price(m)
             if p is None:
                 why[src] += 1
             elif 0.02 <= p <= 0.98:
                 rows.append((p, won))
+                if lead is not None:
+                    leads.append(lead)
             lp = _f(m.get("last_price_dollars"))
             if lp is not None:
                 late.append((lp, won))
@@ -317,11 +346,13 @@ def main():
         _, lerr, ln = calibrate(late)
         vol = st.median([_f(m.get("volume_fp")) or 0 for m in usable])
         liq = st.median([_f(m.get("liquidity_dollars")) or 0 for m in usable])
+        lead = st.median(leads) if leads else 0.0
         results.append({"tk": tk, "freq": freq, "n": n, "err": err,
-                        "late_err": lerr, "vol": vol, "liq": liq})
+                        "late_err": lerr, "vol": vol, "liq": liq,
+                        "lead": lead})
         print(f"  {tk:<16} {freq:<12} n={n:>4}  early err {err*100:>5.1f}pp  "
               f"(settlement-price err {(lerr or 0)*100:>4.1f}pp)  "
-              f"med vol {vol:>7.0f}  liq ${liq:>8.0f}")
+              f"lead {lead:>4.0f}min  med vol {vol:>7.0f}  liq ${liq:>8.0f}")
 
     if not results:
         print("\nnothing measurable -- see the skip reasons above")
@@ -331,14 +362,17 @@ def main():
     print("RANKED BY MISPRICING, with the sanity check beside it")
     print("=" * 80)
     print(f"  {'series':<16} {'freq':<12} {'n':>5} {'early':>8} {'settle':>8} "
-          f"{'med vol':>9} {'liq $':>10}")
+          f"{'lead':>6} {'med vol':>9} {'liq $':>10}")
     for r in sorted(results, key=lambda x: -(x["err"] or 0)):
         print(f"  {r['tk']:<16} {r['freq']:<12} {r['n']:>5} "
               f"{r['err']*100:>7.1f}pp {(r['late_err'] or 0)*100:>7.1f}pp "
-              f"{r['vol']:>9.0f} {r['liq']:>10.0f}")
-    print("\n  'early' is the calibration error an hour before close -- the")
-    print("  number that matters. 'settle' is the same at settlement and")
-    print("  should be near zero; if it is not, the join is broken.")
+              f"{r['lead']:>5.0f}m {r['vol']:>9.0f} {r['liq']:>10.0f}")
+    print("\n  'early' is the calibration error 'lead' minutes before close")
+    print("  -- the number that matters. 'settle' is the same at settlement")
+    print("  and should be near zero; if it is not, the join is broken.")
+    print("  'lead' is not always 60: a 15-minute market does not exist an")
+    print("  hour before it closes, so its price is read as early as the")
+    print("  market allows. A shorter lead is an easier question.")
 
     print("\n" + "=" * 80)
     print("BY HORIZON  (test C: does a longer window price differently?)")
@@ -350,7 +384,11 @@ def main():
         v = g[f]
         print(f"  {f:<14} {len(v):>2} series  mean early err "
               f"{st.mean([x['err'] for x in v])*100:>5.1f}pp  "
+              f"at {st.median([x['lead'] for x in v]):>3.0f}min lead  "
               f"med vol {st.median([x['vol'] for x in v]):>7.0f}")
+    print("\n  Read the lead column before comparing rows. These are not the")
+    print("  same question at every horizon, and the shorter-lead rows are")
+    print("  being asked an easier one.")
 
     print("\n" + "=" * 80)
     k = len(results)
