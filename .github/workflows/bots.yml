@@ -32,24 +32,34 @@ name: Paper Bots (EdgeHunter + Kapelame)
 # headers. Tracking a default branch would mean whatever the owners push
 # next runs here, with credentials, unreviewed.
 #
-# FOUR HOURS ON A SIX HOUR CRON, deliberately. At 5h30m the schedule held
-# the concurrency group almost continuously, so any dispatch sat "pending"
-# with no jobs and no explanation -- indistinguishable from a slow runner.
-# The 2h gap is room to dispatch without a fight.
+# 3h45m ON A FOUR HOUR CRON. The two numbers are in tension and both
+# failure modes have already happened here.
+#
+# Too long and the schedule owns the concurrency group continuously: at
+# 5h30m on a 6h cron any dispatch sat "pending" with no jobs and no
+# explanation, indistinguishable from a slow runner. Too short and the
+# bots are simply not collecting -- 4h on a 6h cron left TWO HOURS DARK
+# every cycle, a third of the day, which is why settlement notifications
+# stop for hours and look like a bot that died.
+#
+# 3h45m every 4h is ~94% coverage with a quarter-hour of clear air each
+# cycle to dispatch into. The last 6% is not worth buying with a return of
+# the invisible-pending bug, and GitHub's cron runs minutes late whenever
+# the fleet is busy, so a handoff timed to the second was never on offer.
 
 on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: 'How long each bot runs (600 = 10min check, 14400 = 4h session)'
+        description: 'How long each bot runs (600 = 10min check, 13500 = 3h45m session)'
         required: true
-        default: '14400'
+        default: '13500'
       alerts:
         description: 'Pushover on each paper settlement (1 = on, 0 = off)'
         required: false
         default: '1'
   schedule:
-    - cron: '7 */6 * * *'
+    - cron: '7 */4 * * *'
 
 concurrency:
   group: paper-bots
@@ -62,7 +72,7 @@ env:
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 260
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -157,7 +167,7 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BOT_ALERTS: ${{ github.event.inputs.alerts || '1' }}
         run: |
-          python botrun.py edgehunter ${{ github.event.inputs.seconds || '14400' }}
+          python botrun.py edgehunter ${{ github.event.inputs.seconds || '13500' }}
 
       - name: Run Kapelame (public data, no credentials) and log to the sheet
         if: matrix.bot == 'kapelame'
@@ -167,4 +177,4 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BOT_ALERTS: ${{ github.event.inputs.alerts || '1' }}
         run: |
-          python botrun.py kapelame ${{ github.event.inputs.seconds || '14400' }}
+          python botrun.py kapelame ${{ github.event.inputs.seconds || '13500' }}
