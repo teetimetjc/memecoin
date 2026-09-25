@@ -53,6 +53,7 @@ PAUSE = 0.06
 SERIES_REFRESH_S = 3600
 FLUSH_EVERY_S = 300
 SETTLE_GRACE_S = 120
+HOURLY_CAP = 6           # strikes kept per hourly series, nearest the money
 
 HEADERS = (["Ticker", "Series", "Event", "Close Time", "Strike",
             "Collected UTC"]
@@ -120,6 +121,52 @@ def open_markets(series):
     if not d:
         return []
     return d.get("markets") or []
+
+
+def quote_from_market(m):
+    """Top of book straight off the market object, in dollars.
+
+    THE LIST CALL ALREADY CARRIES THE QUOTE. Fetching an orderbook per
+    market was costing one HTTP round trip and a pause each, which on an
+    hourly strike ladder of 567 markets made a single poll take most of a
+    minute -- long enough to sail past every +/-45s offset window except
+    the last. The probe showed no_bid_dollars and no_ask_dollars sitting
+    right there in the same response.
+
+    Kalshi runs ONE book, so the NO side defines the YES side exactly:
+    YES ask = 1 - no bid, YES bid = 1 - no ask. The yes_* spellings are
+    preferred when present and the no_* ones are the fallback, because the
+    probe confirmed no_* and could not see far enough to confirm yes_*."""
+    ya = _f(m.get("yes_ask_dollars"))
+    yb = _f(m.get("yes_bid_dollars"))
+    if ya is None:
+        nb = _f(m.get("no_bid_dollars"))
+        ya = (1.0 - nb) if nb is not None else None
+    if yb is None:
+        na = _f(m.get("no_ask_dollars"))
+        yb = (1.0 - na) if na is not None else None
+    if yb is None and ya is None:
+        return None
+    return dict(bid=yb, ask=ya, bidsz=None, asksz=None)
+
+
+def near_money(markets, cap):
+    """The `cap` markets whose quote sits closest to a coin flip.
+
+    An hourly event is a ladder of strikes every 25c of the underlying, and
+    most of it is dead -- the first run caught three consecutive strikes
+    sharing one stale 8c quote. The interesting strikes, and the only ones
+    where a disagreement with the fifteen-minute market could be traded,
+    are the ones actually near the money."""
+    scored = []
+    for m in markets:
+        q = quote_from_market(m)
+        if not q:
+            continue
+        px = q["ask"] if q["ask"] is not None else q["bid"]
+        scored.append((abs(px - 0.5), m))
+    scored.sort(key=lambda x: x[0])
+    return [m for _, m in scored[:cap]]
 
 
 def close_ts(m):
@@ -285,7 +332,10 @@ def main():
         live = 0
         for s, freq in series.items():
             seen = have if freq == "fifteen_min" else have_h
-            for m in open_markets(s):
+            mk = open_markets(s)
+            if freq == "hourly" and len(mk) > HOURLY_CAP:
+                mk = near_money(mk, HOURLY_CAP)
+            for m in mk:
                 tk = str(m.get("ticker") or "")
                 ct = close_ts(m)
                 if not tk or not ct or tk in seen:
@@ -311,14 +361,26 @@ def main():
                         want = off
                         break
                 if want is not None:
-                    b = book(tk)
-                    if b:
-                        rec["snap"][want] = b
-                rec["vol"] = _f(m.get("volume_fp")) or _f(m.get("volume"))
-                rec["oi"] = (_f(m.get("open_interest_fp"))
-                             or _f(m.get("open_interest")))
+                    q = quote_from_market(m)
+                    if q is None:
+                        # only now is a round trip worth paying for
+                        q = book(tk)
+                        time.sleep(PAUSE)
+                    if q:
+                        rec["snap"][want] = q
+                # `or` would read a genuine 0 as missing and write a blank
+                # cell, which is how the first hourly run lost the ability
+                # to tell "no volume" from "field absent".
+                for key, names in (("vol", ("volume_fp", "volume")),
+                                   ("oi", ("open_interest_fp",
+                                           "open_interest"))):
+                    val = None
+                    for nm in names:
+                        val = _f(m.get(nm))
+                        if val is not None:
+                            break
+                    rec[key] = val
                 rec["last"] = _f(m.get("last_price_dollars"))
-                time.sleep(PAUSE)
 
         # markets that have closed: ask Kalshi what they settled to
         for tk in [t for t, r in rows.items()
