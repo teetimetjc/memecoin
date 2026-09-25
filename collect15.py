@@ -42,7 +42,8 @@ import requests
 import predictor as P
 
 HOST = "https://api.elections.kalshi.com"
-SHEET = "M15"
+SHEET = "M15"            # fifteen-minute markets
+SHEET_H = "H60"          # hourly markets, same columns so the two join
 # Minutes before close at which to sample. The late ones matter most: they
 # are the only source of extreme prices this project has ever had.
 OFFSETS = (14, 12, 9, 6, 3, 1)
@@ -80,15 +81,36 @@ def _f(v):
         return None
 
 
-def fifteen_min_series():
-    """Every series Kalshi labels fifteen_min."""
+def discover():
+    """{series ticker: frequency} for the frequencies we collect.
+
+    HOURLY IS HERE FOR A CROSS-MARKET QUESTION, not a forecasting one. The
+    last fifteen-minute market inside an hour closes at the same instant as
+    the hourly market covering it, so for those final minutes two separate
+    books are pricing nearly the same event, with different participants
+    and different amounts of attention. Two prices for one event is a
+    consistency question, and it is the only kind of edge that does not
+    require out-predicting anybody.
+
+    Sampling both at the SAME offsets is what makes the pair comparable;
+    anything else compares two markets at two moments and calls the
+    difference a disagreement.
+
+    The earlier calibration survey is a standing warning about what this
+    will probably find: of 400 settled hourly ETH markets, seven had as
+    much as five contracts of volume. If the hourly book is abandoned, a
+    disagreement is a curiosity rather than a trade -- so volume is
+    recorded beside every quote, and the answer is read with it."""
     d, err = get("/trade-api/v2/series")
     if not d:
         print(f"  could not list series: {err}")
-        return []
-    out = [str(s.get("ticker")) for s in (d.get("series") or [])
-           if str(s.get("frequency") or "") == "fifteen_min"]
-    return sorted(t for t in out if t and t != "None")
+        return {}
+    out = {}
+    for x in (d.get("series") or []):
+        tk, fr = str(x.get("ticker") or ""), str(x.get("frequency") or "")
+        if tk and tk != "None" and fr in ("fifteen_min", "hourly"):
+            out[tk] = fr
+    return out
 
 
 def open_markets(series):
@@ -175,8 +197,8 @@ def probe():
 
     Costs one run and settles the shape question that four previous
     failures were all versions of."""
-    ser = fifteen_min_series()
-    print(f"{len(ser)} fifteen-minute series")
+    ser = sorted(discover())
+    print(f"{len(ser)} fifteen-minute and hourly series")
     for s in ser[:12]:
         for m in open_markets(s):
             tk = str(m.get("ticker") or "")
@@ -207,36 +229,50 @@ def main():
     deadline = time.time() + seconds
     client = P._get_client()
     sh = client.open_by_key(P.SPREADSHEET_ID)
-    try:
-        ws = sh.worksheet(SHEET)
-        have = {r[0] for r in ws.get_all_values()[1:] if r and r[0]}
-    except Exception:
-        ws = sh.add_worksheet(title=SHEET, rows=20000, cols=len(HEADERS))
-        ws.update("A1", [HEADERS])
-        have = set()
+
+    def tab(title):
+        """Open or create one tab, and the set of tickers already in it.
+
+        Separate tabs rather than a frequency column, because M15 already
+        holds thousands of rows under a fixed header and appending a wider
+        row to it would silently shift every field one place to the right.
+        The columns are identical, so an analysis joins the two on close
+        time whenever it wants the pair."""
+        try:
+            w = sh.worksheet(title)
+            return w, {r[0] for r in w.get_all_values()[1:] if r and r[0]}
+        except Exception:
+            w = sh.add_worksheet(title=title, rows=20000, cols=len(HEADERS))
+            w.update(values=[HEADERS], range_name="A1")
+            return w, set()
+
+    ws, have = tab(SHEET)
+    ws_h, have_h = tab(SHEET_H)
     print(f"{SHEET}: {len(have)} markets already recorded")
+    print(f"{SHEET_H}: {len(have_h)} markets already recorded")
 
     rows = {}              # ticker -> partial record
     done = []              # finished records waiting to be written
-    series, series_at = [], 0.0
+    series, series_at = {}, 0.0
     last_flush = time.time()
     polls = 0
 
     while time.time() < deadline:
         now = time.time()
         if now - series_at > SERIES_REFRESH_S:
-            series = fifteen_min_series()
+            series = discover()
             series_at = now
-            print(f"[{time.strftime('%H:%M:%S')}] {len(series)} fifteen-minute "
-                  f"series: {', '.join(series[:10])}"
-                  f"{' ...' if len(series) > 10 else ''}")
+            n15 = sum(1 for v in series.values() if v == "fifteen_min")
+            print(f"[{time.strftime('%H:%M:%S')}] {n15} fifteen-minute and "
+                  f"{len(series)-n15} hourly series")
 
         live = 0
-        for s in series:
+        for s, freq in series.items():
+            seen = have if freq == "fifteen_min" else have_h
             for m in open_markets(s):
                 tk = str(m.get("ticker") or "")
                 ct = close_ts(m)
-                if not tk or not ct or tk in have:
+                if not tk or not ct or tk in seen:
                     continue
                 left = ct - now
                 if left <= 0 or left > (max(OFFSETS) + 2) * 60:
@@ -251,7 +287,7 @@ def main():
                         or m.get("strike_type") or "",
                         start=time.strftime("%Y-%m-%d %H:%M:%S UTC",
                                             time.gmtime()),
-                        snap={})
+                        freq=freq, snap={})
                 # which offset, if any, does this moment serve?
                 want = None
                 for off in OFFSETS:
@@ -294,14 +330,26 @@ def main():
                   f"{len(done)} ready, {live} in range")
 
         if done and (now - last_flush > FLUSH_EVERY_S):
-            flush(ws, done, have)
+            flush_all(done, ws, have, ws_h, have_h)
             last_flush = now
         time.sleep(POLL_S)
 
     if done:
-        flush(ws, done, have)
-    print(f"finished; {len(have)} markets recorded in total")
+        flush_all(done, ws, have, ws_h, have_h)
+    print(f"finished; {len(have)} fifteen-minute and {len(have_h)} hourly "
+          f"markets recorded in total")
     return 0
+
+
+def flush_all(done, ws, have, ws_h, have_h):
+    """Split the finished records by frequency and write each to its tab."""
+    for rows_, w, seen in ((([r for r in done if r.get("freq") != "hourly"]),
+                            ws, have),
+                           (([r for r in done if r.get("freq") == "hourly"]),
+                            ws_h, have_h)):
+        if rows_:
+            flush(w, list(rows_), seen)
+    done.clear()
 
 
 def flush(ws, done, have):
