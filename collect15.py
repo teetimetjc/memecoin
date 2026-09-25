@@ -218,6 +218,22 @@ def probe():
                 print(f"    verbatim: {json.dumps(d)[:700]}")
             print(f"  parsed by book(): {book(tk)}")
             return 0
+    # What does an HOURLY market object actually carry? The first hourly
+    # run wrote 567 rows with blank volume and open interest, and 567 rows
+    # is mostly one strike ladder of near-identical dead markets. Capping
+    # that ladder needs a field to rank by, and guessing which field is how
+    # this project has lost four days.
+    print("\n--- an hourly market object, verbatim ---")
+    for tk, fr in sorted(discover().items()):
+        if fr != "hourly":
+            continue
+        mk = open_markets(tk)
+        if not mk:
+            continue
+        print(f"  series {tk}: {len(mk)} open markets")
+        print(f"  keys: {sorted(mk[0].keys())}")
+        print(f"  first market verbatim:\n    {json.dumps(mk[0])[:900]}")
+        return 0
     print("no market within 15 minutes of close right now")
     return 0
 
