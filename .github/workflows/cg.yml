@@ -59,13 +59,22 @@ name: CG Experiments (read-only)
 # `series` narrows calib to named tickers (e.g. "KXBTCD KXETHD") for the
 # test-C horizon comparison. Blank means a sample across frequencies.
 #
+# retest scores the FROZEN spec in specs/fallen_favourite.md against data
+# collected after its freeze date, and nothing else. It takes no arguments
+# and exposes no thresholds, because a pre-registered test whose operator
+# can adjust it is not one. It skips every market that closed on or before
+# the freeze: a discovery set cannot confirm what it suggested, which is
+# the mistake underneath most of the twelve strategies already dead here.
+# Running it early is safe -- it reports NOT ENOUGH DATA YET rather than a
+# number, and that is not a failure.
+#
 # Read-only otherwise -- no order path is reachable from this workflow.
 
 on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
+        description: 'retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
         default: 'calib'
       series:
@@ -95,6 +104,7 @@ jobs:
           SERIES: ${{ inputs.series }}
         run: |
           case "${{ inputs.experiment }}" in
+            retest) python retest.py ;;
             calib) python calib_survey.py $SERIES ;;
             cg1) python cg1.py ;;
             cg7) python cg7.py ;;
