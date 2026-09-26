@@ -74,7 +74,7 @@ on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
+        description: 'backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
         default: 'calib'
       series:
@@ -105,6 +105,7 @@ jobs:
         run: |
           case "${{ inputs.experiment }}" in
             retest) python retest.py ;;
+            backfill-probe) python backfill.py probe ;;
             calib) python calib_survey.py $SERIES ;;
             cg1) python cg1.py ;;
             cg7) python cg7.py ;;
