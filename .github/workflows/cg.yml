@@ -74,7 +74,7 @@ on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
+        description: 'spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
         default: 'calib'
       series:
@@ -113,6 +113,7 @@ jobs:
             combo) python combo.py ${SERIES:-M15H} ;;
             diag-combo) python diag_combo.py ;;
             diag2) python diag2.py ;;
+            spot-probe) python spot_probe.py ;;
             calib) python calib_survey.py $SERIES ;;
             cg1) python cg1.py ;;
             cg7) python cg7.py ;;
