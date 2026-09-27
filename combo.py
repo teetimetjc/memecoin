@@ -139,7 +139,7 @@ def predicates(obs):
     def med(key):
         v = sorted(o[key] for o in obs if o[key] is not None)
         return v[len(v) // 2] if v else 0.0
-    ms, mv, mo = med("spread"), med("vol"), med("oi")
+    ms = med("spread")
     P_ = []
     for s in sorted({o["ser"] for o in obs}):
         P_.append((f"series={s}", lambda o, s=s: o["ser"] == s))
@@ -150,17 +150,31 @@ def predicates(obs):
                    (0.60, 0.80), (0.80, 0.98)):
         P_.append((f"price {lo:.2f}-{hi:.2f}",
                    lambda o, lo=lo, hi=hi: lo <= o["price"] < hi))
+    # VOLUME AND OPEN INTEREST ARE GONE, and this is not a tuning choice.
+    # In M15H both are read at backfill time, AFTER settlement. Split by
+    # outcome inside the cheap bands, the volume of winners over losers runs
+    # 1.49, 1.43 and 1.31 -- when a longshot comes in, the market trades
+    # heavily on the way there. So "volume high" is partly a description of
+    # what happened, and a pocket built on it reported +$23/bet while
+    # passing a clustered t-test, a best-and-worst-day check, a shuffle null
+    # at p=0.005 and an out-of-sample holdout. Four filters, all cleared, on
+    # a rule nobody could ever have followed. A holdout cannot catch a
+    # feature that encodes the future, because the future is in the holdout
+    # too.
+    #
+    # Only quantities knowable AT ENTRY remain: the quote, its spread, the
+    # clock, the series and the shape of the path so far. The live collector
+    # reads volume during the window and can have it back later; the history
+    # cannot.
     P_ += [("spread tight", lambda o: o["spread"] <= ms),
            ("spread wide", lambda o: o["spread"] > ms),
-           ("volume high", lambda o: o["vol"] > mv),
-           ("volume low", lambda o: o["vol"] <= mv),
-           ("oi high", lambda o: o["oi"] > mo),
-           ("oi low", lambda o: o["oi"] <= mo),
            ("side=YES", lambda o: o["side"] == "YES"),
            ("side=NO", lambda o: o["side"] == "NO"),
-           ("fell", lambda o: o["drift"] is not None and o["drift"] < -0.05),
+           ("fell hard", lambda o: o["drift"] is not None and o["drift"] < -0.20),
+           ("fell", lambda o: o["drift"] is not None and -0.20 <= o["drift"] < -0.05),
            ("flat", lambda o: o["drift"] is not None and abs(o["drift"]) <= 0.05),
-           ("rose", lambda o: o["drift"] is not None and o["drift"] > 0.05)]
+           ("rose", lambda o: o["drift"] is not None and 0.05 < o["drift"] <= 0.20),
+           ("rose hard", lambda o: o["drift"] is not None and o["drift"] > 0.20)]
     return P_
 
 
