@@ -101,27 +101,44 @@ def main():
     print("=" * 84)
     print(f"COMPARISON on {len(fills)} real fills, using '{feekeys[0]}'")
     print("=" * 84)
-    diffs = []
+    print("   'mine' is ceil-to-the-cent; 'raw' is the same rate unrounded.")
+    print("   If raw matches and mine does not, the RATE is right and the")
+    print("   CEILING is the error -- worth up to a cent a bet, no more.\n")
+    diffs, rawdiffs = [], []
     for f in fills:
-        c = _f(f.get("count"))
-        px = _f(f.get("yes_price_dollars")) or (
-            (_f(f.get("yes_price")) or 0) / 100.0)
+        # count_fp, not count. The _fp/_dollars migration, fifth time.
+        c = _f(f.get("count_fp")) or _f(f.get("count"))
+        px = _f(f.get("yes_price_dollars"))
+        if px is None:
+            nb = _f(f.get("no_price_dollars"))
+            px = (1.0 - nb) if nb is not None else None
+        if px is None:
+            px = (_f(f.get("yes_price")) or 0) / 100.0
         theirs = _f(f.get(feekeys[0]))
         if theirs is not None and theirs > 1.5:
             theirs = theirs / 100.0          # cents, not dollars
         if not c or not px or theirs is None:
             continue
         m = mine(int(c), px)
+        raw = 0.07 * c * px * (1 - px)
         diffs.append(theirs - m)
-        if len(diffs) <= 15:
-            print(f"   {c:>5.0f} @ {100*px:>5.1f}c   Kalshi ${theirs:>6.3f}"
-                  f"   mine ${m:>6.3f}   diff ${theirs-m:>+6.3f}")
+        rawdiffs.append(theirs - raw)
+        if len(diffs) <= 12:
+            print(f"   {c:>6.1f} @ {100*px:>5.2f}c   Kalshi ${theirs:>8.5f}"
+                  f"   mine ${m:>6.3f} (d {theirs-m:>+6.3f})"
+                  f"   raw ${raw:>8.5f} (d {theirs-raw:>+8.5f})")
     if diffs:
         print(f"\n   {len(diffs)} compared   mean diff ${st.mean(diffs):+.4f}"
               f"   median ${st.median(diffs):+.4f}")
         ok = sum(1 for x in diffs if abs(x) < 0.005)
         print(f"   within half a cent: {ok}/{len(diffs)} "
               f"({100*ok/len(diffs):.0f}%)")
+        if rawdiffs:
+            print(f"\n   UNROUNDED rate: mean diff ${st.mean(rawdiffs):+.6f}"
+                  f"   median ${st.median(rawdiffs):+.6f}")
+            near = sum(1 for x in rawdiffs if abs(x) < 0.0005)
+            print(f"   within 0.05c of the raw rate: {near}/{len(rawdiffs)}"
+                  f" ({100*near/len(rawdiffs):.0f}%)")
         if st.mean(diffs) < -0.005:
             print("\n   MY FORMULA OVERSTATES THE FEE. Every negative result")
             print("   within a few cents of zero has to be recomputed, and")
