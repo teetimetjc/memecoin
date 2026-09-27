@@ -74,7 +74,7 @@ on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
+        description: 'fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
         default: 'calib'
       series:
@@ -116,6 +116,7 @@ jobs:
             spot-probe) python spot_probe.py ;;
             ind-backfill) python ind_backfill.py 1800 ;;
             fee-check) python fee_check.py ;;
+            fee-truth) python fee_truth.py ;;
             calib) python calib_survey.py $SERIES ;;
             cg1) python cg1.py ;;
             cg7) python cg7.py ;;
