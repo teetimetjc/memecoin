@@ -122,12 +122,26 @@ def indicators(bars, minute):
         return None
     closes = [float(k[4]) for k in seq]
     vols = [float(k[5]) for k in seq]
-    rsi = P.calc_rsi(closes, 7)
+    # A window where the price never ticked DOWN divides by a zero average
+    # loss inside predictor.calc_rsi. v6 never hit it because Kraken's feed
+    # always moved; Coinbase's 1-minute DOGE bars can be perfectly flat.
+    # Skipped rather than patched with an invented RSI, and skipped rather
+    # than patching predictor, which the live v6 collector still runs on.
+    try:
+        rsi = P.calc_rsi(closes, 7)
+    except ZeroDivisionError:
+        return "flat"
     e9, e21 = P.calc_ema(closes, 9), P.calc_ema(closes, 21)
     ema_sig = ("BULL" if e9 > e21 else "BEAR") if (e9 and e21) else "FLAT"
-    macd = P.calc_macd(closes)
+    try:
+        macd = P.calc_macd(closes)
+    except ZeroDivisionError:
+        macd = None
     hist = macd[2] if macd else None
-    bb = P.calc_bollinger(closes, 20, 2.0)
+    try:
+        bb = P.calc_bollinger(closes, 20, 2.0)
+    except ZeroDivisionError:
+        bb = None
     bbpos = None
     if bb:
         up, mid, lo = bb
@@ -169,7 +183,7 @@ def main():
     print("to build: " + ", ".join(f"{k}={len(v)}" for k, v in want.items()))
 
     stamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-    total = 0
+    total = flat = short = 0
     for ser, items in want.items():
         if time.time() > stop_at:
             print("  budget spent; run again to continue")
@@ -186,7 +200,11 @@ def main():
             if time.time() > stop_at:
                 break
             ind = indicators(bars, (ct - ENTRY * 60) // 60)
+            if ind == "flat":
+                flat += 1
+                continue
             if not ind:
+                short += 1
                 continue
             out.append([tk, ser, PRODUCT[ser], iso(ct), ENTRY,
                         ind["rsi"], ind["ema"], ind["hist"], ind["bb"],
@@ -204,6 +222,8 @@ def main():
             total += len(out)
             print(f"    wrote {len(out)} ({total} this run)")
     print(f"finished; {total} added, {len(have)} in {SHEET}")
+    print(f"  skipped: {flat} flat windows (RSI undefined), "
+          f"{short} with too few bars")
     return 0
 
 
