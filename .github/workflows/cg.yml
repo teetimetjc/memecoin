@@ -112,6 +112,7 @@ jobs:
             maker70) python maker70.py ${SERIES:-M15H} ;;
             combo) python combo.py ${SERIES:-M15H} ;;
             diag-combo) python diag_combo.py ;;
+            diag2) python diag2.py ;;
             calib) python calib_survey.py $SERIES ;;
             cg1) python cg1.py ;;
             cg7) python cg7.py ;;
