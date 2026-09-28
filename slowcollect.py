@@ -179,14 +179,42 @@ def trades(ticker):
     return d.get("trades") or []
 
 
+ROTATE_AT = 400000      # rows in a tab before the next one is started
+
+
 def sheet():
+    """The current tab, rolling to a new one before the sheet fills.
+
+    Five rounds of trimming took this from 240,000 rows a day to about
+    32,000, which is still only three weeks of runway -- and a study that
+    dies of a full spreadsheet mid-measurement has answered nothing. So the
+    limit stops being a deadline: at 400,000 rows the collector starts
+    SLOWBOOK2, then SLOWBOOK3, and the analysis reads whatever tabs exist.
+    Rotating is cheap; discovering the wedge three weeks in is not.
+    """
     sh = P._get_client().open_by_key(P.SPREADSHEET_ID)
-    try:
-        ws = sh.worksheet(SHEET)
-    except Exception:
-        ws = sh.add_worksheet(title=SHEET, rows=40000, cols=len(HEADERS))
-        ws.append_row(HEADERS, value_input_option="RAW")
-    return ws
+    n = 1
+    while True:
+        title = SHEET if n == 1 else f"{SHEET}{n}"
+        try:
+            ws = sh.worksheet(title)
+        except Exception:
+            ws = sh.add_worksheet(title=title, rows=20000,
+                                  cols=len(HEADERS))
+            ws.append_row(HEADERS, value_input_option="RAW")
+            print(f"  started tab {title}")
+            return ws
+        try:
+            used = len(ws.col_values(1))
+        except Exception:
+            used = 0
+        if used < ROTATE_AT:
+            print(f"  writing to {title} ({used} rows)")
+            return ws
+        n += 1
+        if n > 20:
+            raise SystemExit("20 SLOWBOOK tabs is not a rotation, it is a "
+                             "runaway -- stopping rather than filling more")
 
 
 def main():
