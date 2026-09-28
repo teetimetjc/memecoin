@@ -11,10 +11,19 @@ WHY BOTH QUESTIONS IN ONE PASS. They need the same expensive thing -- the
 per-minute bid/ask history of every market -- and one candlestick call buys
 both. Asking them separately would double the runtime for nothing.
 
-  QUESTION 1, THE PRICE. Quotes are sampled at several points before close,
-  not one, so a family contributes hundreds of observations instead of a
-  dozen. The noise floor is printed beside the error: on n=2,000 the floor
-  is small, which is the entire reason for going deeper rather than wider.
+  QUESTION 1, THE PRICE. ONE quote per market, at the midpoint of its life.
+  The first version of this file took four per market and handed all four to
+  the noise floor, which assumes independent draws -- four reads of the same
+  market are one market, so the floor came out too small and the excess too
+  large. Depth here has to come from more MARKETS, not more looks at each.
+
+  AND A CALIBRATION CAN BE VACUOUS. These are strike ladders: most strikes
+  on a temperature market are hopeless, so nearly every quote sits at 2c or
+  98c, where p*(1-p) is almost zero and both the error and the floor round
+  to 0.00pp. The first run printed "market is beatable here" off a +0.00pp
+  excess built entirely out of that. The price spread across buckets is now
+  printed, and a sample concentrated in fewer than three buckets is called
+  vacuous rather than scored.
 
   QUESTION 2, RESTING. The same optimistic-versus-adverse pair maker70 runs
   on crypto. The crypto answer was unambiguous -- optimistic +$0.24, adverse
@@ -61,11 +70,7 @@ MKT = 200
 BUDGET_S = 2400
 PAUSE = 0.05
 STAKE = 10.0
-MIN_N = 150
-# Where in the market's life to read a quote. Fractions of the way from open
-# to close, so the same list works for a market that lives a day and one that
-# lives a month. None is at or after close.
-FRACS = (0.25, 0.50, 0.75, 0.90)
+MIN_N = 150   # per POOLED band; a single slow family never reaches it
 BANDS = ((0.02, 0.10), (0.10, 0.25), (0.25, 0.45), (0.45, 0.60),
          (0.60, 0.80), (0.80, 0.95))
 
@@ -203,18 +208,20 @@ def main():
                 continue
             vols.append(_vol(m))
             key = str(m.get("close_time"))[:10]
-            for f in FRACS:
-                q = at_fraction(bk, o, c, f)
-                if q:
-                    rows.append(((q[1] + q[2]) / 2.0, res == "yes"))
-                    spreads.append(q[2] - q[1])
+            # ONE calibration observation per market. Four reads of one
+            # market are one market, and the noise floor cannot know that.
+            q = at_fraction(bk, o, c, 0.50)
+            if q:
+                rows.append(((q[1] + q[2]) / 2.0, res == "yes"))
+                spreads.append(q[2] - q[1])
             bks.append((bk, res == "yes", key))
         if not bks:
             print(f"\n{ser:<16} no usable book history")
             continue
         data[ser] = (rows, bks, vols, spreads)
-        _, err, n, floor = CS.calibrate(rows)
+        buckets, err, n, floor = CS.calibrate(rows)
         ex = ((err - floor) / n) if n else None
+        used = sum(1 for _, (cnt, _, _) in buckets.items() if cnt >= 5)
         print(f"\n{ser:<16} markets {len(bks):<5} quotes {len(rows):<6} "
               f"median volume {st.median(vols) if vols else 0:>8.0f}  "
               f"median spread {100*st.median(spreads):>4.1f}c")
@@ -222,22 +229,40 @@ def main():
               f"{100*err/n if n else 0:.2f}pp vs noise floor "
               f"{100*floor/n if n else 0:.2f}pp on n={n}  -> excess "
               + (f"{100*ex:+.2f}pp" if ex is not None else "n/a")
-              + ("   <== market is beatable here" if ex and ex > 0
+              + f"  across {used} price buckets"
+              + ("   VACUOUS -- nearly every quote sits at an extreme, "
+                 "where error and floor both round to zero" if used < 3
+                 else "   <== worth a closer look" if (ex or 0) > 0.005
                  else "   nothing found"))
-        for mult, note in ((0.0, "resting fee 0.00x, measured on 18 fills"),
-                           (0.25, "resting fee 0.25x, unverified claim")):
-            print(f"  Q2 resting ({note}):")
-            for model in ("optimistic", "adverse"):
-                for lo, hi in BANDS:
-                    bets = []
-                    for bk, yes, key in bks:
-                        tr = rest_trade(bk, lo, hi, model, mult)
-                        if not tr:
-                            continue
-                        c, cost, f_ = tr
-                        won = not yes       # we hold NO
-                        bets.append(((c if won else 0) - (c * cost + f_), key))
-                    report(bets, f"{model:<11} sell yes {lo:.2f}-{hi:.2f}")
+
+    # ------------------------------------------------------------------
+    # Q2 IS POOLED ACROSS SERIES. A slow family lists a few hundred markets
+    # in its entire history and one resting order per market, so per-series
+    # every band came back "too few" -- which is not an answer, it is the
+    # sample size of a daily market. The question is whether resting pays in
+    # slow markets at all, so the trades go in one pile, clustered by close
+    # date so two markets closing the same day are not counted as two
+    # independent draws.
+    # ------------------------------------------------------------------
+    allbks = [(bk, yes, f"{ser}:{key}")
+              for ser, (_, bks, _, _) in data.items() for bk, yes, key in bks]
+    print("\n" + "=" * 104)
+    print(f"QUESTION 2, POOLED: resting across {len(data)} slow families, "
+          f"{len(allbks)} markets")
+    print("=" * 104)
+    for mult, note in ((0.0, "resting fee 0.00x, measured on 18 real fills"),
+                       (0.25, "resting fee 0.25x, unverified claim")):
+        print(f"\n  {note}")
+        for model in ("optimistic", "adverse"):
+            for lo, hi in BANDS:
+                bets = []
+                for bk, yes, key in allbks:
+                    tr = rest_trade(bk, lo, hi, model, mult)
+                    if not tr:
+                        continue
+                    c, cost, f_ = tr
+                    bets.append(((c if not yes else 0) - (c * cost + f_), key))
+                report(bets, f"{model:<11} sell yes {lo:.2f}-{hi:.2f}")
 
     print("\n" + "=" * 104)
     print("On 15-minute crypto the resting answer was optimistic +$0.24 and")
