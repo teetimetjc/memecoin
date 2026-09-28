@@ -31,6 +31,15 @@ WHAT IT RECORDS, AND WHY EACH PIECE IS NEEDED.
   optimistic case. The point of collecting both streams is to measure the
   MIX rather than assume it.
 
+PRINTS ARE AGGREGATED PER POLL, not written one per row. A raw print feed
+is 70,000 rows a day and a Google Sheet holds about 660,000 at this width --
+nine days before the thing wedges, which is not a collector, it is a fuse.
+Each poll writes at most one row per market per taker side: how many prints,
+how many contracts, and the volume-weighted price. Nothing needed for the
+question is lost, because what matters is whether a resting order WOULD have
+been filled in that interval and what the price did next, not the identity
+of each individual print.
+
 WRITES CHANGE ONLY, AND THE DEFINITION OF "CHANGE" IS DELIBERATE. The
 first ten-minute run wrote 1,691 rows, which annualises to a quarter of a
 million a day and would bury the sheet inside a week. Two causes, both
@@ -72,13 +81,13 @@ SERIES = ["KXHIGHLAX", "KXBTCMINMON", "KXFEDCOMBO", "KXHIGHAUS", "KXWTIW",
 POLL_S = 45
 PAUSE = 0.06
 FLUSH_EVERY_S = 300
-STRIKE_CAP = 8          # markets kept per series, nearest the money
+STRIKE_CAP = 6          # markets kept per series, nearest the money
 TRADE_LOOKBACK = 50
 
 HEADERS = ["UTC", "Kind", "Ticker", "Series", "Close Time",
            "Yes Bid", "Yes Ask", "Bid Size", "Ask Size",
-           "Volume", "OpenInt", "Trade Price", "Trade Count",
-           "Taker Side", "Trade ID"]
+           "Volume", "OpenInt", "VWAP", "Contracts",
+           "Taker Side", "Prints"]
 
 
 def _f(v):
@@ -179,7 +188,7 @@ def main():
     ws = sheet()
     deadline = time.time() + seconds
     started = time.time() - 120     # small grace for clock skew
-    old = fresh = unstamped = 0
+    old_n = fresh = unstamped = 0
     stamped_key = None
     prev = {}           # ticker -> last written touch
     seen_trades = set()  # trade ids already recorded
@@ -215,17 +224,14 @@ def main():
                     # Volume moving means a print happened; only then is a
                     # trades call worth the round trip.
                     if p is not None and p["vol"] != t["vol"]:
+                        # One row per taker side per poll, not per print.
+                        agg = {}
                         for tr in trades(tk):
                             tid = str(tr.get("trade_id") or tr.get("id") or "")
                             if not tid or tid in seen_trades:
                                 continue
-                            # Older than this run means an earlier run has
-                            # already written it; the seen-set cannot know
-                            # that because it dies with the process.
                             ct, tkey = trade_ts(tr)
                             if ct is None:
-                                # Unparseable: say so ONCE, loudly, rather
-                                # than pass it through as though it were new.
                                 if not unstamped:
                                     print("  TRADE HAS NO PARSEABLE TIME. "
                                           f"keys: {sorted(tr.keys())}")
@@ -233,25 +239,33 @@ def main():
                                 continue
                             if ct < started:
                                 seen_trades.add(tid)
-                                old += 1
+                                old_n += 1
                                 continue
                             if not stamped_key:
                                 stamped_key = tkey
                                 print(f"  trade timestamps read from "
                                       f"'{tkey}'; keys: {sorted(tr.keys())}")
-                            fresh += 1
                             seen_trades.add(tid)
+                            fresh += 1
                             px = _f(tr.get("yes_price_dollars"))
                             if px is None:
                                 yp = _f(tr.get("yes_price"))
                                 px = (yp / 100.0) if yp is not None else None
+                            n = (_f(tr.get("count_fp"))
+                                 or _f(tr.get("count")) or 0.0)
+                            side = str(tr.get("taker_side") or "?")
+                            a = agg.setdefault(side, [0.0, 0.0, 0])
+                            if px is not None:
+                                a[0] += px * n      # for the VWAP
+                            a[1] += n
+                            a[2] += 1
+                        for side, (pxn, n, cnt) in agg.items():
                             out.append([
-                                str(tr.get("created_time") or stamp), "trade",
-                                tk, s, str(m.get("close_time") or ""),
+                                stamp, "trade", tk, s,
+                                str(m.get("close_time") or ""),
                                 t["bid"], t["ask"], t["bidsz"], t["asksz"],
-                                t["vol"], t["oi"], px,
-                                _f(tr.get("count_fp")) or _f(tr.get("count")),
-                                str(tr.get("taker_side") or ""), tid])
+                                t["vol"], t["oi"],
+                                (pxn / n) if n else "", n, side, cnt])
                         time.sleep(PAUSE)
                     prev[tk] = t
 
@@ -262,7 +276,7 @@ def main():
                 ws.append_rows([["" if v is None else v for v in r]
                                 for r in out], value_input_option="RAW")
                 print(f"[{time.strftime('%H:%M:%S')}] wrote {len(out)} rows "
-                      f"({polls} polls, {fresh} fresh / {old} old prints)")
+                      f"({polls} polls, {fresh} fresh / {old_n} old prints)")
                 out = []
             except Exception as e:
                 print(f"  WRITE FAILED ({str(e)[:70]}) -- keeping rows")
@@ -277,7 +291,7 @@ def main():
         except Exception as e:
             print(f"  FINAL WRITE FAILED ({str(e)[:70]}) -- {len(out)} lost")
     print(f"finished; {polls} polls, {fresh} fresh prints written, "
-          f"{old} skipped as older than this run, {unstamped} unstamped")
+          f"{old_n} skipped as older than this run, {unstamped} unstamped")
     return 0
 
 
