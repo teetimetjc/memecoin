@@ -32,34 +32,41 @@ name: Paper Bots (EdgeHunter + Kapelame)
 # headers. Tracking a default branch would mean whatever the owners push
 # next runs here, with credentials, unreviewed.
 #
-# 3h45m ON A FOUR HOUR CRON. The two numbers are in tension and both
-# failure modes have already happened here.
+# 1h55m ON A TWO HOUR CRON, for the same reason collect15.yml went hourly:
+# the four-hour trigger was not firing. Against slots of 07:07, 11:07,
+# 15:07, 19:07, 23:07 what actually ran on Sep 27 was 05:09, 13:51, 19:43
+# and 22:57 -- four a day instead of six, each tens of minutes late.
+# Scheduled workflows are best-effort on shared runners and get dropped
+# under load, so the fix is to shorten the exposure to any single missed
+# trigger and let the concurrency group queue a late one behind the job in
+# progress.
 #
-# Too long and the schedule owns the concurrency group continuously: at
-# 5h30m on a 6h cron any dispatch sat "pending" with no jobs and no
-# explanation, indistinguishable from a slow runner. Too short and the
-# bots are simply not collecting -- 4h on a 6h cron left TWO HOURS DARK
-# every cycle, a third of the day, which is why settlement notifications
-# stop for hours and look like a bot that died.
+# WHY TWO HOURS HERE AND ONE HOUR THERE. Every restart re-clones both bots
+# and rebuilds a virtualenv, xgboost included, before a single price
+# arrives, and each bot then needs some minutes of feed before it has the
+# history to produce a signal at all. The collector pays none of that: it
+# is useful in its first fifteen seconds. Paying that setup twelve times a
+# day instead of twenty-four keeps the warmup tax near 3% while still
+# cutting a dropped trigger's cost from four hours to two.
 #
-# 3h45m every 4h is ~94% coverage with a quarter-hour of clear air each
-# cycle to dispatch into. The last 6% is not worth buying with a return of
-# the invisible-pending bug, and GitHub's cron runs minutes late whenever
-# the fleet is busy, so a handoff timed to the second was never on offer.
+# The older tension is unchanged and still respected: too long and the
+# schedule owns the concurrency group continuously, which is how a dispatch
+# once sat "pending" with no jobs and no explanation. 1h55m in a two-hour
+# slot leaves five minutes of clear air to dispatch into.
 
 on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: 'How long each bot runs (600 = 10min check, 13500 = 3h45m session)'
+        description: 'How long each bot runs (600 = 10min check, 6900 = 1h55m session)'
         required: true
-        default: '13500'
+        default: '6900'
       alerts:
         description: 'Pushover on each paper settlement (1 = on, 0 = off)'
         required: false
         default: '1'
   schedule:
-    - cron: '7 */4 * * *'
+    - cron: '7 */2 * * *'
 
 concurrency:
   group: paper-bots
@@ -72,7 +79,7 @@ env:
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 125
     strategy:
       fail-fast: false
       matrix:
@@ -167,7 +174,7 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BOT_ALERTS: ${{ github.event.inputs.alerts || '1' }}
         run: |
-          python botrun.py edgehunter ${{ github.event.inputs.seconds || '13500' }}
+          python botrun.py edgehunter ${{ github.event.inputs.seconds || '6900' }}
 
       - name: Run Kapelame (public data, no credentials) and log to the sheet
         if: matrix.bot == 'kapelame'
@@ -177,4 +184,4 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BOT_ALERTS: ${{ github.event.inputs.alerts || '1' }}
         run: |
-          python botrun.py kapelame ${{ github.event.inputs.seconds || '13500' }}
+          python botrun.py kapelame ${{ github.event.inputs.seconds || '6900' }}
