@@ -85,19 +85,38 @@ def _f(v):
     return C._f(v)
 
 
-def ts_iso(v):
-    """Epoch seconds from a Kalshi timestamp, or None.
+def ts_any(v):
+    """Epoch seconds from whatever shape Kalshi used, or None.
 
     collect15.close_ts takes a market dict, not a string, so reusing it here
-    would silently return None for every print and defeat the age filter.
+    would return None for every print and defeat the age filter.
+
+    BOTH SHAPES ARE ACCEPTED because this project has now been bitten six
+    times by a field that quietly changed type or name, and an age filter
+    that silently passes everything is worse than no filter: it looks like
+    a quiet market producing 1,646 prints in ten minutes.
     """
+    if isinstance(v, (int, float)) and v > 0:
+        # seconds or milliseconds -- anything past the year 2100 is ms
+        return float(v) / 1000.0 if v > 4102444800 else float(v)
     s = str(v or "")
+    if s.isdigit():
+        return ts_any(int(s))
     if len(s) < 19:
         return None
     try:
         return calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S"))
     except Exception:
         return None
+
+
+def trade_ts(tr):
+    """The print's timestamp, whichever key carries it."""
+    for k in ("created_time", "created_ts", "ts", "timestamp", "time"):
+        t = ts_any(tr.get(k))
+        if t is not None:
+            return t, k
+    return None, None
 
 
 def near_money(mk):
@@ -160,6 +179,8 @@ def main():
     ws = sheet()
     deadline = time.time() + seconds
     started = time.time() - 120     # small grace for clock skew
+    old = fresh = unstamped = 0
+    stamped_key = None
     prev = {}           # ticker -> last written touch
     seen_trades = set()  # trade ids already recorded
     out = []
@@ -201,10 +222,24 @@ def main():
                             # Older than this run means an earlier run has
                             # already written it; the seen-set cannot know
                             # that because it dies with the process.
-                            ct = ts_iso(tr.get("created_time"))
-                            if ct is not None and ct < started:
-                                seen_trades.add(tid)
+                            ct, tkey = trade_ts(tr)
+                            if ct is None:
+                                # Unparseable: say so ONCE, loudly, rather
+                                # than pass it through as though it were new.
+                                if not unstamped:
+                                    print("  TRADE HAS NO PARSEABLE TIME. "
+                                          f"keys: {sorted(tr.keys())}")
+                                unstamped += 1
                                 continue
+                            if ct < started:
+                                seen_trades.add(tid)
+                                old += 1
+                                continue
+                            if not stamped_key:
+                                stamped_key = tkey
+                                print(f"  trade timestamps read from "
+                                      f"'{tkey}'; keys: {sorted(tr.keys())}")
+                            fresh += 1
                             seen_trades.add(tid)
                             px = _f(tr.get("yes_price_dollars"))
                             if px is None:
@@ -227,7 +262,7 @@ def main():
                 ws.append_rows([["" if v is None else v for v in r]
                                 for r in out], value_input_option="RAW")
                 print(f"[{time.strftime('%H:%M:%S')}] wrote {len(out)} rows "
-                      f"({polls} polls, {len(seen_trades)} prints seen)")
+                      f"({polls} polls, {fresh} fresh / {old} old prints)")
                 out = []
             except Exception as e:
                 print(f"  WRITE FAILED ({str(e)[:70]}) -- keeping rows")
@@ -241,7 +276,8 @@ def main():
             print(f"wrote final {len(out)} rows")
         except Exception as e:
             print(f"  FINAL WRITE FAILED ({str(e)[:70]}) -- {len(out)} lost")
-    print(f"finished; {polls} polls, {len(seen_trades)} prints recorded")
+    print(f"finished; {polls} polls, {fresh} fresh prints written, "
+          f"{old} skipped as older than this run, {unstamped} unstamped")
     return 0
 
 
