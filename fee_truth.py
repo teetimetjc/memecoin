@@ -21,6 +21,7 @@ last_price_dollars, a nesting level, and a settlement flag. So the first
 record comes back verbatim and the comparison is built on what is there.
 """
 
+import collections
 import json
 import math
 import statistics as st
@@ -148,6 +149,65 @@ def main():
             print("   larger than reported, not smaller.")
         else:
             print("\n   The formula matches. Every dollar figure stands.")
+
+    # ------------------------------------------------------------------
+    # MAKER VERSUS TAKER, measured rather than read off a blog.
+    #
+    # Everything this project has priced -- including both maker studies --
+    # applied 0.07 * C * P * (1-P) to resting orders as well as crossing
+    # ones. If Kalshi charges a RESTING fill less than that, every maker
+    # conclusion here was scored against a fee it would not have paid, and
+    # the exchange's own fills are the only authority worth having: the fee
+    # schedule PDF is not reachable from this runner, and a secondary
+    # summary of a fee is not a fee.
+    #
+    # The implied rate is fee / (C * P * (1-P)). If takers come out at 0.07
+    # and makers at something smaller, that ratio is the answer.
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 84)
+    print("MAKER VERSUS TAKER: the implied rate, per side of the book")
+    print("=" * 84)
+    flags = sorted({k for f in fills for k in f
+                    if "taker" in k.lower() or "maker" in k.lower()})
+    if not flags:
+        print("   Fills carry no maker/taker flag; keys available:")
+        print(f"   {sorted(fills[0].keys())}")
+        print("\n   Without it the two cannot be separated here, so the maker")
+        print("   studies keep the taker fee -- the conservative choice, and")
+        print("   an OPEN QUESTION rather than a settled one.")
+        return 0
+    print(f"   flag field(s): {flags}\n")
+    fl = flags[0]
+    byside = collections.defaultdict(list)
+    for f in fills:
+        c = _f(f.get("count_fp")) or _f(f.get("count"))
+        px = _f(f.get("yes_price_dollars"))
+        if px is None:
+            nb = _f(f.get("no_price_dollars"))
+            px = (1.0 - nb) if nb is not None else None
+        theirs = _f(f.get(feekeys[0]))
+        if theirs is not None and theirs > 1.5:
+            theirs = theirs / 100.0
+        if not c or not px or theirs is None:
+            continue
+        denom = c * px * (1 - px)
+        if denom <= 0:
+            continue
+        byside[str(f.get(fl))].append(theirs / denom)
+    for k, v in sorted(byside.items()):
+        if not v:
+            continue
+        print(f"   {fl}={k:<7} n={len(v):<5} implied rate "
+              f"median {st.median(v):.5f}   mean {st.mean(v):.5f}")
+    if len(byside) < 2:
+        print("\n   Only one side of the book appears in these fills, so the")
+        print("   other rate is still unmeasured. The bots cross the spread,")
+        print("   so the missing side is almost certainly the resting one --")
+        print("   which is exactly the side a maker strategy would use.")
+    else:
+        print("\n   If the resting rate is materially below 0.07, maker.py and")
+        print("   maker70.py were both scored too harshly and their")
+        print("   conclusions have to be recomputed before being trusted.")
     return 0
 
 
