@@ -45,7 +45,13 @@ first ten-minute run wrote 1,691 rows, which annualises to a quarter of a
 million a day and would bury the sheet inside a week. Two causes, both
 fixed here.
 
-  A BOOK ROW NEEDS A PRICE OR VOLUME MOVE, not a size move. The size at the
+  A BOOK ROW NEEDS A PRICE MOVE. Not a size move, and -- after the fourth
+  smoke run -- not a volume move either. Volume changes with every print, so
+  keying on it wrote a book row beside every trade row, and the trade row
+  already carries the book as it stood. Volume is still what TRIGGERS the
+  trades call; it just no longer earns a row of its own.
+
+  The older half of this note stands: a size move is not an event. The size at the
   touch churns constantly even in a quiet market -- someone adding and
   pulling ten contracts is not an event -- and keying on it wrote a row per
   market per poll. Sizes are still recorded, and every trade row carries the
@@ -78,7 +84,7 @@ SHEET = "SLOWBOOK"
 SERIES = ["KXHIGHLAX", "KXBTCMINMON", "KXFEDCOMBO", "KXHIGHAUS", "KXWTIW",
           "KXHIGHPHIL", "KXHIGHTBOS", "KXHIGHTATL", "KXBTCMAXMON",
           "KXTRUMPACT"]
-POLL_S = 45
+POLL_S = 60
 PAUSE = 0.06
 FLUSH_EVERY_S = 300
 STRIKE_CAP = 6          # markets kept per series, nearest the money
@@ -214,16 +220,22 @@ def main():
                 # A row only when something MOVED. Quiet is the normal state
                 # of these markets and writing it down repeatedly would bury
                 # the events that matter.
-                # Price or volume, NOT size: size churns every poll.
-                if (p is None or p["bid"] != t["bid"] or p["ask"] != t["ask"]
-                        or p["vol"] != t["vol"]):
-                    out.append([stamp, "book", tk, s,
-                                str(m.get("close_time") or ""),
-                                t["bid"], t["ask"], t["bidsz"], t["asksz"],
-                                t["vol"], t["oi"], "", "", "", ""])
+                moved = (p is None or p["bid"] != t["bid"]
+                         or p["ask"] != t["ask"])
+                traded = (p is not None and p["vol"] != t["vol"])
+                if moved or traded:
+                    # A quote that moved is an event. Volume moving is
+                    # merely how we learn a print happened, and the trade
+                    # rows below carry this same book with it.
+                    if moved:
+                        out.append([stamp, "book", tk, s,
+                                    str(m.get("close_time") or ""),
+                                    t["bid"], t["ask"], t["bidsz"],
+                                    t["asksz"], t["vol"], t["oi"],
+                                    "", "", "", ""])
                     # Volume moving means a print happened; only then is a
                     # trades call worth the round trip.
-                    if p is not None and p["vol"] != t["vol"]:
+                    if traded:
                         # One row per taker side per poll, not per print.
                         agg = {}
                         for tr in trades(tk):
