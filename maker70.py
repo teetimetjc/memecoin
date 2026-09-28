@@ -10,10 +10,28 @@ bid. Resting instead, and being crossed into, fills at 1 minus the YES ASK
 -- better by the whole spread. On a 5c longshot that is about two cents a
 contract, which is the entire margin in question.
 
-WHAT IT DOES NOT CHANGE. Kalshi charges the fee to both sides, so making
-dodges nothing there; the maker study's verdict C came from exactly that --
-0.50c of half-spread against a 1.75c fee at mid prices. The cheap end is
-the only place the arithmetic is even close.
+WHAT THE FEE ACTUALLY IS, MEASURED 2026-09-28. This file used to say the
+fee was charged to both sides, so making dodged nothing. That was an
+assumption, and it was wrong. Splitting 192 real fills by the exchange's own
+is_taker flag:
+
+    is_taker=True    n=174   implied rate 0.07001   (the taker rate, exactly)
+    is_taker=False   n=18    implied rate 0.00000   (resting fills, NO fee)
+
+So the earlier verdict -- 0.50c of half-spread against a 1.75c fee -- was
+scored against a cost the resting side may never have owed, which is the
+whole margin in a 1-2c market.
+
+EIGHTEEN FILLS IS NOT PROOF, and that is why the multiplier is a parameter
+rather than a constant. Three models are printed side by side: 0.00 (what
+was measured), 0.25 (what secondary sources claim, unverifiable from this
+runner -- Kalshi's fee schedule is blocked by the network policy) and 1.00
+(the old assumption). A conclusion that only survives at 0.00 is a
+conclusion about a fee we have seen eighteen times, and must be labelled
+that way.
+
+THE FEE IS ALSO NO LONGER CEILED to the cent. That was measured to overstate
+by a median of 0.38c, which is most of a half-spread here.
 
 TWO FILL MODELS, AND THE GAP BETWEEN THEM IS THE ANSWER.
 
@@ -50,8 +68,13 @@ def _f(v):
         return None
 
 
-def fee_for(c, price):
-    return math.ceil(round(0.07 * c * price * (1 - price), 9) * 100) / 100.0
+# Set per run from the command line. 1.00 reproduces every earlier number.
+MAKER_MULT = 1.0
+
+
+def fee_for(c, price, mult=1.0):
+    """Unrounded, because ceil-to-the-cent overstated by 0.38c a bet."""
+    return mult * 0.07 * c * price * (1 - price)
 
 
 def cse(groups, n):
@@ -110,6 +133,7 @@ def report(bets, label):
 
 
 def main():
+    global MAKER_MULT
     tab = sys.argv[1] if len(sys.argv) > 1 else "M15H"
     sh = P._get_client().open_by_key(P.SPREADSHEET_ID)
     M = load(sh, tab)
@@ -120,7 +144,16 @@ def main():
     print("The taker doing the same trade pays 1 - yes_bid.\n")
 
     bands = ((0.01, 0.05), (0.05, 0.10), (0.10, 0.20), (0.20, 0.35))
-    for model in ("optimistic", "adverse"):
+    for MAKER_MULT in (0.0, 0.25, 1.0):
+      globals()["MAKER_MULT"] = MAKER_MULT
+      print("\n" + "#" * 100)
+      print(f"# RESTING FEE = {MAKER_MULT:.2f} x the taker rate"
+            + ("   <-- MEASURED on 18 real resting fills" if MAKER_MULT == 0
+               else "   <-- claimed by secondary sources, unverified"
+               if MAKER_MULT == 0.25 else
+               "   <-- the old assumption, now known to be wrong"))
+      print("#" * 100)
+      for model in ("optimistic", "adverse"):
         print("=" * 100)
         print(f"{model.upper()} FILLS")
         print("=" * 100)
@@ -144,7 +177,7 @@ def main():
                     c = int(STAKE / cost)
                     if c < 1:
                         continue
-                    f = fee_for(c, cost)
+                    f = fee_for(c, cost, MAKER_MULT)
                     won = not m["yes"]        # NO wins when the market says no
                     bets.append((((c if won else 0) - (c * cost + f)),
                                  m["close"]))
