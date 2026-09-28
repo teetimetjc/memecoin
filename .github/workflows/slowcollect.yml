@@ -1,0 +1,69 @@
+name: Collect Slow Market Books
+
+# Runs slowcollect.py against the ten liquid non-crypto families that
+# exchange.py measured as actually trading, and records the top of book with
+# its SIZES plus every public print with the taker's side.
+#
+# WHY THIS EXISTS. slowbook bounded resting in slow markets at optimistic
+# +$0.117 a bet and adverse -$0.130 -- straddling zero. The gap between
+# those is queue position, and Kalshi's candlestick history does not carry
+# it. It is the one open question left in this project and the only way to
+# answer it is to watch the book forward.
+#
+# HOURLY, FOR THE REASON collect15.yml IS HOURLY. Scheduled workflows are
+# best-effort on shared runners: against a four-hour cron the collector was
+# firing four times a day, tens of minutes late, and capturing 60% of
+# windows. Hourly caps a dropped trigger at one hour, and the concurrency
+# group turns a late one into a queued one that starts the moment the
+# running job ends.
+#
+# Minute 18 keeps it clear of collect15 at :48 and the paper bots at :07, so
+# the three do not burst against the Kalshi API in the same seconds. It has
+# its own concurrency group, so a long run here can never block those.
+#
+# NO PUSHOVER SECRET IS REACHABLE HERE, and that is deliberate for the same
+# reason it is in collect15: nothing being collected has been tested, and an
+# alert naming a market is a prompt to bet one by hand. The guard step below
+# re-checks that the script has no order path rather than assuming it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'How long to collect (600 = short check, 3540 = 59min session)'
+        required: true
+        default: '3540'
+  schedule:
+    - cron: '18 * * * *'
+
+concurrency:
+  group: slowcollect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Confirm no order path is reachable
+        run: |
+          if grep -n "portfolio/orders\|def place_order\|create_order" slowcollect.py ; then
+            echo "::error::slowcollect.py contains an order path - refusing to run"
+            exit 1
+          fi
+          echo "OK: slowcollect.py has no order path"
+
+      - name: Collect
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python slowcollect.py ${{ github.event.inputs.seconds || '3540' }}
