@@ -31,16 +31,31 @@ WHAT IT RECORDS, AND WHY EACH PIECE IS NEEDED.
   optimistic case. The point of collecting both streams is to measure the
   MIX rather than assume it.
 
-WRITES CHANGE ONLY. Slow markets are quiet -- that is the entire reason we
-are here -- so a row every poll would be tens of thousands of identical
-lines a day. A book row is written only when the touch or its size moves,
-and a trade row only for prints not already seen.
+WRITES CHANGE ONLY, AND THE DEFINITION OF "CHANGE" IS DELIBERATE. The
+first ten-minute run wrote 1,691 rows, which annualises to a quarter of a
+million a day and would bury the sheet inside a week. Two causes, both
+fixed here.
+
+  A BOOK ROW NEEDS A PRICE OR VOLUME MOVE, not a size move. The size at the
+  touch churns constantly even in a quiet market -- someone adding and
+  pulling ten contracts is not an event -- and keying on it wrote a row per
+  market per poll. Sizes are still recorded, and every trade row carries the
+  book AS IT STOOD when the print landed, which is where the queue number
+  actually matters.
+
+  A TRADE MUST BE NEW TO THIS WORLD, not merely new to this process. The
+  trades endpoint returns the last fifty prints whatever their age, and the
+  seen-set is per-run, so each hourly run would re-ingest the same history:
+  eighty markets times fifty prints is four thousand duplicate rows an hour,
+  every hour, of trades already recorded. Prints older than the run start
+  are now skipped.
 
 NO ORDERS. This module contains no order path, places nothing and resolves
 nothing about whether to trade. It only measures what a resting order would
 have met.
 """
 
+import calendar
 import sys
 import time
 
@@ -68,6 +83,21 @@ HEADERS = ["UTC", "Kind", "Ticker", "Series", "Close Time",
 
 def _f(v):
     return C._f(v)
+
+
+def ts_iso(v):
+    """Epoch seconds from a Kalshi timestamp, or None.
+
+    collect15.close_ts takes a market dict, not a string, so reusing it here
+    would silently return None for every print and defeat the age filter.
+    """
+    s = str(v or "")
+    if len(s) < 19:
+        return None
+    try:
+        return calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S"))
+    except Exception:
+        return None
 
 
 def near_money(mk):
@@ -129,6 +159,7 @@ def main():
     seconds = int(sys.argv[1]) if len(sys.argv) > 1 else 3540
     ws = sheet()
     deadline = time.time() + seconds
+    started = time.time() - 120     # small grace for clock skew
     prev = {}           # ticker -> last written touch
     seen_trades = set()  # trade ids already recorded
     out = []
@@ -153,9 +184,8 @@ def main():
                 # A row only when something MOVED. Quiet is the normal state
                 # of these markets and writing it down repeatedly would bury
                 # the events that matter.
+                # Price or volume, NOT size: size churns every poll.
                 if (p is None or p["bid"] != t["bid"] or p["ask"] != t["ask"]
-                        or p["bidsz"] != t["bidsz"]
-                        or p["asksz"] != t["asksz"]
                         or p["vol"] != t["vol"]):
                     out.append([stamp, "book", tk, s,
                                 str(m.get("close_time") or ""),
@@ -167,6 +197,13 @@ def main():
                         for tr in trades(tk):
                             tid = str(tr.get("trade_id") or tr.get("id") or "")
                             if not tid or tid in seen_trades:
+                                continue
+                            # Older than this run means an earlier run has
+                            # already written it; the seen-set cannot know
+                            # that because it dies with the process.
+                            ct = ts_iso(tr.get("created_time"))
+                            if ct is not None and ct < started:
+                                seen_trades.add(tid)
                                 continue
                             seen_trades.add(tid)
                             px = _f(tr.get("yes_price_dollars"))
