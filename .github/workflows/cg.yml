@@ -74,13 +74,19 @@ name: CG Experiments (read-only)
 # are read out of M15H after settlement, which is how an earlier +$23/bet
 # pocket passed every check before turning out to be lookahead.
 #
+# exchange is the first case that looks anywhere but 15-minute crypto. It
+# scores every other series on the two separate questions -- is the price
+# wrong, and is the spread wide enough to be paid for resting in it -- with
+# the noise floor beside every number and volume beside every row. `series`
+# narrows it to named tickers; blank spreads the sample across categories.
+#
 # Read-only otherwise -- no order path is reachable from this workflow.
 
 on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'dip3 | multi | dip2 | dip | shift-test | ind-split | ledger | fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
+        description: 'exchange | dip3 | multi | dip2 | dip | shift-test | ind-split | ledger | fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
         default: 'calib'
       series:
@@ -130,6 +136,7 @@ jobs:
             dip2) python dip2.py ;;
             multi) python multi.py ;;
             dip3) python dip3.py ;;
+            exchange) python exchange.py $SERIES ;;
             calib) python calib_survey.py $SERIES ;;
             cg1) python cg1.py ;;
             cg7) python cg7.py ;;
