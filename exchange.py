@@ -51,7 +51,6 @@ import calib_survey as CS
 # Sampling. Breadth first: it is better to know that twelve families exist
 # and roughly what each looks like than to measure one of them beautifully.
 MKT_PER_SERIES = 22
-MAX_SERIES = 44
 BUDGET_S = 2100
 PAUSE = 0.06
 MIN_QUOTES = 12           # usable mid-life quotes before a row is ranked
@@ -129,7 +128,7 @@ def scout(series_ticker, freq, t0):
         c = B.ts(m.get("close_time"))
         if o is None or c is None:
             continue
-        vols.append(B._f(m.get("volume")) or 0.0)
+        vols.append(_vol(m))
         tried += 1
         q = mid_life_quote(series_ticker, m["ticker"], o, c)
         time.sleep(PAUSE)
@@ -170,37 +169,77 @@ def inventory():
     return s
 
 
-def choose(series, only):
+def _vol(m):
+    """Traded volume. volume_fp, NOT volume.
+
+    The sixth time this migration has bitten this project: orderbook ->
+    orderbook_fp, last_price -> last_price_dollars, mean -> mean_dollars,
+    count -> count_fp, and now volume -> volume_fp. Reading the old spelling
+    returns None for every market on the exchange, which looks exactly like
+    a venue where nothing trades -- the first run of this script ranked 0
+    volume for a series quoting a 1c spread on a 59% two-sided book, and
+    reported "no series had both a two-sided book and any volume".
+    """
+    v = B._f(m.get("volume_fp"))
+    return v if v is not None else (B._f(m.get("volume")) or 0.0)
+
+
+# Frequencies worth scouting. one_off and custom are the exchange's novelty
+# long tail -- "will Bubeck leave", "GPT5 released" -- and the first run
+# wasted 37 of 44 slots on them because they sort first alphabetically. A
+# recurring market is also the only kind that can be traded repeatedly,
+# which is the point of looking for an edge at all.
+FREQ_OK = ("hourly", "daily", "weekly", "monthly", "quarterly")
+PRESCREEN = 320           # series given one cheap volume call
+SCOUT_TOP = 20            # of those, how many get the candlestick pass
+
+
+def prescreen(series, only):
+    """Rank candidate series by what actually trades, one cheap call each.
+
+    Liquidity first is not a refinement, it is the whole selection: a series
+    nobody trades will look gloriously mispriced and cannot be traded for a
+    cent, and there are ~3,900 series of which the overwhelming majority are
+    dormant.
+    """
     if only:
         want = {t.upper() for t in only}
-        return [s for s in series if str(s.get("ticker", "")).upper() in want]
-    out = []
-    for s in series:
-        tk = str(s.get("ticker") or "").upper()
-        fr = str(s.get("frequency") or "").lower()
-        # The 15-minute crypto families are done. Everything else -- including
-        # DAILY crypto, which is a different animal -- is in scope.
-        if "15m" in tk.lower() or "15" == fr.strip():
+        cand = [s for s in series if str(s.get("ticker", "")).upper() in want]
+    else:
+        cand = []
+        for s in series:
+            tk = str(s.get("ticker") or "")
+            fr = str(s.get("frequency") or "").lower().strip()
+            if "15m" in tk.lower():       # the thirteen dead strategies
+                continue
+            if fr not in FREQ_OK:
+                continue
+            cand.append(s)
+        cand = cand[:PRESCREEN]
+    print(f"\nprescreening {len(cand)} recurring series for volume "
+          f"(one call each) ...", flush=True)
+    live = []
+    for s in cand:
+        tk = str(s.get("ticker") or "")
+        d, err = B.get("/trade-api/v2/markets", series_ticker=tk,
+                       status="settled", limit=20)
+        time.sleep(PAUSE)
+        mk = (d or {}).get("markets") or []
+        if not mk:
             continue
-        out.append(s)
-    # Spread the sample across categories rather than taking 44 weather
-    # series because they happen to sort first.
-    bycat = collections.defaultdict(list)
-    for s in out:
-        bycat[str(s.get("category") or "?")].append(s)
-    picked, i = [], 0
-    while len(picked) < MAX_SERIES:
-        added = False
-        for cat in sorted(bycat):
-            if i < len(bycat[cat]):
-                picked.append(bycat[cat][i])
-                added = True
-                if len(picked) >= MAX_SERIES:
-                    break
-        if not added:
-            break
-        i += 1
-    return picked
+        vols = [_vol(m) for m in mk]
+        med = st.median(vols)
+        if med <= 0 and max(vols) <= 0:
+            continue
+        live.append((med, s))
+    live.sort(key=lambda x: -x[0])
+    print(f"  {len(live)} series have settled markets that actually traded")
+    for med, s in live[:SCOUT_TOP]:
+        print(f"    {str(s.get('ticker')):<20} "
+              f"{str(s.get('frequency')):<10} median volume {med:>9.0f}  "
+              f"{str(s.get('category') or '')[:22]}")
+    return [s for _, s in live[:SCOUT_TOP]] if not only else \
+           [s for _, s in live]
 
 
 def main():
@@ -212,7 +251,7 @@ def main():
     series = inventory()
     if not series:
         return 1
-    targets = choose(series, only)
+    targets = prescreen(series, only)
     print(f"\nscouting {len(targets)} series, {MKT_PER_SERIES} settled "
           f"markets each, midpoint-of-life quotes only\n")
     print(f"  {'series':<18} {'freq':<10} {'mkts':>5} {'medvol':>8} "
