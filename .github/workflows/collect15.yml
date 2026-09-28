@@ -13,9 +13,48 @@ name: Collect 15-Minute Markets
 # been tested yet. It also places no orders -- the script contains no order
 # path at all, which the guard step re-checks rather than assumes.
 #
-# 3h45m ON A FOUR HOUR CRON, offset from the paper bots so the two do not
-# start in the same minute. They have separate concurrency groups and run
-# in parallel; the offset only keeps their API bursts apart.
+# 55 MINUTES ON AN HOURLY CRON, AND THE REASON IS NOT THE SCRIPT.
+#
+# This used to be 3h45m on a four-hour cron, which should have covered 94%
+# of windows. It covered 60%. The collector was not at fault: of 1,773 rows
+# collected over two days, 1,663 carried all six offsets. When it is awake
+# it catches everything.
+#
+# GitHub was dropping and delaying the trigger. Against a cron of 00:22,
+# 04:22, 08:22, 12:22, 16:22, 20:22, the runs that actually fired were:
+#
+#   Sep 26   05:09  13:13  19:15  22:58
+#   Sep 27   05:26  14:05  19:48  23:08
+#
+# Four a day instead of six, none within 45 minutes of its slot. Scheduled
+# workflows are best-effort on shared runners and are dropped under load.
+# Run 13 ended 08:54 and the next did not start until 13:13, which is
+# precisely the dark block 09:00-13:00 in the collected data.
+#
+# So the exposure to a single missed trigger is what had to change, not the
+# duration. Hourly means a dropped trigger costs ONE hour instead of four,
+# and the concurrency group below means a late trigger simply queues behind
+# the run in progress and starts the moment it ends -- the schedule
+# self-heals instead of leaving a hole. Minute 37 is deliberate: the top of
+# the hour is when the fleet is busiest and triggers are likeliest to be
+# dropped, which is the failure being fixed.
+#
+# THE HANDOFF IS ALIGNED, because where the seam falls decides what it
+# costs. Markets close at :00, :15, :30 and :45, and each is tracked from
+# fourteen minutes before. A run that stops just BEFORE a close throws away
+# a market it has followed for thirteen minutes and never writes it -- the
+# worst case. A run that stops just AFTER one has already recorded it,
+# waited out the 120-second settlement grace and flushed it.
+#
+# So the run starts at :48 and collects 59 minutes, ending about :47: past
+# the :45 close and its settlement, before the next market's T-14 at :46.
+# The single window that straddles the seam loses only its T-14 sample and
+# is picked up by the next run at T-12 onward, so it is a row with five
+# offsets instead of six rather than a row that does not exist.
+#
+# Alignment is a bonus, not the fix. GitHub's delays will drift the seam,
+# and the concurrency group is what makes that harmless: a late trigger
+# queues behind the running job and starts the moment it ends.
 #
 # THE SHORT RUN MATTERS. `seconds: 600` collects roughly one window and is
 # the right first move after any change to the script. Four of this
@@ -28,11 +67,11 @@ on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: 'How long to collect (600 = one-window check, 13500 = 3h45m session)'
+        description: 'How long to collect (600 = one-window check, 3540 = 59min session)'
         required: true
-        default: '13500'
+        default: '3540'
   schedule:
-    - cron: '22 */4 * * *'
+    - cron: '48 * * * *'
 
 concurrency:
   group: collect15
@@ -41,7 +80,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,4 +103,4 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
-        run: python collect15.py ${{ github.event.inputs.seconds || '13500' }}
+        run: python collect15.py ${{ github.event.inputs.seconds || '3540' }}
