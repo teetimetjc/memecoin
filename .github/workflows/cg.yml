@@ -68,13 +68,19 @@ name: CG Experiments (read-only)
 # Running it early is safe -- it reports NOT ENOUGH DATA YET rather than a
 # number, and that is not a failure.
 #
+# dip3 takes dip2's best configuration as FIXED and only splits its trades
+# on things knowable at entry, to see whether the 40% that rebounded differ
+# from the 60% that did not. Volume and OpenInt are absent by design: both
+# are read out of M15H after settlement, which is how an earlier +$23/bet
+# pocket passed every check before turning out to be lookahead.
+#
 # Read-only otherwise -- no order path is reachable from this workflow.
 
 on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'multi | dip2 | dip | shift-test | ind-split | ledger | fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
+        description: 'dip3 | multi | dip2 | dip | shift-test | ind-split | ledger | fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
         default: 'calib'
       series:
@@ -123,6 +129,7 @@ jobs:
             dip) python dip.py ${SERIES:-M15H} ;;
             dip2) python dip2.py ;;
             multi) python multi.py ;;
+            dip3) python dip3.py ;;
             calib) python calib_survey.py $SERIES ;;
             cg1) python cg1.py ;;
             cg7) python cg7.py ;;
