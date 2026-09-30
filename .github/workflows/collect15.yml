@@ -13,15 +13,32 @@ name: Collect 15-Minute Markets
 # been tested yet. It also places no orders -- the script contains no order
 # path at all, which the guard step re-checks rather than assumes.
 #
-# 55 MINUTES ON AN HOURLY CRON, AND THE REASON IS NOT THE SCRIPT.
+# 3h45m ON AN HOURLY CRON -- BOTH NUMBERS, AND THE COMBINATION IS THE POINT.
+#
+# The first attempt at this fix shortened the run to 59 minutes and made
+# coverage WORSE: 60% became 17%. The reasoning was that hourly triggers
+# would cover for dropped ones. They did not, because GitHub drops them at
+# the same rate whatever the interval -- against 24 hourly slots on Sep 29 it
+# fired FOUR times: 02:19, 09:05, 16:09, 21:04. Four runs of 59 minutes is
+# four hours of collection a day. Four runs of 3h45m is fifteen.
+#
+# So the duration goes back to 3h45m and the hourly cron STAYS. The
+# concurrency group is what makes the pair work: a trigger arriving during a
+# run queues instead of vanishing, and starts the moment that run ends. With
+# a trigger offered every hour there is nearly always one pending, so the
+# handoff happens immediately rather than waiting for a slot GitHub might
+# skip. Long runs give the coverage; frequent triggers make the next one
+# certain.
+#
+# THE ORIGINAL DIAGNOSIS STILL STANDS, and it was never the script.
 #
 # This used to be 3h45m on a four-hour cron, which should have covered 94%
 # of windows. It covered 60%. The collector was not at fault: of 1,773 rows
 # collected over two days, 1,663 carried all six offsets. When it is awake
 # it catches everything.
 #
-# GitHub was dropping and delaying the trigger. Against a cron of 00:22,
-# 04:22, 08:22, 12:22, 16:22, 20:22, the runs that actually fired were:
+# Against a cron of 00:22, 04:22, 08:22, 12:22, 16:22, 20:22, the runs that
+# actually fired were:
 #
 #   Sep 26   05:09  13:13  19:15  22:58
 #   Sep 27   05:26  14:05  19:48  23:08
@@ -31,30 +48,15 @@ name: Collect 15-Minute Markets
 # Run 13 ended 08:54 and the next did not start until 13:13, which is
 # precisely the dark block 09:00-13:00 in the collected data.
 #
-# So the exposure to a single missed trigger is what had to change, not the
-# duration. Hourly means a dropped trigger costs ONE hour instead of four,
-# and the concurrency group below means a late trigger simply queues behind
-# the run in progress and starts the moment it ends -- the schedule
-# self-heals instead of leaving a hole. Minute 37 is deliberate: the top of
-# the hour is when the fleet is busiest and triggers are likeliest to be
-# dropped, which is the failure being fixed.
+# Minute 48 is deliberate: the top of the hour is when the fleet is busiest
+# and a trigger is likeliest to be dropped.
 #
-# THE HANDOFF IS ALIGNED, because where the seam falls decides what it
-# costs. Markets close at :00, :15, :30 and :45, and each is tracked from
-# fourteen minutes before. A run that stops just BEFORE a close throws away
-# a market it has followed for thirteen minutes and never writes it -- the
-# worst case. A run that stops just AFTER one has already recorded it,
-# waited out the 120-second settlement grace and flushed it.
-#
-# So the run starts at :48 and collects 59 minutes, ending about :47: past
-# the :45 close and its settlement, before the next market's T-14 at :46.
-# The single window that straddles the seam loses only its T-14 sample and
-# is picked up by the next run at T-12 onward, so it is a row with five
-# offsets instead of six rather than a row that does not exist.
-#
-# Alignment is a bonus, not the fix. GitHub's delays will drift the seam,
-# and the concurrency group is what makes that harmless: a late trigger
-# queues behind the running job and starts the moment it ends.
+# SEAM ALIGNMENT IS ABANDONED ON PURPOSE. 3h45m from a start GitHub chooses
+# lands the seam wherever it likes, and the previous version's careful
+# arithmetic about ending just after a :45 close bought one window an hour
+# while the schedule was losing eleven. One window at each handoff loses its
+# T-14 sample and is picked up by the next run from T-12, so it is a row
+# with five offsets rather than a row that does not exist.
 #
 # THE SHORT RUN MATTERS. `seconds: 600` collects roughly one window and is
 # the right first move after any change to the script. Four of this
@@ -67,9 +69,9 @@ on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: 'How long to collect (600 = one-window check, 3540 = 59min session)'
+        description: 'How long to collect (600 = one-window check, 13500 = 3h45m session)'
         required: true
-        default: '3540'
+        default: '13500'
   schedule:
     - cron: '48 * * * *'
 
@@ -80,7 +82,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
         with:
@@ -103,4 +105,4 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
-        run: python collect15.py ${{ github.event.inputs.seconds || '3540' }}
+        run: python collect15.py ${{ github.event.inputs.seconds || '13500' }}

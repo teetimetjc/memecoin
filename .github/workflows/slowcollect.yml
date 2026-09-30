@@ -10,12 +10,14 @@ name: Collect Slow Market Books
 # it. It is the one open question left in this project and the only way to
 # answer it is to watch the book forward.
 #
-# HOURLY, FOR THE REASON collect15.yml IS HOURLY. Scheduled workflows are
-# best-effort on shared runners: against a four-hour cron the collector was
-# firing four times a day, tens of minutes late, and capturing 60% of
-# windows. Hourly caps a dropped trigger at one hour, and the concurrency
-# group turns a late one into a queued one that starts the moment the
-# running job ends.
+# 3h45m ON AN HOURLY CRON. Scheduled workflows are best-effort on shared
+# runners and GitHub fires roughly four to six times a day whatever interval
+# is asked for -- shortening the run to fit the interval just shortens the
+# total, which cost collect15 two thirds of its coverage before it was
+# corrected. So the session is long and the trigger is hourly: the
+# concurrency group queues a trigger that arrives mid-run and starts it the
+# moment that run ends, so the next session is certain rather than dependent
+# on a slot GitHub may skip.
 #
 # Minute 18 keeps it clear of collect15 at :48 and the paper bots at :07, so
 # the three do not burst against the Kalshi API in the same seconds. It has
@@ -30,9 +32,9 @@ on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: 'How long to collect (600 = short check, 3540 = 59min session)'
+        description: 'How long to collect (600 = short check, 13500 = 3h45m session)'
         required: true
-        default: '3540'
+        default: '13500'
   schedule:
     - cron: '18 * * * *'
 
@@ -43,7 +45,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,4 +68,4 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
-        run: python slowcollect.py ${{ github.event.inputs.seconds || '3540' }}
+        run: python slowcollect.py ${{ github.event.inputs.seconds || '13500' }}

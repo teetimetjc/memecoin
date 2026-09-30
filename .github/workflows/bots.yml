@@ -32,7 +32,16 @@ name: Paper Bots (EdgeHunter + Kapelame)
 # headers. Tracking a default branch would mean whatever the owners push
 # next runs here, with credentials, unreviewed.
 #
-# 1h55m ON A TWO HOUR CRON, for the same reason collect15.yml went hourly:
+# 3h45m ON AN HOURLY CRON -- corrected. The first version of this shortened
+# the session to 1h55m on a two-hour cron on the theory that more trigger
+# slots would cover dropped ones. Measured on collect15, which got the same
+# treatment, that made things three times worse: GitHub fired four times
+# against twenty-four hourly slots, so shortening the run simply shortened
+# the total. Long sessions with an hourly trigger is the combination that
+# works -- the concurrency group queues a trigger that arrives mid-run and
+# starts it the instant the run ends.
+#
+# The original diagnosis, for the record:
 # the four-hour trigger was not firing. Against slots of 07:07, 11:07,
 # 15:07, 19:07, 23:07 what actually ran on Sep 27 was 05:09, 13:51, 19:43
 # and 22:57 -- four a day instead of six, each tens of minutes late.
@@ -41,13 +50,11 @@ name: Paper Bots (EdgeHunter + Kapelame)
 # trigger and let the concurrency group queue a late one behind the job in
 # progress.
 #
-# WHY TWO HOURS HERE AND ONE HOUR THERE. Every restart re-clones both bots
-# and rebuilds a virtualenv, xgboost included, before a single price
-# arrives, and each bot then needs some minutes of feed before it has the
-# history to produce a signal at all. The collector pays none of that: it
-# is useful in its first fifteen seconds. Paying that setup twelve times a
-# day instead of twenty-four keeps the warmup tax near 3% while still
-# cutting a dropped trigger's cost from four hours to two.
+# THE WARMUP ARGUMENT NOW CUTS THE OTHER WAY. Every restart re-clones both
+# bots and rebuilds a virtualenv, xgboost included, before a single price
+# arrives, and each bot then needs minutes of feed before it can emit a
+# signal. That was an argument for fewer restarts, and with long sessions it
+# is satisfied: roughly six starts a day rather than twelve or twenty-four.
 #
 # The older tension is unchanged and still respected: too long and the
 # schedule owns the concurrency group continuously, which is how a dispatch
@@ -58,15 +65,15 @@ on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: 'How long each bot runs (600 = 10min check, 6900 = 1h55m session)'
+        description: 'How long each bot runs (600 = 10min check, 13500 = 3h45m session)'
         required: true
-        default: '6900'
+        default: '13500'
       alerts:
         description: 'Pushover on each paper settlement (1 = on, 0 = off)'
         required: false
         default: '1'
   schedule:
-    - cron: '7 */2 * * *'
+    - cron: '7 * * * *'
 
 concurrency:
   group: paper-bots
@@ -79,7 +86,7 @@ env:
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 125
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -174,7 +181,7 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BOT_ALERTS: ${{ github.event.inputs.alerts || '1' }}
         run: |
-          python botrun.py edgehunter ${{ github.event.inputs.seconds || '6900' }}
+          python botrun.py edgehunter ${{ github.event.inputs.seconds || '13500' }}
 
       - name: Run Kapelame (public data, no credentials) and log to the sheet
         if: matrix.bot == 'kapelame'
@@ -184,4 +191,4 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BOT_ALERTS: ${{ github.event.inputs.alerts || '1' }}
         run: |
-          python botrun.py kapelame ${{ github.event.inputs.seconds || '6900' }}
+          python botrun.py kapelame ${{ github.event.inputs.seconds || '13500' }}
