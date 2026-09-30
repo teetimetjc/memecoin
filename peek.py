@@ -10,9 +10,13 @@ WHAT IT PRINTS. Per tab: rows, the column count, and the first and last
 timestamp it can find, which is what answers "is this still collecting". Then
 three specifics worth a line each:
 
-  M15 -- close-times collected per day, which is the coverage number that
-  sent the collector hourly, and how many of them fall after the frozen
-  spec's freeze date, which is the retest's progress toward 400.
+  M15 -- close-times collected per day, and THE LONGEST DARK GAP in each,
+  which is the number that actually diagnoses the schedule. A daily
+  percentage hides the shape: 60% spread evenly is a collector with a slow
+  poll, while 60% in two blocks is a collector that was switched off for
+  nine hours. The failure here has always been the second kind, and the gap
+  is what shows it. Also how many close-times fall after the frozen spec's
+  freeze date, which is the retest's progress toward 400.
 
   SLOWBOOK and its rotations -- rows, book versus trade split, and prints per
   hour. The fill-rate study lives here and its first 3,247 rows were written
@@ -88,10 +92,35 @@ def main():
             print("\n" + "=" * 92)
             print("M15 COVERAGE  (96 fifteen-minute close-times exist per day)")
             print("=" * 92)
-            for d in sorted(byday)[-7:]:
-                n = len(byday[d])
+            print("  A percentage hides the shape. The GAP is the schedule:")
+            print("  evenly spread means a slow collector, one long hole means")
+            print("  a job that never started. Target: 85%+, no gap over 1h.\n")
+            days = sorted(byday)[-7:]
+            for d in days:
+                got = sorted(byday[d])
+                n = len(got)
+                # Longest run of consecutive MISSING quarter-hours.
+                mins = {int(t[11:13]) * 60 + int(t[14:16]) for t in got
+                        if len(t) >= 16}
+                worst = run = 0
+                for q in range(0, 1440, 15):
+                    if q in mins:
+                        run = 0
+                    else:
+                        run += 15
+                        worst = max(worst, run)
+                verdict = ("OK" if n >= 82 and worst <= 60
+                           else "DARK" if worst > 120
+                           else "thin")
                 print(f"  {d}   {n:>3}/96  {100*n/96:>3.0f}%  "
-                      f"{'#' * int(30 * n / 96)}")
+                      f"longest gap {worst//60}h{worst%60:02d}m   "
+                      f"{verdict:<4} {'#' * int(30 * n / 96)}")
+            recent = [d for d in days[:-1]][-2:]    # skip today, part-done
+            if recent:
+                ok = all(len(byday[d]) >= 82 for d in recent)
+                print(f"\n  SCHEDULE VERDICT on the last {len(recent)} full "
+                      f"days: {'PASS' if ok else 'FAIL'} "
+                      f"(need 82+/96 on each)")
             post = {str(r[ct]) for r in body
                     if ct < len(r) and str(r[ct]) > FREEZE
                     and (res is None or (res < len(r)
