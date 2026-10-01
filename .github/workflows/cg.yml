@@ -100,6 +100,10 @@ on:
         description: 'calib only: space-separated series tickers, blank for a sample'
         required: false
         default: ''
+      since:
+        description: 'peek only: count coverage from this UTC time (2026-09-30T18:36:00Z)'
+        required: false
+        default: ''
 
 jobs:
   run:
@@ -121,6 +125,9 @@ jobs:
           # Through the environment, not interpolated into the script: the
           # experiment names are a fixed set, but `series` is free text.
           SERIES: ${{ inputs.series }}
+          # peek only: measure coverage from a timestamp rather than by
+          # whole days, for judging a change made less than a day ago.
+          SINCE: ${{ inputs.since }}
         run: |
           case "${{ inputs.experiment }}" in
             retest) python retest.py ;;
