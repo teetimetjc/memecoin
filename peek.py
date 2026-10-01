@@ -192,11 +192,22 @@ def main():
         print("SLOWBOOK -- the fill-rate study")
         print("=" * 92)
         tot = good = books = trades = 0
-        prints = 0.0
+        prints = contracts = 0.0
         for t in sb:
             hdr, body = keep[t]
             h = {k: i for i, k in enumerate(hdr)}
-            ki, ui, pi = h.get("Kind"), h.get("UTC"), h.get("Prints")
+            ki, ui = h.get("Kind"), h.get("UTC")
+            # The tab was created before these columns were renamed, so its
+            # header still says "Trade ID" where the data says Prints. The
+            # values are in the right POSITION; only the label is stale, and
+            # a name lookup silently returned None -- which is why the last
+            # status page said "prints aggregated 0" beside 7,196 trade rows.
+            pi = h.get("Prints")
+            if pi is None:
+                pi = h.get("Trade ID", 14 if len(hdr) > 14 else None)
+            ci = h.get("Contracts")
+            if ci is None:
+                ci = h.get("Trade Count", 12 if len(hdr) > 12 else None)
             for r in body:
                 tot += 1
                 # Rows from before the age filter worked are re-ingested
@@ -213,13 +224,22 @@ def main():
                             prints += float(r[pi] or 0)
                         except ValueError:
                             pass
+                    if ci is not None and ci < len(r):
+                        try:
+                            contracts += float(r[ci] or 0)
+                        except ValueError:
+                            pass
                 elif kind == "book":
                     books += 1
         print(f"  tabs: {', '.join(sb)}")
         print(f"  rows {tot}   usable {good}   "
               f"(dropped {tot-good} written before the age filter worked)")
-        print(f"  book rows {books}   trade rows {trades}   "
-              f"prints aggregated {prints:.0f}")
+        print(f"  book rows {books}   trade rows {trades}")
+        print(f"  prints aggregated {prints:.0f}   contracts traded "
+              f"{contracts:.0f}")
+        if trades:
+            print(f"  average {prints/trades:.1f} prints and "
+                  f"{contracts/trades:.1f} contracts per trade row")
         if trades == 0:
             print("  NO TRADE ROWS YET -- either the study just started or"
                   " the trades path is broken; check a run's log.")
