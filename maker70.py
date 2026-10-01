@@ -107,7 +107,15 @@ def load(sh, name):
         if len(path) < 2:
             continue
         out.append(dict(close=str(c("Close Time")), ser=str(c("Series")),
-                        yes=(res == "yes"), path=path))
+                        yes=(res == "yes"), path=path,
+                        # SERIES-LEVEL DESCRIPTION ONLY. In M15H this field
+                        # is read at backfill time, AFTER settlement, so
+                        # selecting individual bets on it is lookahead --
+                        # exactly how a +$23/bet pocket passed a t-test, a
+                        # day check, a shuffle AND a holdout before being
+                        # thrown out. It is used here to say how liquid a
+                        # SERIES is, never to choose which bets to take.
+                        vol=_f(c("Volume")) or 0.0))
     return out
 
 
@@ -130,6 +138,66 @@ def report(bets, label):
         flag = "  <== POSITIVE" if (t > 2.0 and minus2 > 0) else "  (positive, fails a check)"
     print(f"  {label:<34} n={n:<6} ${m:>+6.2f} +/-{se:>4.2f} t={t:>+5.1f} "
           f"days+ {share:>3.0f}% total {sum(v for v, _ in bets):>+9.0f}{flag}")
+
+
+def by_series(M, bands, model, mult):
+    """Per-series results, with liquidity beside them.
+
+    Pooling twenty series hides the only thing that matters when new ones
+    are added: a 15-minute palladium market that trades four contracts a
+    day can look wonderful and cannot be traded for a cent. Volume is a
+    property of the SERIES here, not a per-bet feature.
+    """
+    bysers = collections.defaultdict(list)
+    for m in M:
+        bysers[m["ser"]].append(m)
+    print(f"\n  PER SERIES  ({model} fills, resting fee "
+          f"{mult:.2f}x)")
+    print(f"    {'series':<18} {'mkts':>6} {'medvol':>8} {'bets':>6} "
+          f"{'$/bet':>8} {'t':>6}")
+    print("    " + "-" * 60)
+    for ser in sorted(bysers, key=lambda k: -len(bysers[k])):
+        items = bysers[ser]
+        bets = []
+        for m in items:
+            for i, off in enumerate(OFFSETS[:-1]):
+                q = m["path"].get(off)
+                if not q:
+                    continue
+                b, a = q
+                if not (0.01 <= a < 0.35):
+                    continue
+                later = [m["path"][o] for o in OFFSETS[i + 1:]
+                         if o in m["path"]]
+                if model == "adverse" and not any(lb >= a for lb, la in later):
+                    continue
+                cost = 1.0 - a
+                c = int(STAKE / cost)
+                if c < 1:
+                    continue
+                f = fee_for(c, cost, mult)
+                won = not m["yes"]
+                bets.append((((c if won else 0) - (c * cost + f)), m["close"]))
+                break
+        vols = sorted(x["vol"] for x in items)
+        medvol = vols[len(vols) // 2] if vols else 0.0
+        if len(bets) < 40:
+            print(f"    {ser:<18} {len(items):>6} {medvol:>8.0f} "
+                  f"{len(bets):>6}   too few")
+            continue
+        g = collections.defaultdict(list)
+        for v, ct in bets:
+            g[ct].append(v)
+        n = len(bets)
+        mean = sum(v for v, _ in bets) / n
+        se = cse(g, n)
+        t = (mean / se) if se else 0.0
+        flag = ""
+        if mean > 0 and t > 2.0:
+            flag = "  <== positive" + ("" if medvol > 0 else
+                                       " BUT ZERO VOLUME -- untradeable")
+        print(f"    {ser:<18} {len(items):>6} {medvol:>8.0f} {n:>6} "
+              f"{mean:>+8.3f} {t:>+6.1f}{flag}")
 
 
 def main():
@@ -207,6 +275,14 @@ def main():
                 bets.append((((c if won else 0) - (c * cost + f)), m["close"]))
                 break
         report(bets, f"sell yes at {lo:.2f}-{hi:.2f}")
+
+    # The per-series view, on the model that matters and the fee that was
+    # measured. Twelve series were added to M15H having never been analysed
+    # by anything, so a pooled number would average them into the eight
+    # already known to fail.
+    globals()["MAKER_MULT"] = 0.0
+    by_series(M, bands, "adverse", 0.0)
+    by_series(M, bands, "optimistic", 0.0)
 
     print("\n" + "=" * 100)
     print("If OPTIMISTIC loses, the idea is dead -- it is an upper bound that")
