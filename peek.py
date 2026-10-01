@@ -28,9 +28,12 @@ three specifics worth a line each:
 Reads only: it writes nothing, to any tab.
 """
 
+import calendar
 import collections
+import os
 import re
 import sys
+import time
 
 import predictor as P
 
@@ -96,31 +99,72 @@ def main():
             print("  evenly spread means a slow collector, one long hole means")
             print("  a job that never started. Target: 85%+, no gap over 1h.\n")
             days = sorted(byday)[-7:]
+            today = time.strftime("%Y-%m-%d", time.gmtime())
+            now_q = (time.gmtime().tm_hour * 60 + time.gmtime().tm_min)
             for d in days:
                 got = sorted(byday[d])
                 n = len(got)
-                # Longest run of consecutive MISSING quarter-hours.
+                # Only quarter-hours that have HAPPENED count. Scanning a
+                # part-finished day to midnight reported "longest gap
+                # 23h15m" at 00:41, which is not a collector failing, it is
+                # tomorrow not having happened yet.
+                end = now_q if d == today else 1440
+                poss = max(1, len(range(0, end, 15)))
                 mins = {int(t[11:13]) * 60 + int(t[14:16]) for t in got
                         if len(t) >= 16}
                 worst = run = 0
-                for q in range(0, 1440, 15):
+                for q in range(0, end, 15):
                     if q in mins:
                         run = 0
                     else:
                         run += 15
                         worst = max(worst, run)
-                verdict = ("OK" if n >= 82 and worst <= 60
-                           else "DARK" if worst > 120
-                           else "thin")
-                print(f"  {d}   {n:>3}/96  {100*n/96:>3.0f}%  "
+                pct = 100.0 * n / poss
+                verdict = ("OK" if pct >= 85 and worst <= 60
+                           else "DARK" if worst > 120 else "thin")
+                part = "  (partial day)" if d == today else ""
+                print(f"  {d}   {n:>3}/{poss:<3} {pct:>3.0f}%  "
                       f"longest gap {worst//60}h{worst%60:02d}m   "
-                      f"{verdict:<4} {'#' * int(30 * n / 96)}")
-            recent = [d for d in days[:-1]][-2:]    # skip today, part-done
+                      f"{verdict:<4} {'#' * int(30 * n / poss)}{part}")
+            recent = [d for d in days if d != today][-2:]
             if recent:
                 ok = all(len(byday[d]) >= 82 for d in recent)
                 print(f"\n  SCHEDULE VERDICT on the last {len(recent)} full "
                       f"days: {'PASS' if ok else 'FAIL'} "
                       f"(need 82+/96 on each)")
+
+            # A schedule change cannot be judged by whole days until a whole
+            # day has passed under it. SINCE measures only the windows that
+            # closed after the change went live, which is available at once.
+            since = os.environ.get("SINCE", "").strip()
+            if since:
+                try:
+                    cut = calendar.timegm(time.strptime(since[:19],
+                                                        "%Y-%m-%dT%H:%M:%S"))
+                except Exception:
+                    print(f"\n  SINCE='{since}' is not "
+                          f"YYYY-MM-DDTHH:MM:SSZ -- ignored")
+                    cut = None
+                if cut:
+                    nowe = time.time()
+                    want = [q for q in range(int(cut // 900 * 900) + 900,
+                                             int(nowe), 900)]
+                    allct = {t for v in byday.values() for t in v}
+                    seen = set()
+                    for t in allct:
+                        try:
+                            e = calendar.timegm(time.strptime(t[:19],
+                                                "%Y-%m-%dT%H:%M:%S"))
+                        except Exception:
+                            continue
+                        if e > cut:
+                            seen.add(e)
+                    hit = sum(1 for q in want if q in seen)
+                    print(f"\n  SINCE {since}: {hit}/{len(want)} windows "
+                          f"({100.0*hit/max(1,len(want)):.0f}%)  "
+                          f"-- {(nowe-cut)/3600:.1f}h elapsed")
+                    print("  This is the only honest read on a change made "
+                          "less than a day ago.")
             post = {str(r[ct]) for r in body
                     if ct < len(r) and str(r[ct]) > FREEZE
                     and (res is None or (res < len(r)
