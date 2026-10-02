@@ -87,13 +87,19 @@ name: CG Experiments (read-only)
 # exporting all of it to read four numbers was always the long way round.
 # `series` narrows it to named tabs.
 #
+# bucket answers the question the phone digest raises and cannot settle:
+# the digest reports win rates, and a win rate without the price paid is
+# meaningless -- 91.3% lost money on the favourites rule because it needed
+# 92.5%. It reprices every settled paper trade at a flat $10 with the
+# verified fee and prints the break-even win rate beside the actual one.
+#
 # Read-only otherwise -- no order path is reachable from this workflow.
 
 on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'peek | slowbook | exchange | dip3 | multi | dip2 | dip | shift-test | ind-split | ledger | fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
+        description: 'bucket | peek | slowbook | exchange | dip3 | multi | dip2 | dip | shift-test | ind-split | ledger | fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
         default: 'calib'
       series:
@@ -153,6 +159,7 @@ jobs:
             exchange) python exchange.py $SERIES ;;
             slowbook) python slowbook.py $SERIES ;;
             peek) python peek.py $SERIES ;;
+            bucket) python bucket.py ;;
             calib) python calib_survey.py $SERIES ;;
             cg1) python cg1.py ;;
             cg7) python cg7.py ;;
