@@ -71,3 +71,43 @@ that beat the real grid, and a day-level breakdown showing two days of
 thirteen carrying an entire result. Freezing the rule and the pass
 condition before the data exists is the only version of this that can
 produce an answer rather than a story.
+
+---
+
+## RESULT: FAILED, 2026-10-04
+
+Scored by `retest.py` on markets closing after the freeze and nothing else.
+
+| measure | value |
+|---|---|
+| held-out markets available | 10,275 |
+| discovery markets skipped | 460 |
+| qualifying bets | 2,355 |
+| close-times | 525 |
+| price paid | 23.0% |
+| win rate | **20.3%** |
+| profit per bet | **-$1.29 +/- 0.77, t = -1.7** |
+| total | **-$3,044.51** |
+| without the best two close-times | -$4,334.65 |
+| profitable close-times | 137/525 (26%) |
+
+Against the four conditions declared in advance: the sample size passed,
+and profit, t, best-two robustness and the share of profitable close-times
+all failed.
+
+**The rule wins LESS often than its price implies** -- 20.3% against 23.0%
+-- which is the opposite of the claim. The discovery data suggested
++3.71pp of probability edge; the held-out data gives -2.7pp. That reversal
+on 2,355 bets is the whole lesson: the discovery edge was noise, and the
+mirror test at the time already hinted at it, since buying the risen side
+gave -9.78pp and the two roughly summed to the spread.
+
+**This spec is closed.** Re-cutting the thresholds and trying again would
+turn held-out data into discovery data, which is the error the freeze
+existed to prevent. The sweep over `peak >=` flipped sign four times on
+the discovery set (-0.60, +0.15, +0.78, +4.35); that is what noise does,
+and no re-cut of it is a test.
+
+Worth recording plainly: this was the single most promising lead the
+project produced, it was pre-registered precisely because it looked
+promising, and it was wrong. The freeze did its job.
