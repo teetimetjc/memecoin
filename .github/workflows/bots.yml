@@ -22,10 +22,18 @@ name: Paper Bots (EdgeHunter + Kapelame)
 # orderbook stream when signed. EdgeHunter reads its key unconditionally at
 # startup, so without it the feed never opens and no price ever arrives.
 #
-# PUSHOVER goes to both, because paper outcomes were invisible until an
-# export hours later. One message per bet as it settles, each one saying it
-# is paper and that no real money was staked. Pushover cannot place an
-# order, so this widens nothing. BOT_ALERTS=0 silences it.
+# PUSHOVER IS OFF BY DEFAULT as of 2026-10-05, at the owner's request. It
+# existed because paper outcomes were invisible until an export hours later.
+# That reason has expired: both bots are measured losers -- 49.7% out of
+# sample at -$170.82, and -$4.55/bet with confidence carrying no information
+# -- so the digest reports the progress of two dead strategies to a phone.
+#
+# It also reported WIN RATES WITHOUT THE PRICE PAID, which is the most
+# misleading number in this project. "CERTAIN 54%" read like a lead and was
+# -$0.701/bet, because those contracts cost 56.8c and needed 58.5%.
+#
+# Dispatching with alerts=1 turns it back on for that run. Nothing else
+# changed: Pushover still cannot place an order.
 #
 # THE CLONES ARE PINNED to commits audited on 2026-09-22, whose only
 # outbound hosts are Kalshi and Coinbase and which never log the key or its
@@ -69,9 +77,9 @@ on:
         required: true
         default: '13500'
       alerts:
-        description: 'Pushover on each paper settlement (1 = on, 0 = off)'
+        description: 'Pushover digests (1 = on, 0 = off). DEFAULT OFF.'
         required: false
-        default: '1'
+        default: '0'
   schedule:
     - cron: '7 * * * *'
 
@@ -179,7 +187,7 @@ jobs:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
-          BOT_ALERTS: ${{ github.event.inputs.alerts || '1' }}
+          BOT_ALERTS: ${{ github.event.inputs.alerts || '0' }}
         run: |
           python botrun.py edgehunter ${{ github.event.inputs.seconds || '13500' }}
 
@@ -189,6 +197,6 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
-          BOT_ALERTS: ${{ github.event.inputs.alerts || '1' }}
+          BOT_ALERTS: ${{ github.event.inputs.alerts || '0' }}
         run: |
           python botrun.py kapelame ${{ github.event.inputs.seconds || '13500' }}
