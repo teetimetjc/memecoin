@@ -34,6 +34,13 @@ volume-versus-margin choice, only the wider one passing means the slice was
 noise inside it, and only the slice passing means the edge sits at the
 expensive end and the wider rule dilutes it.
 
+IT ALSO PRINTS THE FULL ACCOUNTING for each rule -- bets, dollars risked, win
+rate against its own break-even line, and profit -- separately for the
+history the rule was FOUND in and the forward data since the freeze. The two
+are never added together. A rule's performance on the data that selected it
+is not evidence, and the moment the two are summed into one number that
+distinction is gone for good.
+
 Read-only. Scores paper bets at $10; places nothing.
 """
 
@@ -47,7 +54,9 @@ import time
 import predictor as P
 
 TAB = "M15"
+HIST = "M15H"
 FREEZE = "2026-10-05T00:00:00Z"
+HIST_SPLIT = 0.70        # the cut the rules were discovered across
 MAJORS = ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M")
 ENTRY = 9
 STAKE = 10.0
@@ -123,6 +132,55 @@ def load():
     print(f"  {TAB}: {len(out)} graded majors after the freeze "
           f"({skipped} before it, skipped)")
     return out
+
+
+def load_hist():
+    """The backfilled history: the data these rules were FOUND in."""
+    sh = P._get_client().open_by_key(P.SPREADSHEET_ID)
+    rows = sh.worksheet(HIST).get_all_values()
+    h = {k: i for i, k in enumerate(rows[0])}
+    out = []
+    for r in rows[1:]:
+        if not r or not r[0]:
+            continue
+
+        def c(k):
+            i = h.get(k)
+            return r[i] if i is not None and i < len(r) else ""
+
+        if str(c("Series")) not in MAJORS:
+            continue
+        res = str(c("Result")).lower().strip()
+        if res not in ("yes", "no"):
+            continue
+        t = ts(c("Close Time"))
+        if t is None:
+            continue
+        b, a = _f(c(f"bid{ENTRY}")), _f(c(f"ask{ENTRY}"))
+        if b is None or a is None or not (0 < b <= a < 1):
+            continue
+        out.append(dict(ct=str(c("Close Time")), t=t, bid=b, ask=a,
+                        yes=(res == "yes")))
+    print(f"  {HIST}: {len(out)} graded majors with a T-{ENTRY} quote")
+    return out
+
+
+def tally(bs, label, indent="    "):
+    """bets, risked, win rate against break-even, profit."""
+    n = len(bs)
+    if not n:
+        print(f"{indent}{label:<26} no bets")
+        return
+    risked = STAKE * n
+    profit = sum(b[0] for b in bs)
+    win = sum(1 for b in bs if b[3]) / n
+    px = st.mean([b[2] for b in bs])
+    c = int(STAKE / px)
+    need = (c * px + fee(c, px)) / c
+    roi = 100.0 * profit / risked
+    print(f"{indent}{label:<26} {n:>6} bets  ${risked:>10,.0f} risked  "
+          f"won {100*win:>5.1f}% vs {100*need:>5.1f}% needed  "
+          f"${profit:>+10,.2f}  {roi:>+6.2f}%")
 
 
 def bets(M, band, sides):
@@ -205,8 +263,38 @@ def report(rule, M):
     return passed
 
 
+def accounting(H, M):
+    """Everything risked and won, history and forward kept apart."""
+    cut = ts(FREEZE)
+    times = sorted({m["t"] for m in H})
+    hcut = times[int(HIST_SPLIT * len(times))] if times else 0
+    print("\n" + "=" * 118)
+    print("FULL ACCOUNTING -- paper money at $10 a bet")
+    print("=" * 118)
+    print("  History and forward are NEVER added together: a rule's record on")
+    print("  the data that selected it is not evidence of anything.\n")
+    for r in RULES:
+        print(f"  {r['name'].upper()}  "
+              f"({100*r['band'][0]:.0f}-{100*r['band'][1]:.0f}c, "
+              f"{'/'.join(r['sides'])}, T-{ENTRY})")
+        hb = bets([m for m in H if m["t"] < hcut], r["band"], r["sides"])
+        ho = bets([m for m in H if m["t"] >= hcut], r["band"], r["sides"])
+        tally(hb, "history, discovery 70%")
+        tally(ho, "history, holdout 30%")
+        tally(hb + ho, "history, combined")
+        fb = bets(M, r["band"], r["sides"])
+        tally(fb, "FORWARD since freeze")
+        if len(fb) < r["need_n"]:
+            print(f"      ^ {len(fb)} of {r['need_n']} needed -- too short to "
+                  "mean anything either way")
+        print()
+
+
 def main():
     M = load()
+    H = load_hist()
+    if H:
+        accounting(H, M)
     if not M:
         print("no graded majors after the freeze yet")
         return 0
