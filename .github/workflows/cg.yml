@@ -100,13 +100,18 @@ name: CG Experiments (read-only)
 # a quantity that contains the spread captured AND the adverse move, so
 # neither has to be assumed.
 #
+# score is the forward scorer for the two specs frozen on 2026-10-05. It
+# takes no arguments and exposes no thresholds, and it reports NOT ENOUGH
+# DATA YET with a count until each spec's sample size is reached. Running it
+# early is expected and is not a failure.
+#
 # Read-only otherwise -- no order path is reachable from this workflow.
 
 on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'rich | plateau | pooled | hunt | slowround | slowfill | bucket | peek | slowbook | exchange | dip3 | multi | dip2 | dip | shift-test | ind-split | ledger | fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
+        description: 'score | rich | plateau | pooled | hunt | slowround | slowfill | bucket | peek | slowbook | exchange | dip3 | multi | dip2 | dip | shift-test | ind-split | ledger | fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
         default: 'calib'
       series:
@@ -173,6 +178,7 @@ jobs:
             pooled) python pooled.py ;;
             plateau) python plateau.py ;;
             rich) python rich.py ;;
+            score) python score.py ;;
             calib) python calib_survey.py $SERIES ;;
             cg1) python cg1.py ;;
             cg7) python cg7.py ;;
