@@ -164,10 +164,16 @@ def score(bets):
 
 
 def robust(bets):
-    """(without two best close-times, without two worst)."""
+    """(without two best close-times, without two worst).
+
+    Indexed rather than unpacked: callers build bet tuples of different
+    widths -- hunt's are six wide, rich's are four -- and a positional
+    unpack crashed rich.py on the first row whose holdout cleared t>2,
+    which is the one row that mattered.
+    """
     d = collections.defaultdict(float)
-    for v, ct, _, _, _, _ in bets:
-        d[ct] += v
+    for b in bets:
+        d[b[1]] += b[0]
     by = sorted(d.values(), reverse=True)
     if len(by) < 5:
         return 0.0, 0.0
