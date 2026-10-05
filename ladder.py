@@ -5,7 +5,29 @@ question: can we predict better than the price? The answer is no, measured
 many ways. This asks something different, and it is the only untried CATEGORY
 left in the data: is the market internally inconsistent?
 
-THE ARITHMETIC. The hourly crypto markets are ladders -- "SOL above 75",
+ONLY THRESHOLD MARKETS QUALIFY, and getting this wrong produced a 94-cent
+"arbitrage" on the first run. The hourly tab holds two kinds of market:
+
+    KXBTC-26OCT0120-T84700     threshold: settles YES above 84700
+    KXSOLE-26SEP2514-B125.125  BUCKET: settles YES between 125.00 and 125.25
+
+A threshold ladder is monotone in strike -- above 80 implies above 75 -- and a
+bucket ladder is not monotone at all, because a bucket's value peaks at the
+money and falls away on BOTH sides. Comparing buckets as though they were
+thresholds reported 2,532 crossings at a 16c median, which is to say it
+reported a 16-cent risk-free profit on one pair in ten. That cannot exist, and
+a result that good is a bug by default. 1,433 of the rows were buckets.
+
+So only `-T` tickers are compared here, and bucket rows are counted and
+excluded rather than silently dropped.
+
+A BUCKET SET HAS ITS OWN CONSISTENCY TEST -- the buckets of one event are
+mutually exclusive and exhaustive, so their asks summing below $1 would be
+free money -- but it is NOT run here, because the collector keeps only the six
+buckets nearest the money. Buying an incomplete set guarantees nothing, and
+pretending otherwise would be the same error in a new costume.
+
+THE ARITHMETIC. The threshold markets are ladders -- "SOL above 75",
 "SOL above 75.25", "SOL above 75.5" -- all on the same coin, all settling at
 the same instant. Above 80 cannot happen without above 75, so
 
@@ -49,12 +71,15 @@ Read-only.
 """
 
 import collections
+import re
 import statistics as st
 import sys
 
 import predictor as P
 
 TABS = ("H60", "M15")
+# A threshold market's ticker ends in -T<strike>; a bucket's ends in -B<low>.
+THRESHOLD = re.compile(r"-T[0-9.]+$")
 OFFSETS = (14, 12, 9, 6, 3, 1)
 FEE_RATE = 0.07
 
@@ -81,6 +106,7 @@ def load(tab):
         return {}
     h = {k: i for i, k in enumerate(rows[0])}
     ev = collections.defaultdict(list)
+    skipped = [0]
     for r in rows[1:]:
         if not r or not r[0]:
             continue
@@ -91,6 +117,9 @@ def load(tab):
 
         strike = _f(c("Strike"))
         if strike is None:
+            continue
+        if not THRESHOLD.search(str(r[0])):
+            skipped[0] += 1          # a bucket, or an unrecognised shape
             continue
         q = {}
         for o in OFFSETS:
@@ -103,7 +132,8 @@ def load(tab):
             tk=str(r[0]), ser=str(c("Series")), strike=strike, q=q,
             res=str(c("Result")).lower().strip(), ct=str(c("Close Time"))))
     multi = {k: v for k, v in ev.items() if len(v) >= 2}
-    print(f"  {tab}: {len(ev)} events, {len(multi)} with 2+ strikes quoted")
+    print(f"  {tab}: {len(ev)} threshold events, {len(multi)} with 2+ strikes"
+          f" quoted   ({skipped[0]} non-threshold rows excluded)")
     return multi
 
 
