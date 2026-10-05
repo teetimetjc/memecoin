@@ -263,6 +263,71 @@ def report(rule, M):
     return passed
 
 
+def gap_window(H, M):
+    """Live data the SEARCH never saw, but which predates the freeze.
+
+    The rules were found in M15H, which ends at its own last close time. The
+    live M15 tab kept collecting past that, so the span between the two is
+    genuinely out of sample -- no search touched it -- yet it sits before the
+    freeze and is therefore NOT part of the pre-registered test.
+
+    It is reported separately and labelled, because the decision to look at
+    it was made AFTER seeing a favourable first 69 bets. The data is clean;
+    the choice to examine it is not blind. Treating it as part of the frozen
+    test would be moving the goalposts, which is the one thing the freeze
+    exists to prevent. Treating it as nothing would be throwing away four
+    days of honest evidence. So: shown, caveated, and kept out of the
+    verdict.
+    """
+    if not H:
+        return
+    hmax = max(m["t"] for m in H)
+    cut = ts(FREEZE)
+    if hmax >= cut:
+        return
+    gap = [m for m in M if False]      # M is already post-freeze only
+    print("\n" + "=" * 118)
+    print("THE GAP WINDOW -- live data the search never saw, before the freeze")
+    print("=" * 118)
+    print(f"  history ends {time.strftime('%Y-%m-%d %H:%M', time.gmtime(hmax))}"
+          f" UTC, freeze at {FREEZE}")
+    print(f"  that is {(cut-hmax)/86400.0:.1f} days of M15 rows that no search")
+    print("  touched. Scored below, and NOT part of either frozen test: the")
+    print("  decision to look came after seeing the first 69 forward bets.")
+    return hmax
+
+
+def load_gap(hmax):
+    """M15 markets closing after the history ends but before the freeze."""
+    sh = P._get_client().open_by_key(P.SPREADSHEET_ID)
+    rows = sh.worksheet(TAB).get_all_values()
+    h = {k: i for i, k in enumerate(rows[0])}
+    cut = ts(FREEZE)
+    out = []
+    for r in rows[1:]:
+        if not r or not r[0]:
+            continue
+
+        def c(k):
+            i = h.get(k)
+            return r[i] if i is not None and i < len(r) else ""
+
+        if str(c("Series")) not in MAJORS:
+            continue
+        res = str(c("Result")).lower().strip()
+        if res not in ("yes", "no"):
+            continue
+        t = ts(c("Close Time"))
+        if t is None or not (hmax < t <= cut):
+            continue
+        b, a = _f(c(f"bid{ENTRY}")), _f(c(f"ask{ENTRY}"))
+        if b is None or a is None or not (0 < b <= a < 1):
+            continue
+        out.append(dict(ct=str(c("Close Time")), t=t, bid=b, ask=a,
+                        yes=(res == "yes")))
+    return out
+
+
 def accounting(H, M):
     """Everything risked and won, history and forward kept apart."""
     cut = ts(FREEZE)
@@ -295,6 +360,15 @@ def main():
     H = load_hist()
     if H:
         accounting(H, M)
+        hmax = gap_window(H, M)
+        if hmax:
+            G = load_gap(hmax)
+            print()
+            for r in RULES:
+                tally(bets(G, r["band"], r["sides"]),
+                      r["name"], indent="  ")
+            print("\n  Unblinded window: informative, not evidence. The")
+            print("  verdict below still rests only on post-freeze data.")
     if not M:
         print("no graded majors after the freeze yet")
         return 0
