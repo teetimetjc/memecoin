@@ -37,6 +37,15 @@ ONLY -T TICKERS, because bucket markets (-B) are not monotone in strike, and
 comparing them as thresholds produced a 94-cent "arbitrage" on the first run
 of ladder.py. 1,433 rows of that mistake are the reason this is explicit.
 
+AND ONLY WITHIN ONE EVENT. The list call returns every OPEN market in a
+series, which spans several different close times -- an hourly series has one
+event per hour, all open at once. The first run of this file paired them all
+together and reported 100 crossings in ten minutes against 44 in weeks of
+history, because "gold above 4143.99 settling at 06:00" was being compared
+with "gold above 4145.99 settling at 07:00". Those are different bets. The
+lower strike only dominates the higher one when they settle on the SAME
+observation, so pairs are formed strictly within an event_ticker.
+
 Places no orders. The workflow re-checks that.
 """
 
@@ -103,11 +112,17 @@ def crossings(mk):
             continue
         rung.append(dict(tk=tk, s=s, bid=b, ask=a, bsz=bs, asz=as_,
                          ev=str(m.get("event_ticker") or "")))
-    rung.sort(key=lambda x: x["s"])
+    # Strictly within one event: markets settling at different times are
+    # different bets and the domination argument does not hold across them.
+    byev = collections.defaultdict(list)
+    for r in rung:
+        byev[r["ev"]].append(r)
     out = []
-    for i in range(len(rung)):
-        for j in range(i + 1, len(rung)):
-            lo, hi = rung[i], rung[j]
+    for ev, group in byev.items():
+        group.sort(key=lambda x: x["s"])
+        for i in range(len(group)):
+          for j in range(i + 1, len(group)):
+            lo, hi = group[i], group[j]
             if lo["s"] >= hi["s"]:
                 continue
             gross = hi["bid"] - lo["ask"]
