@@ -1,0 +1,73 @@
+name: Watch Threshold Ladders
+
+# Runs arb.py, which watches the hourly metals, energy, daily-crypto and index
+# ladders for pairs of strikes that contradict each other -- a bid on a HIGHER
+# strike above the ask on a LOWER one, which cannot lose because the lower
+# strike pays whenever the higher one does.
+#
+# WHY THIS IS NOT ANOTHER STRATEGY TEST. Sixteen strategies died here asking
+# whether we can predict better than the price. This asks whether the ladder
+# disagrees with itself, which needs no forecast, cannot decay, and cannot fail
+# out of sample. ladder.py found 44 such moments in the hourly history; what is
+# unknown is their SIZE, whether both legs were takeable at the same instant,
+# and how long they lasted. This records all three.
+#
+# ONE LIST CALL PER SERIES, which is the whole point: it returns every strike
+# in the ladder from a single read, so the two legs are genuinely simultaneous.
+# H60 sampled each strike at its own offset seconds apart, which can show a
+# crossing between two quotes that never coexisted.
+#
+# HOURLY, 59 MINUTES, for the reason the other collectors are: GitHub drops
+# scheduled triggers at roughly the same rate whatever interval is asked for,
+# so a long session with a frequent trigger and a concurrency group is what
+# keeps coverage up -- a late trigger queues and starts when the run ends.
+# Minute 33 keeps its API bursts clear of collect15 at :48, slowcollect at :18
+# and the paper bots at :07.
+#
+# NO PUSHOVER SECRET IS REACHABLE, deliberately. An alert naming a live
+# arbitrage is exactly the prompt that would get an order placed by hand before
+# the size and duration are known, and the size is the entire open question.
+#
+# NO ORDER PATH. The guard step re-checks rather than assuming it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'How long to watch (600 = short check, 3540 = 59min)'
+        required: true
+        default: '3540'
+  schedule:
+    - cron: '33 * * * *'
+
+concurrency:
+  group: arb
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Confirm no order path is reachable
+        run: |
+          if grep -n "portfolio/orders\|def place_order\|create_order" arb.py ; then
+            echo "::error::arb.py contains an order path - refusing to run"
+            exit 1
+          fi
+          echo "OK: arb.py has no order path"
+
+      - name: Watch
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python arb.py ${{ github.event.inputs.seconds || '3540' }}
