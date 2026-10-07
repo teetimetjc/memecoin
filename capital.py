@@ -256,14 +256,30 @@ def main():
         needs[r["name"]] = (a, b)
 
         if hb:
-            per_day = len({x[1] for x in hb})
-            print(f"\n   TURNOVER: {len(hb)/max(1,len({x[1] for x in hb})):.1f} "
-                  "bets per close time. At 96 close times a day that is")
-            print(f"   roughly {96*len(hb)/max(1,per_day):.0f} bets and "
-                  f"${10*96*len(hb)/max(1,per_day):,.0f} of turnover a day -- "
-                  "turnover, NOT")
-            print("   capital. The same dollars are reused every fifteen "
-                  "minutes.")
+            # COUNTED PER DAY, NOT EXTRAPOLATED FROM A PER-WINDOW FIGURE.
+            #
+            # This block multiplied bets-per-firing-window by all 96 daily
+            # windows, as though every window produced a bet. Only about a
+            # sixth of them do, so the daily rate came out roughly six times
+            # too high -- and the variable holding a count of close times was
+            # named `per_day`, which is how the error survived being read.
+            #
+            # It also cost the owner a wrong answer: asked how often their
+            # phone would buzz, I divided bets by FIRING windows and reported
+            # that as a daily rate, which understated it sixteen-fold in the
+            # other direction. Both mistakes are the same confusion between
+            # "per window" and "per day", so the fix is to divide by days.
+            ndays = max(1, len({x[1][:10] for x in hb}))
+            nwin = max(1, len({x[1] for x in hb}))
+            print(f"\n   TURNOVER: {len(hb)/ndays:.0f} bets a day "
+                  f"({len(hb)/nwin:.1f} per firing window, and {nwin/ndays:.0f} "
+                  f"of the 96 daily windows fire)")
+            # S.STAKE, not a literal: stake.py rebinds it per stake size and a
+            # hardcoded 10 would print the $10 turnover under a $4 heading.
+            print(f"   ${S.STAKE*len(hb)/ndays:,.0f} of turnover a day at "
+                  f"${S.STAKE:.0f} a bet -- turnover, NOT capital. The same "
+                  "dollars are")
+            print("   reused every fifteen minutes.")
 
     print("\n" + "=" * 92)
     print("READ THIS BEFORE FUNDING ANYTHING")
