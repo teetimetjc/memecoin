@@ -44,25 +44,43 @@ BANKROLLS = (100.0, 250.0, 500.0, 1000.0)
 WINDOWS_PER_DAY = 96
 
 
-def priced(M, rule, stake):
-    """The rule's bets re-sized to `stake`, by re-deriving contract counts.
+class at_stake:
+    """Hold score.STAKE at `stake` for everything computed inside the block.
 
-    S.bets reads S.STAKE for both the contract count and the risked figure,
-    so the global is swapped for the call and restored afterwards. Passing a
-    stake argument through score.py would be cleaner but would edit a file
-    the frozen specs are scored by, and that file does not get touched for a
-    convenience.
+    THE FIRST VERSION OF THIS FILE RESTORED THE GLOBAL TOO EARLY and got a
+    wrong answer quietly, which is this project's signature failure. S.bets
+    was called with the stake set, so profit per bet came out right -- but
+    capital.cost_of and capital.ruin ALSO read S.STAKE, and they ran after
+    the restore. Every cash, return and ruin figure was therefore computed
+    at $10 whatever stake was being priced: the "cash used" column printed
+    $9.54 on all three rows and "idle" came out at -138%, which is what
+    exposed it. Nothing raised an exception.
+
+    So the swap now spans the whole per-stake computation rather than the
+    one call that obviously needs it. Passing a stake argument down through
+    score.py would be cleaner still, but that file is what the frozen specs
+    are scored by and it does not get edited for a convenience.
     """
-    old = S.STAKE
-    try:
-        S.STAKE = stake
-        return S.bets(M, rule["band"], rule["sides"])
-    finally:
-        S.STAKE = old
+
+    def __init__(self, stake):
+        self.stake = stake
+
+    def __enter__(self):
+        self.old = S.STAKE
+        S.STAKE = self.stake
+        return self
+
+    def __exit__(self, *exc):
+        S.STAKE = self.old
+        return False
 
 
 def deployed(bs):
-    """Cash actually committed, which is below `stake * n` after rounding."""
+    """Cash actually committed, which is below `stake * n` after rounding.
+
+    Must be called inside an `at_stake` block: cost_of re-derives the
+    contract count from score.STAKE.
+    """
     return sum(K.cost_of(px) for _, _, px, _ in bs)
 
 
@@ -75,24 +93,28 @@ def table(rule, H):
 
     rows = []
     for stake in STAKES:
-        bs = priced(H, rule, stake)
-        if not bs:
-            continue
-        n = len(bs)
-        dep = deployed(bs)
-        profit = sum(b[0] for b in bs)
-        nominal = stake * n
-        per_window = n / len({b[1] for b in bs})
+        # One block per stake, covering the bets AND every capital figure
+        # derived from them, including the ruin sweep further down.
+        with at_stake(stake):
+            bs = S.bets(H, rule["band"], rule["sides"])
+            if not bs:
+                continue
+            n = len(bs)
+            dep = deployed(bs)
+            profit = sum(b[0] for b in bs)
+            avg_px = sum(b[2] for b in bs) / n
+            ruins = {b: K.ruin(bs, stakes=(b,), trials=2000)[0]["bust_pct"]
+                     for b in BANKROLLS}
         rows.append(dict(stake=stake, n=n, dep=dep, profit=profit,
-                         nominal=nominal, bs=bs, per_window=per_window))
+                         nominal=stake * n, bs=bs, avg_px=avg_px,
+                         ruins=ruins))
 
     print("\n  PER BET -- same markets, same outcomes, different size")
     print(f"    {'stake':>7} {'contracts':>10} {'cash used':>11} "
           f"{'idle':>7} {'$/bet':>9} {'% of cash':>10}")
     for r in rows:
-        # One representative bet at the average price, to show the rounding.
         avg = r["dep"] / r["n"]
-        c = int(r["stake"] / (sum(b[2] for b in r["bs"]) / r["n"]))
+        c = int(r["stake"] / r["avg_px"])
         idle = 100.0 * (1.0 - avg / r["stake"])
         print(f"    ${r['stake']:>6,.0f} {c:>10} ${avg:>10,.2f} "
               f"{idle:>6.1f}% ${r['profit']/r['n']:>+8.3f} "
@@ -114,20 +136,18 @@ def table(rule, H):
     print("\n  CHANCE OF GOING BROKE, by starting balance")
     print("    Whole windows resampled 2,000 times: same bets and win rate,")
     print("    only the ORDER they arrive in changes.")
-    hdr = "".join(f"${b:>9,.0f}" for b in BANKROLLS)
+    hdr = "".join(f"{'$%,.0f' % b:>10}" for b in BANKROLLS)
     print(f"    {'stake':>7} {hdr}")
     for r in rows:
-        out = K.ruin(r["bs"], stakes=BANKROLLS, trials=2000)
-        cells = "".join(f"{x['bust_pct']:>9.0f}%" for x in out)
+        cells = "".join(f"{r['ruins'][b]:>9.0f}%" for b in BANKROLLS)
         print(f"    ${r['stake']:>6,.0f} {cells}")
 
     print("\n  WHAT $100 BUYS YOU AT EACH SIZE")
     for r in rows:
-        out = K.ruin(r["bs"], stakes=(100.0,), trials=2000)[0]
         per_day = r["profit"] / days
         print(f"    ${r['stake']:>5,.0f}/bet   "
               f"${per_day:>+7,.2f}/day   "
-              f"{out['bust_pct']:>3.0f}% chance of losing the $100")
+              f"{r['ruins'][100.0]:>3.0f}% chance of losing the $100")
 
 
 def main():
