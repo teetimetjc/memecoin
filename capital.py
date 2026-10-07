@@ -43,6 +43,7 @@ Read-only. Places nothing, reads the same two tabs score.py reads.
 """
 
 import collections
+import random
 import statistics as st
 import sys
 
@@ -122,6 +123,82 @@ def drawdown(bs):
                 worst_window=min(per.values()) if per else 0.0)
 
 
+def ruin(bs, stakes=(100.0, 250.0, 500.0, 1000.0, 1500.0, 2500.0), trials=2000):
+    """Would a given starting balance have survived, and how often?
+
+    THE QUESTION THIS ANSWERS is the one the per-window exposure cap does
+    NOT. At most ~$50 is at stake in any single 15-minute window, and that
+    is a real and correct ceiling -- but a lost window is money gone, and
+    there are 96 windows a day. The cap bounds one bet; the balance has to
+    absorb the running sum of all of them.
+
+    Two numbers are reported.
+
+      THE ACTUAL PATH. The historical windows in the order they happened,
+      stepping the balance and stopping if it cannot fund the next window.
+      One path, so it answers "did this particular six weeks kill it" and
+      nothing more general.
+
+      RESAMPLED PATHS. Whole windows drawn with replacement, which keeps
+      each window's internal correlation (the five coins move together, so
+      a window's bets are not independent of each other) while reshuffling
+      the order in which good and bad windows arrive. The historical
+      sequence is one draw from many possible orderings and there is no
+      reason to think it was the unluckiest.
+
+    A path is counted dead when the balance can no longer fund the window
+    in front of it -- not when it reaches exactly zero, since a $3 balance
+    cannot place a $20 window and is just as finished.
+    """
+    per = collections.defaultdict(float)
+    cost = collections.defaultdict(float)
+    for v, ct, px, won in bs:
+        per[ct] += v
+        cost[ct] += cost_of(px)
+    order = sorted(per)
+    seq = [(per[ct], cost[ct]) for ct in order]
+    if not seq:
+        return []
+    rnd = random.Random(17)
+    out = []
+    for start in stakes:
+        bal = start
+        died_at = None
+        for i, (pnl, need) in enumerate(seq):
+            if bal < need:
+                died_at = i
+                break
+            bal += pnl
+        busts = 0
+        for _ in range(trials):
+            b = start
+            for _ in range(len(seq)):
+                pnl, need = seq[rnd.randrange(len(seq))]
+                if b < need:
+                    busts += 1
+                    break
+                b += pnl
+        out.append(dict(start=start, died_at=died_at, ended=bal,
+                        when=(order[died_at] if died_at is not None else None),
+                        bust_pct=100.0 * busts / trials))
+    return out
+
+
+def show_ruin(label, bs):
+    rows = ruin(bs)
+    if not rows:
+        return
+    print(f"\n   SURVIVAL -- {label}")
+    print(f"     {'start':>8}  {'the real sequence':<34}  "
+          f"{'bust in a reshuffled run':>24}")
+    for r in rows:
+        if r["died_at"] is None:
+            real = f"survived, ended ${r['ended']:,.0f}"
+        else:
+            real = f"BUST after {r['died_at']:,} windows ({r['when'][:10]})"
+        print(f"     ${r['start']:>7,.0f}  {real:<34}  {r['bust_pct']:>23.0f}%")
+
+
 def show(label, bs):
     n = len(bs)
     if n < 50:
@@ -150,6 +227,7 @@ def show(label, bs):
     print("   ACCOUNT NEEDED")
     print(f"     ${c['peak']:,.0f} concurrent  +  {SAFETY:.0f}x the "
           f"${d['worst']:,.0f} worst fall  =  ${need:,.0f}")
+    show_ruin(label, bs)
     return need
 
 
