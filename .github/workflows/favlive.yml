@@ -1,0 +1,136 @@
+name: Favlive (frozen spec, $4 bets)
+
+# Runs the frozen narrow-slice spec against the real exchange: read the book at
+# T-9, buy the 90-96c YES side at $4, hold to settlement.
+#
+# THE MODE INPUT IS THE SAFETY INTERLOCK AND IT DEFAULTS TO NOT SPENDING.
+#
+#   replay  compare the live selector against the scorer on all of history.
+#           Reads only. Run this first and require zero mismatches.
+#   dry     the full live loop -- real markets, real prices, real timing --
+#           printing the orders it would send and sending none.
+#   live    actually places orders. Sets ALLOW_LIVE_TRADING=1, which is the
+#           deliberate human thumbs-up no_trade_guard.py exists to demand.
+#
+# SCHEDULED RUNS USE THE `default_mode` BELOW, and it is 'dry' until changed by
+# hand. Flipping it is a one-line commit in this file -- which is exactly the
+# property no_trade_guard was written to preserve: nothing in the code can turn
+# betting on for you, and the change shows up in a diff with a date on it.
+#
+# WHY THE NARROW SLICE AND NOT THE WIDER RULE. The expensive favourite bets the
+# NO side, and buying NO means selling YES -- a mapping live.py records as an
+# unconfirmed inference. Reading it backwards puts every NO bet on the wrong
+# side of the market. favlive.py refuses that rule until LIVE_ALLOW_DOWN=1 is
+# set, which should happen only after one NO order has been placed and the
+# resulting position read back and confirmed.
+#
+# WHY A LONG RUN ON AN HOURLY CRON. GitHub drops scheduled triggers at roughly
+# the same rate whatever the interval -- four or five a day -- so a 15-minute
+# cron would miss windows wholesale. A 3h45m session on an hourly trigger with
+# a concurrency group means a dropped trigger costs nothing: the running job
+# still owns the group and the next trigger queues behind it. Same shape as
+# collect15.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'replay | dry | live  (live SPENDS REAL MONEY)'
+        required: true
+        default: 'dry'
+      stake:
+        description: 'dollars per bet'
+        required: false
+        default: '4'
+      seconds:
+        description: 'how long the session runs'
+        required: false
+        default: '13500'
+      alerts:
+        description: 'Pushover notifications: 1 on, 0 off'
+        required: false
+        default: '1'
+  schedule:
+    - cron: '52 * * * *'
+
+concurrency:
+  group: favlive
+  cancel-in-progress: false
+
+jobs:
+  favlive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      # The mode scheduled runs use. 'dry' until deliberately changed.
+      default_mode: 'dry'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Resolve the mode
+        id: mode
+        run: |
+          M="${{ github.event.inputs.mode }}"
+          if [ -z "$M" ]; then M="$default_mode"; fi
+          case "$M" in
+            replay|dry|live) ;;
+            *) echo "unknown mode: $M"; exit 1 ;;
+          esac
+          echo "mode=$M" >> "$GITHUB_OUTPUT"
+          echo "Running in mode: $M"
+
+      - name: Replay the selector against history
+        if: steps.mode.outputs.mode == 'replay'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python favreplay.py
+
+      # Dry and live are the SAME command with the same settings. The only
+      # difference is the two live switches, so a dry run exercises every line
+      # the live run will, which is the point of having one.
+      - name: Dry run -- places nothing
+        if: steps.mode.outputs.mode == 'dry'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          BET_ALERTS: '0'
+          FAVLIVE_RULE: 'narrow slice'
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '4' }}
+          MIN_ENTRY_CENTS: '90'
+          MAX_ENTRY_CENTS: '96'
+          ORDER_PREFIX: 'slice'
+        run: python favlive.py ${{ github.event.inputs.seconds || '13500' }}
+
+      - name: LIVE -- places real orders
+        if: steps.mode.outputs.mode == 'live'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          BET_ALERTS: ${{ github.event.inputs.alerts || '1' }}
+          # The two switches live.py demands, together, deliberately.
+          ALLOW_LIVE_TRADING: '1'
+          LIVE_TRADING: '1'
+          FAVLIVE_RULE: 'narrow slice'
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '4' }}
+          # The band must match the rule being run, or the guard rejects the
+          # strategy it was asked to run. 90-96c is the narrow slice.
+          MIN_ENTRY_CENTS: '90'
+          MAX_ENTRY_CENTS: '96'
+          ORDER_PREFIX: 'slice'
+          FAVLIVE_MAX_PER_WINDOW: '5'
+          FAVLIVE_DAY_STOP: '20'
+        run: python favlive.py ${{ github.event.inputs.seconds || '13500' }}
