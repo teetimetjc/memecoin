@@ -52,11 +52,11 @@ T-9 is the price the specs were scored on.
 Read `--replay` first, then dry-run, then live.
 """
 
-import collections
-import math
 import os
 import sys
 import time
+
+import requests
 
 import alert
 import collect15 as C
@@ -153,37 +153,71 @@ def open_markets():
     return out
 
 
-def day_loss(client):
-    """Dollars lost today on rows this runner wrote, or 0.0 if unreadable.
+def day_pnl():
+    """Net dollars settled today, from Kalshi's settlements. None if unreadable.
 
-    Reads rather than infers. A stop computed from the bot's own expectation
-    would never fire, because the expectation is what is in doubt.
+    THE FIRST VERSION OF THIS SUMMED WHAT WAS STAKED AND CALLED IT A LOSS.
+    It added the Cost column of every PLACED row and halted past $20, which on
+    a quiet two-bet day never binds -- and on a six-bet day halts the bot even
+    if every single bet won, then leaves it halted until somebody resumes it by
+    hand. A stop that fires on a winning day is measuring the wrong quantity,
+    and the name said "loss" while the arithmetic said "turnover".
+
+    Net settled P&L is the right quantity and the exchange is the only
+    authority for it: a win pays $1.00 a contract and a loss pays nothing, and
+    neither is knowable from the order row that opened the position. Returns
+    None rather than 0.0 when the read fails, because "I could not tell" and
+    "nothing was lost" must not be the same value -- treating a failed read as
+    a flat day is how a stop silently stops stopping.
     """
+    hdrs = P._kalshi_headers("GET", "/trade-api/v2/portfolio/settlements")
+    if not hdrs:
+        return None
     try:
-        ws = P._get_client().open_by_key(P.SPREADSHEET_ID).worksheet(
-            live.LIVE_SHEET)
-        rows = ws.get_all_values()
-    except Exception:
-        return 0.0
-    if len(rows) < 2:
-        return 0.0
-    h = {k: i for i, k in enumerate(rows[0])}
+        rr = requests.get(f"{P.KALSHI_BASE}/portfolio/settlements",
+                          headers=hdrs, params={"limit": 200}, timeout=15)
+        if not rr.ok:
+            print(f"  [favlive] settlements HTTP {rr.status_code}")
+            return None
+        items = rr.json().get("settlements") or []
+    except Exception as e:
+        print(f"  [favlive] settlements read failed: {str(e)[:80]}")
+        return None
+
     today = time.strftime("%Y-%m-%d", time.gmtime())
-    lost = 0.0
-    for r in rows[1:]:
-        if not r or not str(r[0]).startswith(today):
+    net = 0.0
+    for s in items:
+        when = str(s.get("settled_time") or "")
+        if not when.startswith(today):
             continue
-        i = h.get("Cost $")
-        j = h.get("Status")
-        if i is None or j is None or i >= len(r) or j >= len(r):
+        rev = _money(s, ("revenue_dollars", "revenue"))
+        cost = _money(s, ("cost_dollars", "cost", "yes_total_cost_dollars"))
+        if rev is None and cost is None:
             continue
-        if str(r[j]).strip().upper() != "PLACED":
+        net += (rev or 0.0) - (cost or 0.0)
+    return net
+
+
+def _money(d, keys):
+    """First readable dollar value among `keys`, converting cents if needed.
+
+    The _fp/_dollars migration has caught this project six times, so the
+    dollar spelling is preferred and a bare value above a plausible dollar
+    bound is treated as cents rather than assumed to be dollars.
+    """
+    for k in keys:
+        v = d.get(k)
+        if v is None:
             continue
         try:
-            lost += float(str(r[i]).replace("$", "") or 0)
-        except ValueError:
-            pass
-    return lost
+            x = float(v)
+        except (TypeError, ValueError):
+            continue
+        if x != x:
+            continue
+        return x / 100.0 if (k.endswith(("_dollars",)) is False and
+                             abs(x) > 1000) else x
+    return None
 
 
 def cycle(client, r, stake, dry):
@@ -279,13 +313,21 @@ def main():
     seen = set()
     while time.time() < deadline:
         if not dry:
-            lost = day_loss(client)
-            if lost >= DAY_STOP:
-                print(f"  [favlive] DAY STOP: ${lost:.2f} staked today is at "
-                      f"or past ${DAY_STOP:.2f}. No more orders today.")
+            pnl = day_pnl()
+            # A LOSS is a negative net. Compared as a magnitude against the
+            # stop so the sign cannot be read backwards -- getting that wrong
+            # would halt on a good day and run through a bad one.
+            if pnl is not None and pnl <= -DAY_STOP:
+                print(f"  [favlive] DAY STOP: net ${pnl:+.2f} settled today is "
+                      f"at or past -${DAY_STOP:.2f}. No more orders today.")
                 control.halt(client,
-                             f"favlive day stop: ${lost:.2f} staked today")
+                             f"favlive day stop: net ${pnl:+.2f} settled today")
                 return 0
+            if pnl is None:
+                print("  [favlive] could not read today's settlements, so the "
+                      "day stop cannot be evaluated -- not betting this cycle.")
+                time.sleep(POLL_S)
+                continue
         # One cycle per window, keyed so a slow loop cannot bet it twice.
         key = int(time.time()) // 900
         if key not in seen:
