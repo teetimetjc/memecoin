@@ -49,7 +49,21 @@ def _f(v):
 
 
 def get(path, **params):
-    hdrs = P._kalshi_headers("GET", path)
+    """GET a portfolio endpoint. `path` is relative, e.g. /portfolio/fills.
+
+    THE SIGNATURE PATH AND THE URL PATH ARE NOT THE SAME STRING, and the first
+    run of this file 404'd for assuming they were. P.KALSHI_BASE already ends
+    in /trade-api/v2, so appending a full "/trade-api/v2/portfolio/..." to it
+    produced a doubled URL -- while the signature, built from that same full
+    path, was perfectly correct. A correct signature on a nonexistent URL
+    fails as "404 page not found", which reads like a missing endpoint rather
+    than a malformed one, and that is exactly the kind of wrong-question error
+    that keeps costing this project runs.
+
+    So the prefix is written once here and the two uses are explicit.
+    """
+    sign_path = "/trade-api/v2" + path
+    hdrs = P._kalshi_headers("GET", sign_path)
     if not hdrs:
         return None, "could not sign"
     try:
@@ -126,7 +140,7 @@ def main():
     tickers = {r["ticker"] for r in placed}
 
     # ---- the decisive comparison, from the exchange's own settlements ----
-    d, err = get("/trade-api/v2/portfolio/settlements", limit=200)
+    d, err = get("/portfolio/settlements", limit=200)
     if not d:
         print(f"\n  could not read settlements: {err}")
         return 1
@@ -184,7 +198,7 @@ def main():
     print("=" * 92)
 
     # ---- the direct statement, for completeness ----
-    d2, err2 = get("/trade-api/v2/portfolio/fills", limit=200)
+    d2, err2 = get("/portfolio/fills", limit=200)
     fills = [f for f in ((d2 or {}).get("fills") or [])
              if str(f.get("ticker") or "") in tickers]
     print(f"\n  fills on those markets: {len(fills)}")
