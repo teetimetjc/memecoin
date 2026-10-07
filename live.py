@@ -73,7 +73,22 @@ ALLOW_DOWN = os.environ.get("LIVE_ALLOW_DOWN", "").strip() == "1"
 #
 # 20c is inside the measured data with room to spare, and it caps position size
 # for free: at 20c a $5 stake buys 25 contracts, where at 3c it bought 165.
-MAX_ENTRY = 50.0
+#
+# THE CEILING IS NOW SETTABLE TOO, for the same reason the floor is, and the
+# reason is worth stating because it cuts the opposite way.
+#
+# 50c was right for v6, whose edge lived below it. The frozen expensive-
+# favourite and narrow-slice specs buy at 80-96c -- the far end of the book --
+# so this ceiling rejects every one of their signals. Left hardcoded, a run
+# configured for those rules would place nothing and report it as "entry 93c is
+# at or above the 50c cut", which is a guard refusing the strategy it was asked
+# to run. That already happened once here with the floor and cost a day to
+# find, which is why the floor's comment below exists.
+#
+# A band is only a safety rail when it matches the tested range of the rule
+# being run. So BOTH ends move together, each run states its own, and the
+# defaults stay exactly what v6 used.
+MAX_ENTRY = float(os.environ.get("MAX_ENTRY_CENTS") or 50.0)
 # THE FLOOR IS NOW SETTABLE, and here is what it silently did.
 #
 # It was fixed at 20c, which was right for v6: that rule's evidence lived in
@@ -141,8 +156,16 @@ def enabled():
 
 
 def _client_order_id(ts, symbol):
-    """Stable per signal, so a retried run cannot double-bet the same window."""
-    return f"v6-{ts.replace(' ', 'T').replace(':', '')}-{symbol}"[:64]
+    """Stable per signal, so a retried run cannot double-bet the same window.
+
+    The prefix namespaces the key by STRATEGY. Two rules can both want BTC in
+    the window closing at 18:45 -- v6 at 35 seconds in, the frozen specs at
+    T-9 -- and with a shared prefix those are the same id, so whichever ran
+    second would be silently de-duplicated against the first and never placed.
+    The default stays "v6" so existing behaviour is unchanged.
+    """
+    tag = os.environ.get("ORDER_PREFIX", "").strip() or "v6"
+    return f"{tag}-{ts.replace(' ', 'T').replace(':', '')}-{symbol}"[:64]
 
 
 def current_entry(ticker, side):
