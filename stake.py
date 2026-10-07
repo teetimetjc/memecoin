@@ -136,7 +136,9 @@ def table(rule, H):
     print("\n  CHANCE OF GOING BROKE, by starting balance")
     print("    Whole windows resampled 2,000 times: same bets and win rate,")
     print("    only the ORDER they arrive in changes.")
-    hdr = "".join(f"{'$%,.0f' % b:>10}" for b in BANKROLLS)
+    # f-string, not %-formatting: '%,.0f' is not a valid conversion and
+    # raised ValueError here on the first run.
+    hdr = "".join(f"{f'${b:,.0f}':>10}" for b in BANKROLLS)
     print(f"    {'stake':>7} {hdr}")
     for r in rows:
         cells = "".join(f"{r['ruins'][b]:>9.0f}%" for b in BANKROLLS)
