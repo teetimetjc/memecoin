@@ -81,7 +81,11 @@ def concurrency(bs):
         median=st.median(vals),
         peak_bets=counts[-1], median_bets=st.median(counts),
         windows=len(per),
-        worst_ct=max(per, key=lambda k: per[k]),
+        # Named to match what show() prints. drawdown() has its own
+        # worst_at, which is a different moment -- the bottom of the equity
+        # curve, not the window holding the most money -- and conflating
+        # the two would report one as the other.
+        worst_at=max(per, key=lambda k: per[k]),
     )
 
 
