@@ -63,7 +63,7 @@ jobs:
     timeout-minutes: 240
     env:
       # The mode scheduled runs use. 'dry' until deliberately changed.
-      default_mode: 'dry'
+      default_mode: 'live'
     steps:
       - uses: actions/checkout@v4
         with:
