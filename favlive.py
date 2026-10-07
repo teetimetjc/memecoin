@@ -203,8 +203,27 @@ def cycle(client, r, stake, dry):
     sigs = signals_from(live_now, r, now)
     stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     if not sigs:
-        print(f"  [favlive] {stamp}: window open, nothing in "
-              f"{100*r['band'][0]:.0f}-{100*r['band'][1]:.0f}c")
+        # SHOW THE PRICES, not just the absence of signals. "nothing in
+        # 90-96c" reads exactly the same whether the market was genuinely
+        # quoted outside the band or the quote came back empty, and this
+        # project has shipped five green runs full of blanks for want of
+        # exactly this line. A missing quote is a broken read; a quote at
+        # 62c is a quiet market. They need different responses.
+        seen = []
+        for m in live_now:
+            tk = str(m.get("ticker") or "")
+            if tk.split("-")[0] not in MAJORS:
+                continue
+            q = C.quote_from_market(m)
+            if not q:
+                seen.append(f"{tk.split('-')[0]}=NO QUOTE")
+                continue
+            px = side_price(q, r["sides"][0])
+            seen.append(f"{tk.split('-')[0]}="
+                        + ("none" if px is None else f"{100*px:.0f}c"))
+        print(f"  [favlive] {stamp}: nothing in "
+              f"{100*r['band'][0]:.0f}-{100*r['band'][1]:.0f}c "
+              f"({len(live_now)} market(s): {', '.join(seen) or 'none priced'})")
         return []
     print(f"  [favlive] {stamp}: {len(sigs)} signal(s)")
     for s in sigs:
