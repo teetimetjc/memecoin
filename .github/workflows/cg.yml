@@ -111,7 +111,7 @@ on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: 'downcheck | rate | ctlstatus | stake | capital | arbsum | ladder | gapwhy | overlap | score | rich | plateau | pooled | hunt | slowround | slowfill | bucket | peek | slowbook | exchange | dip3 | multi | dip2 | dip | shift-test | ind-split | ledger | fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
+        description: 'incr | downcheck | rate | ctlstatus | stake | capital | arbsum | ladder | gapwhy | overlap | score | rich | plateau | pooled | hunt | slowround | slowfill | bucket | peek | slowbook | exchange | dip3 | multi | dip2 | dip | shift-test | ind-split | ledger | fee-truth | fee-check | ind-backfill | spot-probe | diag-combo | combo | maker70 | search15 | validate-backfill | backfill | backfill-probe | retest | calib | survey-probe | kap | cg1 | cg7 | cg9 | v6 | maker | maker-holdout (FROZEN SPEC ONLY) | probe-auth | probe-ws'
         required: true
         default: 'calib'
       series:
@@ -182,6 +182,7 @@ jobs:
             overlap) python overlap.py ;;
             gapwhy) python gapwhy.py ;;
             ladder) python ladder.py ;;
+            incr) python incr.py ;;
             downcheck) python downcheck.py ;;
             rate) python rate.py ;;
             ctlstatus) python control.py --status ;;
