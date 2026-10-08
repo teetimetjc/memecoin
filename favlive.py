@@ -71,6 +71,12 @@ ENTRY_MAX = int(os.environ.get("FAVLIVE_ENTRY_MAX_S") or 9 * 60 + 45)
 MAX_PER_WINDOW = int(os.environ.get("FAVLIVE_MAX_PER_WINDOW") or 5)
 DAY_STOP = float(os.environ.get("FAVLIVE_DAY_STOP") or 20.0)
 POLL_S = 10
+# How often the day's settled P&L is re-read, and how old that figure may get
+# before it stops counting as a guard. Five minutes is far finer than the stop
+# needs -- a losing day takes hours to build -- and 45 minutes of staleness
+# still bounds the damage at a few windows.
+PNL_EVERY_S = 300
+PNL_MAX_AGE_S = 2700
 
 RULE_BY_NAME = {r["name"]: r for r in S.RULES}
 DEFAULT_RULE = "narrow slice"
@@ -311,9 +317,26 @@ def main():
 
     deadline = time.time() + seconds
     seen = set()
+    pnl_at = 0.0          # when the day's P&L was last read successfully
+    pnl_val = None        # and what it was
     while time.time() < deadline:
         if not dry:
-            pnl = day_pnl()
+            # ONCE EVERY PNL_EVERY_S, NOT EVERY POLL. This sat inside the
+            # ten-second loop, so it called the settlements endpoint 360 times
+            # an hour -- abusive, and a standing invitation to be rate limited.
+            # Worse, the branch below treats an unreadable call as a reason not
+            # to bet, so throttling would have silently stopped all betting
+            # while looking exactly like a quiet market.
+            if time.time() - pnl_at >= PNL_EVERY_S:
+                fresh = day_pnl()
+                if fresh is not None:
+                    pnl_val, pnl_at = fresh, time.time()
+                else:
+                    # Keep the last good value and let it age. Betting stops
+                    # only once it is too stale to be a guard at all.
+                    print("  [favlive] settlements unreadable; using the last "
+                          f"figure ({(time.time()-pnl_at)/60:.0f} min old)")
+            pnl = pnl_val
             # A LOSS is a negative net. Compared as a magnitude against the
             # stop so the sign cannot be read backwards -- getting that wrong
             # would halt on a good day and run through a bad one.
@@ -323,9 +346,15 @@ def main():
                 control.halt(client,
                              f"favlive day stop: net ${pnl:+.2f} settled today")
                 return 0
-            if pnl is None:
-                print("  [favlive] could not read today's settlements, so the "
-                      "day stop cannot be evaluated -- not betting this cycle.")
+            # Block only when the guard is genuinely blind: never read, or so
+            # stale it no longer bounds anything. A single failed call is not
+            # a reason to stop betting for the session.
+            stale = (time.time() - pnl_at) if pnl_at else 1e9
+            if pnl is None or stale > PNL_MAX_AGE_S:
+                print("  [favlive] the day stop cannot be evaluated "
+                      + ("(never read)" if pnl is None
+                         else f"({stale/60:.0f} min stale)")
+                      + " -- not betting this cycle.")
                 time.sleep(POLL_S)
                 continue
         # One cycle per window, keyed so a slow loop cannot bet it twice.
