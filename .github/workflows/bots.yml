@@ -80,8 +80,14 @@ on:
         description: 'Pushover digests (1 = on, 0 = off). DEFAULT OFF.'
         required: false
         default: '0'
-  schedule:
-    - cron: '7 * * * *'
+  # SCHEDULE DISABLED 2026-10-08. The spreadsheet was at 91% of its
+  #   ten-million-cell cap and this collector's tab was deleted; left
+  #   scheduled it would recreate and refill it within the hour.
+  #   Kapelame Paper / EdgeHunter Paper: both paper bots are superseded by
+#   favlive, which bets the frozen spec with real money.
+  # Re-enable by uncommenting the cron below.
+  # schedule:
+  # - cron: '7 * * * *'
 
 concurrency:
   group: paper-bots

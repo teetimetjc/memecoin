@@ -35,8 +35,14 @@ on:
         description: 'How long to collect (600 = short check, 13500 = 3h45m session)'
         required: true
         default: '13500'
-  schedule:
-    - cron: '18 * * * *'
+  # SCHEDULE DISABLED 2026-10-08. The spreadsheet was at 91% of its
+  #   ten-million-cell cap and this collector's tab was deleted; left
+  #   scheduled it would recreate and refill it within the hour.
+  #   SLOWBOOK: slow-market resting is closed -- fill quality was real
+#   (+1.3c/contract) but the round trip measured -$0.53 to -$0.83.
+  # Re-enable by uncommenting the cron below.
+  # schedule:
+  # - cron: '18 * * * *'
 
 concurrency:
   group: slowcollect

@@ -37,8 +37,14 @@ on:
         description: 'How long to watch (600 = short check, 3540 = 59min)'
         required: true
         default: '3540'
-  schedule:
-    - cron: '33 * * * *'
+  # SCHEDULE DISABLED 2026-10-08. The spreadsheet was at 91% of its
+  #   ten-million-cell cap and this collector's tab was deleted; left
+  #   scheduled it would recreate and refill it within the hour.
+  #   ARB: the ladder arbitrage is closed -- ladder.py's 44 crossings were a
+#   sampling artifact and arb.py, reading whole ladders in one call, found 0.
+  # Re-enable by uncommenting the cron below.
+  # schedule:
+  # - cron: '33 * * * *'
 
 concurrency:
   group: arb
