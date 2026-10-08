@@ -11,6 +11,8 @@ name: Favlive (frozen spec, $4 bets)
 #           printing the orders it would send and sending none.
 #   live    actually places orders. Sets ALLOW_LIVE_TRADING=1, which is the
 #           deliberate human thumbs-up no_trade_guard.py exists to demand.
+#   auto    whatever `default_mode` below says. FOR AUTOMATED CALLERS ONLY --
+#           see WHY 'auto' EXISTS.
 #
 # SCHEDULED RUNS USE THE `default_mode` BELOW, and it is 'dry' until changed by
 # hand. Flipping it is a one-line commit in this file -- which is exactly the
@@ -42,12 +44,34 @@ name: Favlive (frozen spec, $4 bets)
 # is 6h) the idle gaps are rare and brief, so a hole now needs a long run of
 # consecutive drops to land in one rather than just three in a row. Runner
 # minutes are free here because the repository is public.
+#
+# WHY 'auto' EXISTS. The length change above shrinks the hole but does not
+# close it, because it does not reduce the drop rate -- so a second, INDEPENDENT
+# trigger source (an external pinger such as cron-job.org, hitting
+# workflow_dispatch hourly at :22) is what actually closes it. Two sources
+# double the chances that at least one trigger lands during each session and
+# parks itself as the pending successor, and a pending run takes over the
+# instant the current one ends.
+#
+# An external caller can only reach workflow_dispatch, and THERE IS NO WAY TO
+# SEND "no opinion" FOR A REQUIRED INPUT: omit `mode` and GitHub substitutes
+# the declared default, 'dry'. The session would then run the full loop, place
+# nothing, and print a log indistinguishable from a healthy live run. Sending
+# mode=live instead works, but moves the live switch out of this file and into
+# a third-party web form, which destroys the one property that matters above --
+# that spending real money is a commit with a date on it.
+#
+# So 'auto' means "start a session; the repository decides what kind". The
+# pinger sends {"ref":"main","inputs":{"mode":"auto"}} and nothing else. The
+# token it carries needs Actions: read and write and NOTHING ELSE -- in
+# particular NOT Contents, because contents write would let a leaked token push
+# a workflow that prints KALSHI_API_KEY.
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'replay | dry | live  (live SPENDS REAL MONEY)'
+        description: 'replay | dry | live | auto  (live SPENDS REAL MONEY)'
         required: true
         default: 'dry'
       stake:
@@ -89,13 +113,16 @@ jobs:
         id: mode
         run: |
           M="${{ github.event.inputs.mode }}"
-          if [ -z "$M" ]; then M="$default_mode"; fi
+          # Empty means a schedule event, which carries no inputs at all.
+          # 'auto' means a dispatch that deliberately declines to choose.
+          # Both defer to default_mode; an explicit replay/dry/live wins.
+          if [ -z "$M" ] || [ "$M" = "auto" ]; then M="$default_mode"; fi
           case "$M" in
             replay|dry|live) ;;
             *) echo "unknown mode: $M"; exit 1 ;;
           esac
           echo "mode=$M" >> "$GITHUB_OUTPUT"
-          echo "Running in mode: $M"
+          echo "Running in mode: $M  (requested: ${{ github.event.inputs.mode || 'schedule' }})"
 
       - name: Replay the selector against history
         if: steps.mode.outputs.mode == 'replay'
