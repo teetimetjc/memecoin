@@ -54,6 +54,8 @@ SERIES_REFRESH_S = 3600
 FLUSH_EVERY_S = 300
 SETTLE_GRACE_S = 120
 HOURLY_CAP = 6           # strikes kept per hourly series, nearest the money
+# Hourly collection, off by default. See discover() for why.
+HOURLY = os.environ.get("COLLECT_HOURLY", "").strip() == "1"
 
 HEADERS = (["Ticker", "Series", "Event", "Close Time", "Strike",
             "Collected UTC"]
@@ -106,10 +108,20 @@ def discover():
     if not d:
         print(f"  could not list series: {err}")
         return {}
+    # HOURLY IS OFF BY DEFAULT since 2026-10-08. The cross-market question it
+    # was collected for is closed: ladder.py's 44 apparent arbitrage crossings
+    # turned out to be a sampling artifact, and arb.py reading whole ladders in
+    # one call found zero. H60 had grown to 888,125 cells in a spreadsheet that
+    # was 91% of the way to its ten-million cap, which M15 needs the room in.
+    #
+    # Switchable rather than deleted: COLLECT_HOURLY=1 brings it back, so
+    # reopening the question costs an environment variable rather than a
+    # rewrite. Fifteen-minute collection is untouched either way.
+    want = ("fifteen_min", "hourly") if HOURLY else ("fifteen_min",)
     out = {}
     for x in (d.get("series") or []):
         tk, fr = str(x.get("ticker") or ""), str(x.get("frequency") or "")
-        if tk and tk != "None" and fr in ("fifteen_min", "hourly"):
+        if tk and tk != "None" and fr in want:
             out[tk] = fr
     return out
 
