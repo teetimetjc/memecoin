@@ -105,8 +105,54 @@ def rows_since(start):
                         side=str(c(r, "Side")),
                         entry=_f(c(r, "Entry ¢")),
                         contracts=_f(c(r, "Contracts")),
-                        cost=_f(c(r, "Cost $"))))
+                        oid=str(c(r, "Order ID")).strip(),
+                        # The sheet's Cost column is contracts times the LIMIT
+                        # price, kept only as a fallback. See actual_costs.
+                        limit_cost=_f(c(r, "Cost $"))))
     return out
+
+
+def actual_costs():
+    """What each order really paid, from the fills: price AND fee, per order.
+
+    THE SHEET'S COST COLUMN IS THE LIMIT, NOT THE FILL. live.py computes it as
+    contracts times the limit price, and the limit is the quote plus a one-cent
+    slip buffer. IOC orders execute at the book's ask, which is normally better
+    than that, so costing a bet at its limit overstates what was spent and
+    understates the profit.
+
+    This mattered immediately: the first version of this file reported +$4.08
+    while Kalshi reported +$4.83, and the whole $0.75 was 60 contracts priced
+    1.8c too high. fee_truth.py had already recorded this exact property of the
+    Cost column in September -- "the apparent fee is just the one-cent limit
+    buffer" -- and this file was built on that column anyway.
+
+    The fill carries the executed price and the fee actually charged, so cost
+    is contracts*price + fee with nothing estimated. Keyed by order id so a
+    market with several orders does not pool them.
+    """
+    d = get("/portfolio/fills", limit=200)
+    by = collections.defaultdict(lambda: dict(cost=0.0, n=0.0, px=[]))
+    for f in ((d or {}).get("fills") or []):
+        oid = str(f.get("order_id") or "")
+        if not oid:
+            continue
+        cnt = _f(f.get("count_fp")) or _f(f.get("count")) or 0.0
+        # The side bought determines which price was paid: a NO fill pays the
+        # no price, a YES fill the yes price. Using the yes price for both
+        # would misprice every NO bet by (1 - 2p).
+        side = str(f.get("side") or "").lower()
+        px = _f(f.get("no_price_dollars")) if side == "no" else \
+            _f(f.get("yes_price_dollars"))
+        if px is None or not cnt:
+            continue
+        fee = _f(f.get("fee_cost")) or 0.0
+        if fee > 1.5:                      # cents, not dollars
+            fee = fee / 100.0
+        by[oid]["cost"] += cnt * px + fee
+        by[oid]["n"] += cnt
+        by[oid]["px"].append(px)
+    return by
 
 
 def main():
@@ -137,6 +183,20 @@ def main():
     won = [b for b in settled if setts[b["ticker"]]["rev"] > 0]
     lost = [b for b in settled if setts[b["ticker"]]["rev"] <= 0]
 
+    fills = actual_costs()
+    est = 0
+    for b in bets:
+        f = fills.get(b["oid"])
+        if f and f["cost"]:
+            b["cost"] = f["cost"]
+            b["fillpx"] = sum(f["px"]) / len(f["px"])
+        else:
+            # No matching fill readable: fall back to the limit-priced figure
+            # and SAY SO, rather than let a pessimistic number pass as exact.
+            b["cost"] = b["limit_cost"] or 0.0
+            b["fillpx"] = None
+            est += 1
+
     staked = sum(b["cost"] or 0 for b in settled)
     returned = sum(setts[b["ticker"]]["rev"] for b in settled)
     net = returned - staked
@@ -158,7 +218,13 @@ def main():
           f"({100*wr:.1f}%)")
     print(f"  break-even needs  {100*need:.1f}%  "
           f"(at the {100*avg:.1f}c average actually paid)")
-    print(f"  staked            ${staked:,.2f}")
+    fp = [b["fillpx"] for b in settled if b.get("fillpx") is not None]
+    print(f"  staked            ${staked:,.2f}   "
+          + (f"(fills averaged {100*sum(fp)/len(fp):.1f}c vs the "
+             f"{100*avg:.1f}c quote)" if fp else "(from limit prices)"))
+    if est:
+        print(f"    ^ {est} order(s) had no readable fill, priced at their")
+        print("      LIMIT instead, which overstates cost and understates net")
     print(f"  returned          ${returned:,.2f}")
     print(f"  NET               ${net:+,.2f}   "
           f"({100*net/staked:+.2f}% of stake)" if staked else "")
