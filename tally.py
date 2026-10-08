@@ -31,9 +31,14 @@ Read-only.
 """
 
 import collections
+import json
 import math
 import sys
 import time
+
+# How many individual bets the JSON carries. The summary always covers every
+# bet; this only bounds the per-bet list.
+BETS_IN_JSON = 60
 
 import requests
 
@@ -155,6 +160,49 @@ def actual_costs():
     return by
 
 
+def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
+    """One JSON line carrying the whole record, for the scorecard's store.
+
+    Printed rather than written anywhere: this runs on a throwaway runner with
+    no path back to the artifact, so the operator copies it across. Capped at
+    the most recent BETS_IN_JSON rows because a document is 256 KiB and the
+    list grows by about thirty a day; the summary covers all of them either
+    way, so the cap loses detail and never changes a total.
+    """
+    rows = []
+    for b in sorted(settled, key=lambda x: x["ts"], reverse=True)[:BETS_IN_JSON]:
+        s = setts[b["ticker"]]
+        rows.append(dict(
+            ts=b["ts"][:16],
+            series=b["ticker"].split("-")[0].replace("KX", "").replace("15M", ""),
+            ticker=b["ticker"],
+            paid=round(b["entry"] or 0, 1),
+            fill=round(100 * b["fillpx"], 1) if b.get("fillpx") else None,
+            contracts=int(b["contracts"] or 0),
+            cost=round(b["cost"], 2),
+            result=s["result"],
+            rev=round(s["rev"], 2),
+            pnl=round(s["rev"] - b["cost"], 2),
+        ))
+    doc = dict(
+        asof=time.strftime("%-d %b %Y, %H:%M UTC", time.gmtime()),
+        placed=len(bets), settled=len(settled), won=len(won),
+        net=round(net, 2), staked=round(staked, 2), returned=round(returned, 2),
+        avg_paid_cents=round(100 * avg, 1),
+        avg_fill_cents=round(100 * sum(
+            b["fillpx"] for b in settled if b.get("fillpx")) /
+            max(1, sum(1 for b in settled if b.get("fillpx"))), 1),
+        breakeven_pct=round(100 * need, 1),
+        bets=rows,
+    )
+    bal = control.fetch_balance()
+    if bal is not None:
+        doc["balance"] = round(bal, 2)
+    print("\n--- BEGIN JSON ---")
+    print(json.dumps(doc, separators=(",", ":")))
+    print("--- END JSON ---")
+
+
 def main():
     bets = rows_since(START)
     print("=" * 94)
@@ -262,6 +310,8 @@ def main():
     print("  it is profitable, because break-even is 92.7%. The notifications")
     print("  cannot tell you which; only the net and the interval can.")
     print("=" * 94)
+
+    emit_json(bets, settled, won, setts, staked, returned, net, avg, need)
     return 0
 
 
