@@ -78,6 +78,28 @@ POLL_S = 10
 PNL_EVERY_S = 300
 PNL_MAX_AGE_S = 2700
 
+# EVERY TICKER THIS SESSION HAS TRIED TO ORDER, whether or not the attempt was
+# seen to succeed. One market may be bet once, ever.
+#
+# WHY THIS EXISTS. On 2026-10-08 the bot put two orders into one ETH window
+# 26 seconds apart, at 82c and 87c, and lost both: -$6.83 from a single close,
+# which turned the live record from +$3.09 to -$1.97. Two orders on one market
+# are not two bets. They share one outcome, so this is one bet at 1.9x the
+# intended size -- the opposite of the per-window cap's purpose.
+#
+# The hole was in the window guard below: it recorded a window as done only
+# when cycle() RETURNED SOMETHING TRUTHY, so an order that was placed and then
+# lost its response -- a timeout, a sheet write that raised, an empty rows list
+# -- looked exactly like a window where nothing had happened, and the next poll
+# ten seconds later bet it again. THE GUARD WAS KEYED ON SUCCESS WHEN THE
+# IRREVERSIBLE ACT IS THE ATTEMPT.
+#
+# So this set is written BEFORE the order goes out, never after. The trade is
+# deliberate and it is the right way round: if the attempt then fails, the
+# window is skipped and that costs about 31c of expected value. Betting it
+# twice costs $3.69 of real exposure and corrupts the sample.
+ORDERED = set()
+
 RULE_BY_NAME = {r["name"]: r for r in S.RULES}
 DEFAULT_RULE = "narrow slice"
 
@@ -119,10 +141,20 @@ def signals_from(markets, r, now):
     the two vocabularies describe the same trade and the mapping is one line.
     """
     out = []
+    # The same market can appear twice in one list -- overlapping series
+    # queries, a retried page -- and two entries for one ticker would send two
+    # orders from a single cycle, which ORDERED cannot catch because it is only
+    # consulted once, at the top of this loop.
+    this_call = set()
     for m in markets:
         tk = str(m.get("ticker") or "")
         ser = tk.split("-")[0]
         if ser not in MAJORS:
+            continue
+        # Already bet this market. Not "already bet this window" -- the unit
+        # that shares an outcome is the MARKET, and that is the unit a second
+        # order doubles down on.
+        if tk in ORDERED:
             continue
         q = C.quote_from_market(m)
         if not q:
@@ -131,6 +163,9 @@ def signals_from(markets, r, now):
             px = side_price(q, side)
             if px is None or not (r["band"][0] <= px < r["band"][1]):
                 continue
+            if (tk, side) in this_call:
+                continue
+            this_call.add((tk, side))
             out.append(dict(ticker=tk, series=ser, side=side,
                             up_down=("UP" if side == "YES" else "DOWN"),
                             price=px, close=str(m.get("close_time") or "")))
@@ -272,6 +307,17 @@ def cycle(client, r, stake, dry):
 
     tuples = [(stamp, s["series"], s["up_down"], s["ticker"],
                100.0 * s["price"]) for s in sigs]
+    # CLAIM THE MARKETS BEFORE SENDING, NOT AFTER. Everything below this line
+    # can fail -- the call can time out, the response can be lost, run_window
+    # can raise on the way back from a filled order. None of that un-places an
+    # order, so none of it may leave a ticker eligible to be bet again.
+    #
+    # The dry path claims them too, deliberately: a dry run exists to exercise
+    # every line the live run will, and a guard that only engages with real
+    # money on the line is a guard nothing has tested.
+    for s in sigs:
+        ORDERED.add(s["ticker"])
+
     if dry:
         print(f"  [favlive] DRY RUN -- {len(tuples)} order(s) NOT sent. "
               f"${stake:.2f} each would buy "
