@@ -1,0 +1,50 @@
+name: Price path (read-only)
+
+# How far did each live bet fall before it settled?
+#
+# tally.py reports the OUTCOME. This reports the PATH: for every bet, the
+# lowest yes bid between the fill and the close, read from Kalshi's own
+# per-minute candlesticks. That is what the position could actually have been
+# sold at on the way through.
+#
+# It exists to settle one question with data instead of intuition: whether a
+# stop-loss could ever help this rule. Cutting losers early only works if
+# losers behave differently from winners mid-window. If winners routinely dip
+# deep and recover, a stop converts wins into small losses and destroys the
+# strategy with its own safety net -- which at 12:1 payoff asymmetry is a
+# trade the rule cannot afford.
+#
+# PATH_SINCE narrows the window; blank means everything since betting began.
+#
+# Read-only. No order path and no Pushover secret is reachable from this
+# workflow, so nothing here can place a trade or push a result to a phone.
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: 'count bets from this UTC time (blank = since 2026-10-07 15:49)'
+        required: false
+        default: ''
+
+jobs:
+  path:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Read the price paths
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          # Through the environment, never interpolated into the shell: this
+          # input is free text.
+          PATH_SINCE: ${{ inputs.since }}
+        run: python path.py
