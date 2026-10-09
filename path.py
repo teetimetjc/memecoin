@@ -1,307 +1,189 @@
-"""Sample every 15-minute market's price every 30 seconds, all the way through.
+"""How close did each winning bet come to dying?
 
-WHY THIS EXISTS, AND WHY IT IS A DIFFERENT QUESTION FROM EVERYTHING BEFORE IT.
-v6 and v7 both asked who wins at SETTLEMENT. That question is answered by a
-well calibrated book, and neither rule beat the price. This asks about the
-PATH: a 15-minute market that lurches away from its strike in the first
-minutes prices the far side cheap, and the question is whether it comes back
-often enough, and far enough, to sell into at a profit before the window ends.
+THE QUESTION THIS ANSWERS IS ABOUT THE PATH, NOT THE OUTCOME. tally.py says
+whether a bet settled at $1.00 or at nothing. It says nothing about what
+happened in between, and the nine minutes in between are where a stop-loss,
+an early exit or a "cash out" button would have acted. You watched two bets
+on your iPad swing hard against the target and come back; this counts how
+often that happened across every bet, instead of across the two you watched.
 
-That is a bet about the journey, not the destination. Nothing collected so
-far can answer it. The Mid Window tab holds two snapshots (+5 and +10
-minutes) and a take-profit fires the INSTANT price touches a level, so two
-samples miss most touches and would understate any such strategy badly.
+WHY IT MATTERS MORE THAN IT SOUNDS. Buying at 91c and holding is a strategy
+whose whole shape is "usually fine, occasionally -$3.69". The obvious way to
+improve it is to cut the losers early. That only works if losers behave
+DIFFERENTLY from winners on the way through. If winners routinely dip to 30c
+and recover, then any rule that sells at 30c converts a pile of wins into a
+pile of small losses, and the strategy is destroyed by its own safety net.
+This script decides which world we are in, from the exchange's own
+per-minute history rather than from intuition.
 
-So: 28 samples per market per window, every 30 seconds. At that spacing a
-level that is touched for a minute is almost certainly seen; one touched for
-ten seconds is still missed, and any result here is therefore a FLOOR on how
-often a take-profit would have triggered, never an overstatement.
+WHAT IS MEASURED, and why it is the BID and not the mid or the ask:
 
-WHAT IS STORED. One row per market per window, with the bid and ask series
-compressed into two strings. One row per sample would be 140 rows a window
-and would bury the sheet inside a week; this is five.
+  The lowest YES BID between entry and close is what you could actually have
+  SOLD at. The mid is a price nobody was offering and the ask is what you
+  would have paid to buy more. Using the mid here would flatter every dip by
+  a cent or two and understate exactly the thing being measured.
 
-The ASK series is what an entry costs and the BID series is what an exit
-pays. Both are kept because using a mid price for either would invent an edge
-out of half a spread -- which, on contracts this cheap, is most of the
-supposed profit.
+  "Entry" is the fill timestamp, not the window open: a dip that happened
+  before the order existed is not a dip this position survived.
 
-EVERY market is sampled, not only the ones a rule fired on. The setup being
-tested is defined by the price path, so filtering to v6's signals would
-inherit v6's selection and answer a narrower question than the one asked.
+  The FINAL candle is excluded. Its close is the settlement price, which is
+  1.00 or 0.00 by definition, so including it would report every loser as
+  having dipped to zero and tell you nothing you did not already know.
 
-Read-only. Places nothing.
+Read-only. Places nothing, writes nothing.
 """
 
+import collections
 import os
-import threading
+import sys
 import time
-from datetime import datetime, timedelta, timezone
 
-import requests
-
-SHEET = "Path"
-HEADERS = [
-    "Timestamp", "Symbol", "Ticker", "Strike", "Spot at Open",
-    "First Offset s", "Step s", "Samples", "Yes Bids", "Yes Asks", "Note",
-    # HOW MANY, not just how much. A price alone cannot say whether a bounce
-    # was tradeable: 90c with 40 contracts behind it is a real exit, 90c with
-    # 2 contracts is a headline you cannot sell into. The backtest sells
-    # 30-plus contracts a trade and, without these, silently assumes they all
-    # fill at the top of the book.
-    #
-    # APPENDED AFTER "Note", not slotted in beside the prices where they
-    # belong, because 235 rows were already written to this tab. Inserting a
-    # column mid-table would leave every one of them with its Note sitting
-    # under a size heading -- historical data relabelled rather than extended.
-    "Yes Bid Sz", "Yes Ask Sz",
-]
-
-# Every 30 seconds from +30s to +13:30. The last 90 seconds are deliberately
-# left out: the book goes erratic into the close, and a fill there is not
-# something a strategy should be credited with.
-FIRST = 30
-STEP = 30
-COUNT = 27
-
-PRICE_HOST = "https://api.elections.kalshi.com"
+import backfill as B
+import live
+import predictor as P
+import tally
 
 
-def enabled():
-    return os.environ.get("MEASURE_PATH", "").strip() == "1"
+START = os.environ.get("PATH_SINCE") or "2026-10-07 15:49"
+# The thresholds the report counts. 50c is "the market stopped believing";
+# 25c and 10c are the ones that would have tripped any plausible stop.
+MARKS = (0.50, 0.25, 0.10)
+PAUSE = 0.25
 
 
-def _depth(ticker):
-    """(contracts at the best YES bid, contracts at the best YES ask).
+def low_after(series, ticker, close, after_ts):
+    """Lowest yes_bid strictly after `after_ts` and strictly before close.
 
-    Read from the order book, where a YES ask is the mirror of a NO bid -- so
-    selling a YES position eats the YES bid, and selling a NO position eats
-    the NO bid, which is this market's YES ask side. Both are kept because
-    the strategy trades whichever side came up cheap.
-
-    THE SHAPE, confirmed from a live response rather than assumed:
-
-        {"orderbook_fp": {"yes_dollars": [["0.6500", "200.02"]],
-                          "no_dollars":  [["0.3400", "3325.85"]]}}
-
-    The first attempt guessed "orderbook" with integer cents and wrote
-    nothing but blanks for a full day. Both halves were wrong: the key is
-    "orderbook_fp", and price and size are STRINGS in dollars. The older
-    spellings are still accepted below in case the endpoint serves them.
-
-    Deliberately fail-soft: prices are the data that already works, so a
-    shape surprise or a rate limit here costs a blank size column, never a
-    window of collection.
+    Returns (low, n_candles) or (None, 0) when the history is unusable --
+    which is reported rather than silently treated as "no dip", because a
+    failed read and a calm market are not the same finding.
     """
-    import predictor as P
-    try:
-        path = f"/trade-api/v2/markets/{ticker}/orderbook"
-        hdrs = P._kalshi_headers("GET", path) or {}
-        r = requests.get(f"{PRICE_HOST}{path}", params={"depth": 1},
-                         headers=hdrs, timeout=8)
-        if not r.ok:
-            return None, None
-        body = r.json() or {}
-        ob = body.get("orderbook_fp") or body.get("orderbook") or {}
-    except Exception:
-        return None, None
-
-    def top(side):
-        lv = ob.get(f"{side}_dollars") or ob.get(side)
-        if not isinstance(lv, list) or not lv:
-            return None
-        # Ascending by price, so the best bid is the LAST entry.
-        best = lv[-1]
-        if not isinstance(best, (list, tuple)) or len(best) < 2:
-            return None
-        try:
-            return round(float(best[1]), 2)
-        except (TypeError, ValueError):
-            return None
-
-    # "yes" is the YES bid side; "no" is the NO bid side, which is the same
-    # resting interest a YES buyer lifts -- i.e. the size at the YES ask.
-    return top("yes"), top("no")
-
-
-def _book(ticker):
-    """(yes_bid_cents, yes_ask_cents) or (None, None)."""
-    import predictor as P
-    try:
-        hdrs = P._kalshi_headers("GET", f"/trade-api/v2/markets/{ticker}") or {}
-        r = requests.get(f"{PRICE_HOST}/trade-api/v2/markets/{ticker}",
-                         headers=hdrs, timeout=8)
-        if not r.ok:
-            return None, None
-        m = r.json().get("market") or {}
-    except Exception:
-        return None, None
-
-    def c(k):
-        try:
-            return round(float(m[k]) * 100.0, 1)
-        except (KeyError, TypeError, ValueError):
-            return None
-
-    return c("yes_bid_dollars"), c("yes_ask_dollars")
-
-
-def markets_for(boundary):
-    """This window's market per coin: (symbol, ticker, strike).
-
-    Matched on close time rather than looked up by price, because at the top
-    of a window the market exists but its book is a placeholder, and a
-    price-validating lookup reports nothing at exactly the wrong moment.
-    """
-    import predictor as P
-    close = boundary + timedelta(minutes=15)
-    want = f"{close:%Y-%m-%dT%H:%M}"
-    out = []
-    for symbol, series in P.KALSHI_SERIES.items():
-        try:
-            hdrs = P._kalshi_headers("GET", "/trade-api/v2/markets") or {}
-            r = requests.get(f"{PRICE_HOST}/trade-api/v2/markets",
-                             params={"series_ticker": series, "limit": 200},
-                             headers=hdrs, timeout=10)
-            if not r.ok:
-                continue
-            for mk in r.json().get("markets", []):
-                if str(mk.get("close_time", ""))[:16] == want:
-                    strike = (mk.get("floor_strike") or mk.get("cap_strike")
-                              or mk.get("strike_price") or "")
-                    out.append((symbol, mk["ticker"], strike))
-                    break
-        except Exception:
+    end = B.ts(close)
+    if end is None:
+        return None, 0
+    d, err = B.get(
+        f"/trade-api/v2/series/{series}/markets/{ticker}/candlesticks",
+        start_ts=int(end) - 20 * 60, end_ts=int(end), period_interval=1)
+    if not d:
+        return None, 0
+    low, n = None, 0
+    for c in (d or {}).get("candlesticks") or []:
+        t = B._f(c.get("end_period_ts"))
+        if t is None or t <= after_ts or t >= end:
             continue
-    return out
+        v = c.get("yes_bid")
+        if not isinstance(v, dict):
+            continue
+        # low_dollars is the floor WITHIN the minute; close_dollars would
+        # miss a dip that recovered inside the same candle, and those are
+        # precisely the fast swings this is looking for.
+        b = B._f(v.get("low_dollars"))
+        if b is None:
+            b = B._f(v.get("close_dollars"))
+        if b is None or not (0.0 <= b <= 1.0):
+            continue
+        low = b if low is None else min(low, b)
+        n += 1
+    return low, n
 
 
-class _Sampler(threading.Thread):
-    """Walks the window sampling every market, on its own thread.
+def main():
+    rows = tally.rows_since(START)
+    if not rows:
+        print("no live bets recorded since " + START)
+        return 0
+    # Settlement outcome per ticker, from the exchange rather than from our
+    # own arithmetic -- the same source tally.py grades against.
+    d = tally.get("/portfolio/settlements", limit=200)
+    results = {}
+    for s in ((d or {}).get("settlements") or []):
+        tk = str(s.get("ticker") or "")
+        rev = tally._f(s.get("revenue_dollars"))
+        if rev is None:
+            rev = tally._f(s.get("revenue"))
+            if rev is not None and abs(rev) > 100:
+                rev = rev / 100.0
+        results[tk] = "yes" if (rev or 0.0) > 0 else "no"
 
-    WHY A THREAD. The first eight windows all started at +90 seconds, never
-    +30, because the sampler could not begin until the runner had booted, pip
-    had installed and the predictions had been written. A whole minute was
-    missing from the front of every path -- and the front is the part this
-    data exists to study, since the setup being tested is a market that has
-    already lurched away from its strike in the first minutes.
+    print("=" * 86)
+    print("HOW FAR DID EACH BET FALL BEFORE IT SETTLED?")
+    print("lowest yes bid between the fill and the close -- what you could have sold at")
+    print("=" * 86)
 
-    So sampling starts immediately and the rest of the job runs alongside it.
-    The thread only COLLECTS; the sheet write happens on the main thread at
-    the end, because two threads writing to one gspread client is a race
-    nobody needs.
-    """
+    seen, out, missing = set(), [], 0
+    for r in rows:
+        tk = r["ticker"]
+        # ONE ROW PER MARKET. Two orders in one market share a single price
+        # path, so counting both would double-weight that path -- the same
+        # error that made the live record read 3 losses where the exchange
+        # shows 2 positions.
+        if tk in seen:
+            continue
+        seen.add(tk)
+        res = results.get(tk)
+        if res is None:
+            continue
+        ser = tk.split("-")[0]
+        mk, err = B.get("/trade-api/v2/markets/" + tk)
+        ct = ((mk or {}).get("market") or {}).get("close_time")
+        if not ct:
+            missing += 1
+            continue
+        t0 = B.ts(str(r["ts"]).replace(" ", "T") + "Z") or 0
+        low, n = low_after(ser, tk, ct, t0)
+        time.sleep(PAUSE)
+        if low is None or n == 0:
+            missing += 1
+            continue
+        out.append(dict(ticker=tk, series=ser, entry=r["entry"],
+                        won=(res == "yes"), low=low, n=n))
 
-    daemon = True
+    if not out:
+        print("  no usable candle history for any bet")
+        return 0
 
-    def __init__(self, boundary):
-        super().__init__(name="path-sampler")
-        self.boundary = boundary
-        self.mk = []
-        self.bids = {}
-        self.asks = {}
-        self.sched = []
-        self.error = ""
+    out.sort(key=lambda x: x["low"])
+    # entry comes off the sheet already in CENTS; low comes back in DOLLARS.
+    # Mixing the two silently is how a 91c entry reads as a 90c fall.
+    print(f"\n  {'entry':>6} {'low':>6} {'fell':>7}  {'result':<6} market")
+    for b in out:
+        lo_c = 100.0 * b["low"]
+        print(f"  {b['entry']:>5.0f}c {lo_c:>5.0f}c {b['entry'] - lo_c:>6.0f}c  "
+              f"{('LOST' if not b['won'] else 'won'):<6} {b['ticker']}")
 
-    def run(self):
-        try:
-            self.mk = markets_for(self.boundary)
-            if not self.mk:
-                self.error = "no markets resolved"
-                return
-            self.bids = {t: [] for _, t, _ in self.mk}
-            self.asks = {t: [] for _, t, _ in self.mk}
-            self.bsz = {t: [] for _, t, _ in self.mk}
-            self.asz = {t: [] for _, t, _ in self.mk}
+    W = [b for b in out if b["won"]]
+    L = [b for b in out if not b["won"]]
+    print("\n" + "=" * 86)
+    print(f"  {len(out)} markets with usable history"
+          + (f"   ({missing} unreadable)" if missing else ""))
+    print(f"\n  {'dipped below':<16} {'winners':>18} {'losers':>16}")
+    for m in MARKS:
+        nw = sum(1 for b in W if b["low"] < m)
+        nl = sum(1 for b in L if b["low"] < m)
+        print(f"  {100*m:>13.0f}c   {nw:>7} of {len(W):<8} {nl:>7} of {len(L):<6}")
 
-            # Only offsets still AHEAD. A late start cannot go back and price
-            # +30s, and appending whatever it finds would write a series that
-            # claims to start at +30s while really starting minutes later --
-            # every later analysis would then read those prices at the wrong
-            # point in the window.
-            now = (datetime.now(timezone.utc) - self.boundary).total_seconds()
-            want = [FIRST + i * STEP for i in range(COUNT)]
-            self.sched = [t for t in want if t > now - 5]
-            if not self.sched:
-                self.error = "window already past the last sample point"
-                return
-
-            for target in self.sched:
-                wait = target - (datetime.now(timezone.utc) - self.boundary).total_seconds()
-                if wait > 0:
-                    time.sleep(min(wait, STEP + 5))
-                for _, ticker, _ in self.mk:
-                    b, a = _book(ticker)
-                    self.bids[ticker].append("" if b is None else b)
-                    self.asks[ticker].append("" if a is None else a)
-                    bs, as_ = _depth(ticker)
-                    self.bsz[ticker].append("" if bs is None else bs)
-                    self.asz[ticker].append("" if as_ is None else as_)
-        except Exception as e:                      # never take the job down
-            self.error = str(e)
+    if W:
+        print(f"\n  deepest dip among the WINNERS: "
+              f"{100*min(b['low'] for b in W):.0f}c")
+    print("\n" + "=" * 86)
+    # THE READING IS NOT AUTOMATIC, so state what would have to be true.
+    # A stop-loss only helps if losers visit the stop and winners do not.
+    if W and L:
+        for m in MARKS:
+            nw = sum(1 for b in W if b["low"] < m)
+            nl = sum(1 for b in L if b["low"] < m)
+            if nl == len(L) and nw == 0:
+                print(f"  A stop at {100*m:.0f}c would have caught every loss "
+                      f"and touched no winner -- ON THIS SAMPLE, which is "
+                      f"{len(L)} losses and proves nothing yet.")
+                break
+        else:
+            print("  No threshold separates them: every level a loser visits,"
+                  "\n  some winner visits too. A stop there sells winners to"
+                  "\n  avoid losses, which is the trade this rule cannot afford"
+                  "\n  at 12:1 payoff asymmetry.")
+    return 0
 
 
-def start(boundary):
-    """Begin sampling now. Returns the handle to hand back to finish()."""
-    s = _Sampler(boundary)
-    s.start()
-    return s
-
-
-def finish(client, sampler, spots=None):
-    """Wait for the walk to end, then write one row per market."""
-    if sampler is None:
-        return
-    # The walk ends at +13:30 by construction; the timeout is only a backstop
-    # against a hung request, and is generous enough never to truncate a
-    # healthy run.
-    sampler.join(timeout=16 * 60)
-    if sampler.is_alive():
-        print("  [path] sampler did not finish; not logging a partial series")
-        return
-    if sampler.error:
-        print(f"  [path] {sampler.error}")
-        return
-    if not sampler.mk or not sampler.sched:
-        return
-
-    spots = spots or {}
-    rows = []
-    for symbol, ticker, strike in sampler.mk:
-        asks = sampler.asks[ticker]
-        got = sum(1 for v in asks if v != "")
-        rows.append([
-            sampler.boundary.strftime("%Y-%m-%d %H:%M UTC"), symbol, ticker, strike,
-            spots.get(symbol, ""), sampler.sched[0], STEP, got,
-            ",".join(str(v) for v in sampler.bids[ticker]),
-            ",".join(str(v) for v in asks),
-            "" if got == len(sampler.sched)
-            else f"{len(sampler.sched) - got} sample(s) unpriced",
-            ",".join(str(v) for v in sampler.bsz.get(ticker, [])),
-            ",".join(str(v) for v in sampler.asz.get(ticker, [])),
-        ])
-    sized = sum(1 for r in rows for v in str(r[11]).split(",") if v not in ("", "None"))
-    print(f"  [path] {len(rows)} market(s) from +{sampler.sched[0]:.0f}s, "
-          f"{sum(r[7] for r in rows)}/{len(sampler.sched) * len(rows)} samples priced, "
-          f"{sized} with depth")
-
-    import predictor as P
-    try:
-        sh = client.open_by_key(P.SPREADSHEET_ID)
-        try:
-            ws = sh.worksheet(SHEET)
-            # The tab predates the size columns; widen its header once so the
-            # new values are labelled instead of trailing off the end nameless.
-            try:
-                have = ws.row_values(1)
-                if len(have) < len(HEADERS):
-                    ws.update("A1", [HEADERS])
-            except Exception:
-                pass
-        except Exception:
-            ws = sh.add_worksheet(title=SHEET, rows=8000, cols=len(HEADERS))
-            ws.update("A1", [HEADERS])
-        ws.append_rows(rows, value_input_option="USER_ENTERED", table_range="A1")
-        print(f"  [path] logged {len(rows)} row(s).")
-    except Exception as e:
-        print(f"  [path] could not write tab: {e}")
+if __name__ == "__main__":
+    sys.exit(main())
