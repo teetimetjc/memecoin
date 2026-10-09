@@ -1,0 +1,39 @@
+name: Dip double-down (frozen spec, read-only)
+
+# Scores specs/dipdouble.md: when a 90-96c favourite falls to 50c or below
+# inside the window, does it recover more often than a generic fall does?
+#
+# The hypothesis came from fourteen live bets, eleven of which recovered.
+# dip.py already measured the generic version at 44% recovery and -$2.21 a
+# bet. This asks the larger sample which number is real.
+#
+# NO INPUTS, DELIBERATELY. Every threshold is a constant in dipdouble.py and
+# a line in the spec. A pre-registered test whose operator can hand it a knob
+# at dispatch time is not pre-registered, and the whole point of freezing the
+# document first was to make the result mean something.
+#
+# Read-only. No order path and no Pushover secret is reachable from this
+# workflow, so a number here cannot reach a phone and be acted on before it
+# has survived the six conditions.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dipdouble:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Score the frozen spec
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python dipdouble.py
