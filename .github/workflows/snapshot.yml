@@ -1,0 +1,75 @@
+name: Snapshot the live record (read-only, writes a data branch)
+
+# Runs tally.py and commits the resulting record to the `data` branch as
+# snapshot.json, so it can be fetched with git and read off disk.
+#
+# WHY THIS EXISTS. tally prints the record into the job log. Reading it back
+# meant pulling the whole payload through a conversation -- thousands of
+# tokens every refresh, growing with the bet count. Worse, GitHub masks the
+# bare "{" and "}" lines of the multi-line GOOGLE_CREDENTIALS secret
+# everywhere in the log, so the JSON arrived with every brace replaced by
+# "***" and had to be retyped by hand. One such refresh landed 7c off the
+# ledger and only an assertion caught it.
+#
+# Base64 fixed the masking but not the transport, which was the real cost.
+# A file in git fixes both: the payload never enters a conversation, and a
+# refresh costs the same whether the record holds ten bets or sixty.
+#
+# THE READ IS STILL READ-ONLY WHERE IT MATTERS. tally places no orders and
+# no Pushover secret is reachable here. The only write is this one file, to
+# an orphan branch that nothing merges and nothing builds from.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Run tally and extract the record
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: |
+          set -o pipefail
+          python tally.py | tee /tmp/tally.txt
+          # Pull the base64 block out and decode it. Printing the decoded
+          # JSON is pointless here -- it goes to a file, not to a reader.
+          sed -n '/--- BEGIN JSON64 ---/,/--- END JSON64 ---/p' /tmp/tally.txt \
+            | sed '1d;$d' | tr -d '\n' | base64 -d > /tmp/snapshot.json
+          # FAIL LOUDLY IF IT IS NOT JSON. A truncated or masked payload
+          # written silently would be published to the scorecard as fact,
+          # which is the exact failure this whole change exists to prevent.
+          python -c "import json,sys; d=json.load(open('/tmp/snapshot.json')); \
+            assert d.get('settled') is not None, 'no settled count'; \
+            print('ok:', d['settled'], 'settled,', len(d.get('bets') or []), 'rows')"
+
+      - name: Commit it to the data branch
+        run: |
+          set -e
+          cp /tmp/snapshot.json /tmp/keep.json
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # An ORPHAN branch: no history from the code branch, nothing to
+          # merge, and it never grows a tree anyone could mistake for source.
+          git checkout --orphan data-tmp
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          rm -rf $(git ls-files) 2>/dev/null || true
+          cp /tmp/keep.json snapshot.json
+          git add -f snapshot.json
+          git commit -q -m "snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q -f origin data-tmp:data
+          echo "pushed snapshot.json to the data branch"
