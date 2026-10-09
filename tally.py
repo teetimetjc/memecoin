@@ -39,7 +39,14 @@ import time
 
 # How many individual bets the JSON carries. The summary always covers every
 # bet; this only bounds the per-bet list.
-BETS_IN_JSON = 60
+# Raised from 60 once the scorecard grew a stake filter. That filter re-buys
+# every bet in this list at $10 or $20, so a cap BELOW the settled count made
+# the modelled columns quietly cover fewer bets than the $4 headline -- at 63
+# settled the rows summed to +$4.50 against a headline of +$5.70, and nothing
+# on the page said why. A bet is about 150 bytes here and the document limit
+# is 256 KiB, so 400 rows is roughly 60 KiB and leaves plenty of room; at ~20
+# bets a day that is about three weeks before the cap binds again.
+BETS_IN_JSON = 400
 
 import requests
 
