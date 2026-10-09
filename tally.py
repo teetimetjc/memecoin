@@ -30,6 +30,7 @@ this changes nothing about them. This is bookkeeping: what the account did.
 Read-only.
 """
 
+import base64
 import collections
 import json
 import math
@@ -198,9 +199,31 @@ def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
     bal = control.fetch_balance()
     if bal is not None:
         doc["balance"] = round(bal, 2)
-    print("\n--- BEGIN JSON ---")
-    print(json.dumps(doc, separators=(",", ":")))
-    print("--- END JSON ---")
+    blob = json.dumps(doc, separators=(",", ":"))
+
+    # BASE64, BECAUSE THE PLAIN JSON COMES BACK UNPARSEABLE.
+    #
+    # GOOGLE_CREDENTIALS is a multi-line JSON secret whose pretty-printed form
+    # contains lines that are a bare "{" and a bare "}". GitHub Actions masks
+    # every line of a multi-line secret independently, so it redacts those two
+    # characters EVERYWHERE in the log -- including here. The record arrives
+    # with every brace replaced by "***", which no parser can read, so the
+    # operator was retyping all sixty rows by hand to get them into the
+    # scorecard. That is thousands of tokens a refresh and a transcription
+    # error waiting to happen; one such refresh already landed 7c off the
+    # ledger and only an assertion caught it.
+    #
+    # Base64's alphabet has no braces, so nothing in it is masked and the
+    # whole document survives the log intact. One command decodes it.
+    #
+    # The plain form is NOT printed alongside it. It would sit about twenty
+    # lines above this one, inside the tail of the log that gets read, so the
+    # cost it was removed to avoid would come straight back. Nothing is lost:
+    # the human-readable view is the report printed above, and the plain JSON
+    # is one command away from the line below.
+    print("\n--- BEGIN JSON64 ---")
+    print(base64.b64encode(blob.encode("utf-8")).decode("ascii"))
+    print("--- END JSON64 ---")
 
 
 def main():
