@@ -30,6 +30,11 @@ WHAT IS MEASURED, and why it is the BID and not the mid or the ask:
   1.00 or 0.00 by definition, so including it would report every loser as
   having dipped to zero and tell you nothing you did not already know.
 
+  A minute counts only when BOTH sides are quoted with a sane spread. An
+  empty bid side is NOT a price of zero, and conflating the two made the
+  first version of this script report 25 of 42 winners visiting single-digit
+  prices -- it was measuring liquidity gaps and calling them crashes.
+
 Read-only. Places nothing, writes nothing.
 """
 
@@ -71,18 +76,32 @@ def low_after(series, ticker, close, after_ts):
         t = B._f(c.get("end_period_ts"))
         if t is None or t <= after_ts or t >= end:
             continue
-        v = c.get("yes_bid")
-        if not isinstance(v, dict):
+
+        def side(k, f):
+            v = c.get(k)
+            return B._f(v.get(f)) if isinstance(v, dict) else None
+
+        bid = side("yes_bid", "close_dollars")
+        ask = side("yes_ask", "close_dollars")
+        # A MINUTE WITH NO BID IS NOT A MINUTE PRICED AT ZERO, and this is
+        # the whole reason this function is written the way it is. The first
+        # version took yes_bid.low_dollars and reported lows of 0c, 1c and 2c
+        # on markets that went on to settle YES from 90c nine minutes out --
+        # 25 of 42 winners supposedly visiting single digits. Contracts that
+        # win do not trade at 1c; an empty book does. The intra-minute low
+        # goes to zero whenever the bid side momentarily empties, which on a
+        # thin 15-minute market is often, so the figure was measuring
+        # liquidity gaps and calling them crashes.
+        #
+        # slowbook.py already had this guard, for this exact reason, and I
+        # wrote this file without it. So: a minute counts only if BOTH sides
+        # are quoted, in order, with a spread narrow enough to be a real
+        # two-sided market. Anything else is no reading, not a low one.
+        if bid is None or ask is None:
             continue
-        # low_dollars is the floor WITHIN the minute; close_dollars would
-        # miss a dip that recovered inside the same candle, and those are
-        # precisely the fast swings this is looking for.
-        b = B._f(v.get("low_dollars"))
-        if b is None:
-            b = B._f(v.get("close_dollars"))
-        if b is None or not (0.0 <= b <= 1.0):
+        if not (0 < bid < ask < 1) or (ask - bid) > 0.25:
             continue
-        low = b if low is None else min(low, b)
+        low = bid if low is None else min(low, bid)
         n += 1
     return low, n
 
