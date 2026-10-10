@@ -97,6 +97,35 @@ def wilson(k, n):
     return max(0.0, c - h), min(1.0, c + h)
 
 
+def norm_ts(s):
+    """'2026-10-09 7:35:21' -> '2026-10-09 07:35'. Zero-pad the hour.
+
+    THE SHEET WRITES HOURS WITHOUT A LEADING ZERO, and every ordering in this
+    file is a STRING sort on this column. '2026-10-09 21:21' sorts BEFORE
+    '2026-10-09 7:35' because '2' < '7', so the scorecard's "newest first"
+    list put every single-digit hour at the top -- a 07:35 bet appeared above
+    a 21:21 one from fourteen hours later. Nothing numeric was wrong; the
+    order was simply a lie, and the user spotted it before this did.
+
+    Padding here rather than at each sort site means every consumer -- the
+    loss list, the emitted record, the scorecard's table and its day
+    grouping -- gets the same corrected value from one place.
+
+    The column is UTC: two bets check out against their tickers, which are
+    stamped in ET (KXDOGE15M-26OCT090345 closes 03:45 ET = 07:45 UTC, and
+    this row reads 07:35, which is T-9 as the rule specifies).
+    """
+    s = str(s).strip().rstrip(":")
+    if " " not in s:
+        return s
+    day, _, clock = s.partition(" ")
+    parts = clock.split(":")
+    if not parts or not parts[0].isdigit():
+        return s
+    parts[0] = parts[0].zfill(2)
+    return day + " " + ":".join(parts)
+
+
 def rows_since(start):
     sh = P._get_client().open_by_key(P.SPREADSHEET_ID)
     rows = sh.worksheet(live.LIVE_SHEET).get_all_values()
@@ -110,11 +139,14 @@ def rows_since(start):
 
     out = []
     for r in rows[1:]:
-        if not r or not r[0] or str(r[0]) < start:
+        # Compared padded, for the same reason it is sorted padded: an
+        # unpadded '9:05' reads as LATER than '15:49' to a string compare,
+        # so a pre-start bet on the start date would slip through.
+        if not r or not r[0] or norm_ts(r[0]) < norm_ts(start):
             continue
         if str(c(r, "Status")).strip().upper() != "PLACED":
             continue
-        out.append(dict(ts=str(r[0]), ticker=str(c(r, "Ticker")),
+        out.append(dict(ts=norm_ts(r[0]), ticker=str(c(r, "Ticker")),
                         side=str(c(r, "Side")),
                         entry=_f(c(r, "Entry ¢")),
                         contracts=_f(c(r, "Contracts")),
