@@ -1,7 +1,7 @@
-name: Favlive (frozen spec, $4 bets)
+name: Favlive (frozen spec, $7 bets)
 
 # Runs the frozen narrow-slice spec against the real exchange: read the book at
-# T-9, buy the 90-96c YES side at $4, hold to settlement.
+# T-9, buy the 90-96c YES side at $7, hold to settlement.
 #
 # THE MODE INPUT IS THE SAFETY INTERLOCK AND IT DEFAULTS TO NOT SPENDING.
 #
@@ -18,6 +18,15 @@ name: Favlive (frozen spec, $4 bets)
 # hand. Flipping it is a one-line commit in this file -- which is exactly the
 # property no_trade_guard was written to preserve: nothing in the code can turn
 # betting on for you, and the change shows up in a diff with a date on it.
+#
+# THE STAKE WENT FROM $4 TO $7 ON 2026-10-10, at the user's decision, after 73
+# settled bets at 94.5% against a 92.2% break-even. Nothing about the evidence
+# changed: the lower bound of the interval was still 5.5 points below
+# break-even and at this margin will not clear for weeks. So this was a
+# decision about tolerable loss, not a verdict, and it belongs in the history
+# as one. $7 rather than the $10 asked for, because it roughly doubles the
+# income while keeping peak exposure near a quarter of the account instead of
+# 37% of it.
 #
 # WHY THE NARROW SLICE AND NOT THE WIDER RULE. The expensive favourite bets the
 # NO side, and buying NO means selling YES -- a mapping live.py records as an
@@ -77,7 +86,7 @@ on:
       stake:
         description: 'dollars per bet'
         required: false
-        default: '4'
+        default: '7'
       seconds:
         description: 'how long the session runs'
         required: false
@@ -145,7 +154,7 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BET_ALERTS: '0'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '4' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '7' }}
           MIN_ENTRY_CENTS: '90'
           MAX_ENTRY_CENTS: '96'
           ORDER_PREFIX: 'slice'
@@ -164,12 +173,17 @@ jobs:
           ALLOW_LIVE_TRADING: '1'
           LIVE_TRADING: '1'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '4' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '7' }}
           # The band must match the rule being run, or the guard rejects the
           # strategy it was asked to run. 90-96c is the narrow slice.
           MIN_ENTRY_CENTS: '90'
           MAX_ENTRY_CENTS: '96'
           ORDER_PREFIX: 'slice'
           FAVLIVE_MAX_PER_WINDOW: '5'
-          FAVLIVE_DAY_STOP: '20'
+          # THE DAY STOP MOVES WITH THE STAKE OR IT STOPS MEANING ANYTHING.
+          # At $4 a $20 stop absorbed about five losses. At $7 a loss is about
+          # $6.45, so $20 would trip after three and the bot would halt on
+          # ordinary days -- which reads as failure rather than as a rail
+          # doing its job. $35 restores the headroom the number was chosen for.
+          FAVLIVE_DAY_STOP: '35'
         run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
