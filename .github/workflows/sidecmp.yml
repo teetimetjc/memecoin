@@ -1,0 +1,38 @@
+name: YES vs NO favourite (read-only)
+
+# The live rule buys YES when YES is the 90-96c favourite, and skips the
+# market when the favourite is the NO side. That is the same bet wearing the
+# other label, so skipping it discards roughly half the qualifying
+# favourites.
+#
+# It might still not be the same bet in practice: buying NO costs
+# 1 - yes_bid, so entry crosses the spread on the CHEAP side of the book,
+# where a one-cent spread is proportionally enormous. This prices both sides
+# the way each would really be entered and prints the spread paid beside the
+# result.
+#
+# Read-only. No order path and no Pushover secret is reachable here, so a
+# number from this run cannot reach a phone and be acted on before it has
+# been written into a frozen spec.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sidecmp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Compare the two sides
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python sidecmp.py
