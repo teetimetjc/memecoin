@@ -1,0 +1,36 @@
+name: When to buy (read-only)
+
+# Scores the live 90-96c YES rule at every entry offset the collector
+# records -- 14, 12, 9, 6, 3 and 1 minutes before close -- to ask whether
+# T-9 is the right moment or just the one that got picked.
+#
+# Each offset scores a DIFFERENT set of markets: the rule takes whatever is
+# in the band at that instant, and the band's membership changes as a window
+# runs. T-1 is a control rather than a candidate, because a minute from
+# settlement the price is nearly the answer.
+#
+# Read-only. No order path and no Pushover secret is reachable here, so a
+# better-looking offset cannot be acted on before it has been written into a
+# frozen spec and tested forward.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  entrytime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Score every entry offset
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python entrytime.py
