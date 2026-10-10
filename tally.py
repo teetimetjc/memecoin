@@ -262,6 +262,12 @@ def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
         ))
     doc = dict(
         asof=time.strftime("%-d %b %Y, %H:%M UTC", time.gmtime()),
+        # The same instant in a form a reader can convert. `asof` above is
+        # already formatted for display and prose cannot be re-zoned without
+        # parsing English month names, which is how a clock ends up an hour
+        # wrong twice a year. The scorecard shows this in Central; anything
+        # else that wants a different zone has the raw instant to work from.
+        asof_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         placed=len(bets), settled=len(settled), won=len(won),
         net=round(net, 2), staked=round(staked, 2), returned=round(returned, 2),
         avg_paid_cents=round(100 * avg, 1),
