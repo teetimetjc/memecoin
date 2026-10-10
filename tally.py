@@ -213,7 +213,14 @@ def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
     for b in sorted(settled, key=lambda x: x["ts"], reverse=True)[:BETS_IN_JSON]:
         s = setts[b["ticker"]]
         rows.append(dict(
-            ts=b["ts"][:16],
+            # SECONDS ARE KEPT, and they are not decoration. The scorecard
+            # offers a "one bet per market" view that drops all but the
+            # first order in a market, and the only duplicate on record is a
+            # pair 26 seconds apart. Truncated to the minute they tie, the
+            # tie-break falls to list order, and the view dropped the
+            # EARLIER order -- the one the fixed bot would actually have
+            # placed -- while claiming to keep it.
+            ts=b["ts"][:19],
             series=b["ticker"].split("-")[0].replace("KX", "").replace("15M", ""),
             ticker=b["ticker"],
             paid=round(b["entry"] or 0, 1),
