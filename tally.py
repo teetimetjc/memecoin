@@ -200,6 +200,34 @@ def actual_costs():
     return by
 
 
+def stake_of(b):
+    """Which stake size this bet was placed at -- $4, $7, whatever comes next.
+
+    NOTHING RECORDS IT. The stake lives in the workflow as FAVLIVE_STAKE, the
+    sheet stores only contracts and a price, and nobody thought to write the
+    intent down because for the first 73 bets there was only one answer. On
+    2026-10-10 it changed from $4 to $7, and a record that cannot tell the two
+    apart silently averages them -- the headline return would blend a $4 era
+    and a $7 era into one rate belonging to neither.
+
+    So it is recovered from the arithmetic that produced it. The bot buys
+    floor(stake / price) whole contracts, so contracts * price is the stake
+    minus whatever was too small to buy another contract, and rounding that UP
+    to the dollar recovers the original: 4 contracts at 91c is $3.64 -> $4,
+    7 at 91c is $6.37 -> $7, 11 at 90c is $9.90 -> $10.
+
+    It is an inference, not a record, and it can only fail by landing on a
+    neighbouring dollar -- never by inventing an era that did not exist. If a
+    third size is ever added close to an existing one, write the stake into
+    the sheet instead of extending this.
+    """
+    px = b.get("fillpx") or ((b.get("entry") or 0) / 100.0)
+    n = int(b.get("contracts") or 0)
+    if not px or n <= 0:
+        return None
+    return int(math.ceil(n * px - 1e-9))
+
+
 def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
     """One JSON line carrying the whole record, for the scorecard's store.
 
@@ -227,6 +255,7 @@ def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
             fill=round(100 * b["fillpx"], 1) if b.get("fillpx") else None,
             contracts=int(b["contracts"] or 0),
             cost=round(b["cost"], 2),
+            stake=stake_of(b),
             result=s["result"],
             rev=round(s["rev"], 2),
             pnl=round(s["rev"] - b["cost"], 2),
