@@ -1,7 +1,7 @@
-name: Favlive (frozen spec, $7 bets)
+name: Favlive (frozen spec, $10 bets)
 
 # Runs the frozen narrow-slice spec against the real exchange: read the book at
-# T-9, buy the 90-96c YES side at $7, hold to settlement.
+# T-9, buy the 90-96c YES side at $10, hold to settlement.
 #
 # THE MODE INPUT IS THE SAFETY INTERLOCK AND IT DEFAULTS TO NOT SPENDING.
 #
@@ -19,14 +19,23 @@ name: Favlive (frozen spec, $7 bets)
 # property no_trade_guard was written to preserve: nothing in the code can turn
 # betting on for you, and the change shows up in a diff with a date on it.
 #
-# THE STAKE WENT FROM $4 TO $7 ON 2026-10-10, at the user's decision, after 73
-# settled bets at 94.5% against a 92.2% break-even. Nothing about the evidence
-# changed: the lower bound of the interval was still 5.5 points below
-# break-even and at this margin will not clear for weeks. So this was a
-# decision about tolerable loss, not a verdict, and it belongs in the history
-# as one. $7 rather than the $10 asked for, because it roughly doubles the
-# income while keeping peak exposure near a quarter of the account instead of
-# 37% of it.
+# THE STAKE HISTORY, because a record that cannot say what it was betting is
+# a record of nothing:
+#
+#   $4   from 2026-10-07  the opening size
+#   $7   from 2026-10-10  after 73 bets at 94.5%
+#   $10  from 2026-10-11  after 105 bets at 95.2%, +4.38% per dollar
+#
+# Each step was the user's decision, and none of them was a verdict that the
+# edge is real. The $7 step was taken partly to find out whether larger orders
+# fill worse; with a loss now in it, the $7 era returns +3.91% per dollar
+# against $4's +3.94%, so at this size execution is not the constraint.
+#
+# THE EVIDENCE AGAINST SCALING GOT STRONGER AT THE SAME TIME. Polymarket's
+# holdout of this exact rule came back at -$0.0001 a bet over 4,634 bets, and
+# Kalshi's own 15-minute history begins 4 August -- entirely inside the period
+# where the rule works on both venues. Every number above is drawn from that
+# period, so none of them can tell an edge from a regime.
 #
 # WHY THE NARROW SLICE AND NOT THE WIDER RULE. The expensive favourite bets the
 # NO side, and buying NO means selling YES -- a mapping live.py records as an
@@ -86,7 +95,7 @@ on:
       stake:
         description: 'dollars per bet'
         required: false
-        default: '7'
+        default: '10'
       seconds:
         description: 'how long the session runs'
         required: false
@@ -154,7 +163,7 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BET_ALERTS: '0'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '7' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '10' }}
           MIN_ENTRY_CENTS: '90'
           MAX_ENTRY_CENTS: '96'
           ORDER_PREFIX: 'slice'
@@ -173,7 +182,7 @@ jobs:
           ALLOW_LIVE_TRADING: '1'
           LIVE_TRADING: '1'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '7' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '10' }}
           # The band must match the rule being run, or the guard rejects the
           # strategy it was asked to run. 90-96c is the narrow slice.
           MIN_ENTRY_CENTS: '90'
@@ -181,9 +190,10 @@ jobs:
           ORDER_PREFIX: 'slice'
           FAVLIVE_MAX_PER_WINDOW: '5'
           # THE DAY STOP MOVES WITH THE STAKE OR IT STOPS MEANING ANYTHING.
-          # At $4 a $20 stop absorbed about five losses. At $7 a loss is about
-          # $6.45, so $20 would trip after three and the bot would halt on
-          # ordinary days -- which reads as failure rather than as a rail
-          # doing its job. $35 restores the headroom the number was chosen for.
-          FAVLIVE_DAY_STOP: '35'
+          # At $4 a $20 stop absorbed about five losses; at $7, $35 did. At $10
+          # a loss is about $10.05, so $35 would trip after three and halt the
+          # bot on an ordinary day -- which reads as failure rather than as a
+          # rail doing its job. $50 restores the five-loss headroom, and sits
+          # well clear of the simulated worst day in 200 (about -$22).
+          FAVLIVE_DAY_STOP: '50'
         run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
