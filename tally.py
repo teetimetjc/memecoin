@@ -210,22 +210,41 @@ def stake_of(b):
     apart silently averages them -- the headline return would blend a $4 era
     and a $7 era into one rate belonging to neither.
 
-    So it is recovered from the arithmetic that produced it. The bot buys
-    floor(stake / price) whole contracts, so contracts * price is the stake
-    minus whatever was too small to buy another contract, and rounding that UP
-    to the dollar recovers the original: 4 contracts at 91c is $3.64 -> $4,
-    7 at 91c is $6.37 -> $7, 11 at 90c is $9.90 -> $10.
+    So it is recovered by inverting the arithmetic that produced it.
 
-    It is an inference, not a record, and it can only fail by landing on a
-    neighbouring dollar -- never by inventing an era that did not exist. If a
-    third size is ever added close to an existing one, write the stake into
-    the sheet instead of extending this.
+    THE FIRST VERSION INVERTED THE WRONG FORMULA and fragmented the record
+    into five stake buckets where there were three -- a $6 and a $9 that
+    never existed. It sized from the FILL, and the fill is not what the order
+    was sized on; it is not even known until after the order is sent. Two
+    failures followed from that one mistake:
+
+      A fill well below the quote understated the stake. An order sized at
+      90.7c filled at 79.0c, and 7 contracts times the fill reads as $6.
+
+      Even an exact fill understated it, because live.py sizes on the LIMIT
+      -- ceil(quote + one cent of slip buffer) -- not on the quote. Ten
+      contracts at a 90c quote is $9.00 against the quote and $9.10 against
+      the limit, so a $10 bet read as $9.
+
+    So invert what the order was actually built from: contracts =
+    floor(stake / limit), hence stake = ceil(contracts * limit). Checked
+    against all 108 live bets -- three buckets, and floor(stake/limit)
+    reproduces the recorded contract count on every row.
+
+    It remains an inference, not a record. If a stake is ever chosen close
+    enough to an existing one that two sizes could round together, write the
+    stake into the sheet instead of extending this.
     """
-    px = b.get("fillpx") or ((b.get("entry") or 0) / 100.0)
+    entry = b.get("entry") or 0
     n = int(b.get("contracts") or 0)
-    if not px or n <= 0:
+    if not entry or n <= 0:
         return None
-    return int(math.ceil(n * px - 1e-9))
+    # The limit live.py actually sends, taken from live.py rather than
+    # restated here: a second copy of a constant is a second place for it to
+    # go stale, and this whole function exists because an assumption about
+    # how the order was built turned out to be wrong.
+    limit_c = min(99.0, math.ceil(entry + live.SLIP_BUFFER_CENTS))
+    return int(math.ceil(n * limit_c / 100.0 - 1e-9))
 
 
 def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
