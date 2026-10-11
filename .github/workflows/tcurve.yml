@@ -1,0 +1,46 @@
+name: Entry-time curve (read-only)
+
+# Scores the live rule at every minute from T-1 to T-14, rebuilt from
+# Kalshi's per-minute candlesticks.
+#
+# IT IS NOT A SEARCH FOR THE BEST MINUTE. Adjacent minutes differ by less
+# than the noise, so the top column is the luckiest one, not the best entry.
+# The question is whether the curve has a SHAPE: a smooth arc is a mechanism
+# and makes the T-6 result believable; a jagged one means the peaks are
+# noise and the entry-time question should be dropped rather than refined.
+#
+# `budget` bounds the candlestick walk in seconds. One call per market at a
+# 60ms pause means roughly 10 markets a second at best, so 9000s covers a
+# large sample without risking the job timeout. Markets are sampled in a
+# seeded shuffle, so a shorter run is an unbiased sample rather than the
+# most recent days only, and two runs at the same budget are comparable.
+#
+# Read-only, and it writes NO sheet. Fourteen offsets would have added 56
+# columns to a workbook already at a third of its cell limit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'seconds to spend walking candlesticks'
+        required: false
+        default: '9000'
+
+jobs:
+  tcurve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Walk the candlesticks
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python tcurve.py ${{ github.event.inputs.budget || '9000' }}
