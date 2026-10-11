@@ -1,0 +1,43 @@
+name: T-6 forward test (frozen spec, read-only)
+
+# Scores specs/t6_slice.md: the live narrow-slice rule entered three minutes
+# later, at T-6 instead of T-9, on paper only.
+#
+# T-6 beat T-9 across 37,040 historical markets -- but T-9 was itself chosen
+# by searching that history, so finding T-6 in it is the same search running
+# twice. Only a forward test can separate the two.
+#
+# THE PASS CONDITION IS THE HEAD-TO-HEAD. Both offsets are scored over the
+# same forward window on the same markets, and T-6 must beat T-9. If a few
+# good weeks simply suit the rule, both columns rise together and either one
+# alone would read as proof of something it has not shown.
+#
+# NO INPUTS, DELIBERATELY. Every threshold is a constant in t6score.py and a
+# line in the spec. Expect NOT ENOUGH DATA YET for the first few weeks; that
+# is a progress bar, not a failure.
+#
+# Read-only and paper only: no order path and no Pushover secret is
+# reachable from this workflow, so a passing number cannot reach a phone and
+# be acted on before the five conditions are met.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  t6score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Score the frozen spec
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python t6score.py
