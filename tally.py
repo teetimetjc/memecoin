@@ -31,6 +31,7 @@ Read-only.
 """
 
 import base64
+import calendar
 import collections
 import json
 import math
@@ -326,6 +327,96 @@ def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
     print("--- END JSON64 ---")
 
 
+SCORECARD_TAB = "Scorecard"
+SCORECARD_COLS = ["Date CT", "Time CT", "Timestamp UTC", "Series", "Ticker",
+                  "Stake $", "Contracts", "Quote c", "Fill c", "Cost $",
+                  "Result", "Won", "Revenue $", "P&L $", "Running P&L $",
+                  "Break-even %"]
+
+
+def write_scorecard(settled, setts):
+    """One reconciled row per settled bet, for a dashboard to read.
+
+    WHY NOT JUST POINT A DASHBOARD AT THE LIVE BETS TAB. Its `Cost $` column
+    is contracts times the LIMIT price, not what was paid -- the limit is the
+    quote plus a one-cent slip buffer, and IOC orders usually execute better
+    than that. That column is why an early version of this file reported
+    +$4.08 while Kalshi reported +$4.83. A dashboard built on it would be
+    quietly wrong forever, and wrong in the flattering direction.
+
+    So this writes the figures that were reconciled against the fills and the
+    settlements: the executed price, the real cost including fee, the
+    exchange's own result.
+
+    IT OVERWRITES IN PLACE RATHER THAN APPENDING. The workbook is a third of
+    the way through a hard 10-million-cell limit and has already had to be
+    purged once; an appending log would grow without bound for no benefit,
+    since every row is rewritten from the same source each run anyway. The
+    tab therefore stays the size of the record, a few thousand cells.
+
+    Times are CENTRAL as well as UTC. UTC is what the exchange records and
+    what every calculation here uses; Central is the day the operator
+    actually lived through, and a dashboard grouped by UTC date puts an
+    evening's bets on tomorrow.
+    """
+    rows, run = [], 0.0
+    for b in sorted(settled, key=lambda x: x["ts"]):
+        s = setts[b["ticker"]]
+        pnl = (s["rev"] or 0.0) - (b["cost"] or 0.0)
+        run += pnl
+        ct = ct_parts(b["ts"])
+        fill = 100 * b["fillpx"] if b.get("fillpx") else None
+        rows.append([
+            ct[0], ct[1], b["ts"],
+            b["ticker"].split("-")[0].replace("KX", "").replace("15M", ""),
+            b["ticker"],
+            stake_of(b) or "", int(b["contracts"] or 0),
+            round(b["entry"] or 0, 1),
+            round(fill, 1) if fill is not None else "",
+            round(b["cost"] or 0, 2),
+            s["result"], 1 if (s["rev"] or 0) > 0 else 0,
+            round(s["rev"] or 0, 2), round(pnl, 2), round(run, 2),
+            # The bar this bet had to clear: the price actually paid, as a
+            # percentage. A win rate without it beside it says nothing.
+            round(100 * (b["cost"] or 0) / max(1, int(b["contracts"] or 1)), 1),
+        ])
+    rows.reverse()                       # newest first, like the scorecard
+    try:
+        sh = P._get_client().open_by_key(P.SPREADSHEET_ID)
+        try:
+            ws = sh.worksheet(SCORECARD_TAB)
+        except Exception:
+            ws = sh.add_worksheet(title=SCORECARD_TAB,
+                                  rows=max(100, len(rows) + 10),
+                                  cols=len(SCORECARD_COLS))
+        ws.clear()
+        ws.update(values=[SCORECARD_COLS] + rows, range_name="A1")
+        print(f"\n  wrote {len(rows)} rows to the '{SCORECARD_TAB}' tab")
+    except Exception as e:
+        # A dashboard feed failing must not take the report down with it.
+        print(f"\n  could not write '{SCORECARD_TAB}': {str(e)[:120]}")
+
+
+def ct_parts(ts):
+    """('2026-10-11', '4:21pm') in Central, from a UTC 'Y-m-d H:M:S'.
+
+    Central, not a fixed offset: 1 November is CST and 31 October is CDT, and
+    a hard-coded -5 would be right today and an hour wrong in three weeks.
+    """
+    try:
+        t = time.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S")
+        epoch = calendar.timegm(t)
+    except Exception:
+        return (str(ts)[:10], str(ts)[11:16])
+    try:
+        from zoneinfo import ZoneInfo
+        import datetime as _dt
+        d = _dt.datetime.fromtimestamp(epoch, ZoneInfo("America/Chicago"))
+        return (d.strftime("%Y-%m-%d"), d.strftime("%-I:%M%p").lower())
+    except Exception:
+        return (str(ts)[:10], str(ts)[11:16])
+
+
 def main():
     bets = rows_since(START)
     print("=" * 94)
@@ -435,6 +526,7 @@ def main():
     print("=" * 94)
 
     emit_json(bets, settled, won, setts, staked, returned, net, avg, need)
+    write_scorecard(settled, setts)
     return 0
 
 
