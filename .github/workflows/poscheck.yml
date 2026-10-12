@@ -1,0 +1,31 @@
+name: Dump fills and positions for one ticker (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: Ticker to inspect
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  poscheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Dump
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python poscheck.py "${{ github.event.inputs.ticker }}"
