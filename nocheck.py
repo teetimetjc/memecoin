@@ -64,16 +64,24 @@ STAKE = float(os.environ.get("NOCHECK_STAKE") or 5.0)
 MAX_CONTRACTS = 6
 MAX_STAKE = 6.0
 # Do not race settlement: the order needs time to fill and be read back.
-# 15-minute markets close on the quarter hour, so a window of T-3 to T-15
-# leaves a dead minute: dispatched at :44, the next close is 60s away (under
-# the floor) and the one after is 960s away (over a 900s ceiling). The first
-# run hit exactly that and reported "nothing in band" when the truth was
-# "nothing was eligible yet". 1100s covers the whole gap.
-MIN_SECONDS = 150
-MAX_SECONDS = 1100
+# THE BAND ONLY EXISTS NEAR T-9, which is the whole point of the strategy and
+# took two failed runs to respect here. The first run was dispatched into the
+# dead minute between a close 60s away and the next one 960s away. Widening
+# the window then produced the opposite error: it found four markets at 866s
+# left -- T-14 -- quoting NO at 47-59c, because fourteen minutes out nothing
+# has decided yet and there is no favourite on either side to buy.
+#
+# So this targets the same offset the bot does, and WAITS for it rather than
+# checking once and giving up. A single dispatch now covers whichever window
+# comes next instead of depending on the operator's timing.
+MIN_SECONDS = 480          # T-8
+MAX_SECONDS = 660          # T-11
+# How long to keep looking before giving up, and how often to look.
+WAIT_S = int(os.environ.get("NOCHECK_WAIT_S") or 900)
+POLL_S = 10
 
 
-def find():
+def find(quiet=None):
     """One market with NO in band and enough time left. None if there isn't."""
     now = time.time()
     best = None
@@ -108,14 +116,19 @@ def find():
             # most ordinary test of the mechanism.
             if best is None or cand[0] < best[0]:
                 best = cand
+    # Print each close window once, not once per poll: at a 10s poll a
+    # 3-minute entry window would otherwise print the same five markets
+    # eighteen times.
     if saw:
-        print(f"  {len(saw)} eligible market(s) in the time window:")
-        for ser, px, left in sorted(saw, key=lambda x: x[1]):
-            mark = "  <- in band" if LO <= px < HI else ""
-            print(f"    {ser:<12} NO {px:>5.1f}c  {left:>5.0f}s left{mark}")
-    else:
-        print(f"  no market had {MIN_SECONDS}-{MAX_SECONDS}s left at all -- "
-              "this is a timing miss, not an empty band.")
+        key = round(min(x[2] for x in saw) / 60.0)
+        if quiet is None or key not in quiet:
+            if quiet is not None:
+                quiet.add(key)
+            stamp = time.strftime("%H:%M:%S", time.gmtime())
+            print(f"  {stamp}  {len(saw)} market(s) at T-8..T-11:")
+            for ser, px, left in sorted(saw, key=lambda x: x[1]):
+                mark = "  <- IN BAND" if LO <= px < HI else ""
+                print(f"    {ser:<12} NO {px:>5.1f}c  {left:>5.0f}s left{mark}")
     return best
 
 
@@ -153,11 +166,20 @@ def main():
         print("  refusing to place: an unreadable switch is not permission.")
         return 1
 
-    found = find()
+    print(f"\n  waiting up to {WAIT_S}s for a market with NO in "
+          f"{LO:.0f}-{HI:.0f}c at T-8..T-11...")
+    deadline = time.time() + WAIT_S
+    found = None
+    announced = set()
+    while time.time() < deadline:
+        found = find(quiet=announced)
+        if found:
+            break
+        time.sleep(POLL_S)
     if not found:
-        print(f"\n  no major market with NO in {LO:.0f}-{HI:.0f}c and "
-              f"{MIN_SECONDS}-{MAX_SECONDS}s left. Try again shortly -- in a "
-              "quiet market the band is empty on both sides.")
+        print(f"\n  nothing reached the {LO:.0f}-{HI:.0f}c NO band in "
+              f"{WAIT_S}s. That is the market, not a fault: in an undecided "
+              "window there is no favourite to buy on either side.")
         return 0
     no_px, ticker, series, left = found
     print(f"\n  chose {series} {ticker}")
