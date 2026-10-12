@@ -69,6 +69,18 @@ MAJORS = S.MAJORS
 ENTRY_MIN = int(os.environ.get("FAVLIVE_ENTRY_MIN_S") or 9 * 60 - 45)
 ENTRY_MAX = int(os.environ.get("FAVLIVE_ENTRY_MAX_S") or 9 * 60 + 45)
 MAX_PER_WINDOW = int(os.environ.get("FAVLIVE_MAX_PER_WINDOW") or 5)
+# SIDES CAN BE OVERRIDDEN WITHOUT EDITING A FROZEN SPEC. score.RULES is the
+# pre-registered text the two specs are scored against, and widening
+# "narrow slice" there would quietly change the thing the forward test is
+# measuring. This env var layers on top instead, so the spec keeps meaning
+# what it meant and the deviation is visible in the workflow file.
+SIDES_OVERRIDE = tuple(
+    x.strip().upper() for x in
+    (os.environ.get("FAVLIVE_SIDES") or "").split(",") if x.strip())
+# A SEPARATE STAKE PER SIDE, because they are not the same bet. YES has a
+# five-day live record; NO has a 2,052-bet null and one confirmed fill. Equal
+# sizing would assert an equal confidence that does not exist.
+STAKE_BY_SIDE = {}
 DAY_STOP = float(os.environ.get("FAVLIVE_DAY_STOP") or 20.0)
 POLL_S = 10
 # How often the day's settled P&L is re-read, and how old that figure may get
@@ -111,6 +123,13 @@ def rule():
     if r is None:
         raise SystemExit(f"unknown rule {name!r}; have "
                          f"{sorted(RULE_BY_NAME)}")
+    if SIDES_OVERRIDE:
+        unknown = [x for x in SIDES_OVERRIDE if x not in ("YES", "NO")]
+        if unknown:
+            raise SystemExit(f"FAVLIVE_SIDES has {unknown}; only YES and NO")
+        r = dict(r)
+        r["sides"] = SIDES_OVERRIDE
+        r["name"] = f"{r['name']} [sides={'/'.join(SIDES_OVERRIDE)}]"
     if "NO" in r["sides"] and not live.ALLOW_DOWN:
         raise SystemExit(
             f"the {name!r} spec bets the NO side, and the YES->ask mapping "
@@ -118,6 +137,23 @@ def rule():
             "only after one NO order has been placed and the position read "
             "back. Until then use the narrow slice, which is YES-only.")
     return r
+
+
+def stake_for(side, default):
+    """Dollars to risk on one bet of `side`.
+
+    FAVLIVE_STAKE_NO is read separately and falls back to the main stake, so
+    a workflow that sets neither behaves exactly as it did before both sides
+    existed.
+    """
+    if side == "NO":
+        v = os.environ.get("FAVLIVE_STAKE_NO")
+        if v:
+            try:
+                return float(v)
+            except ValueError:
+                pass
+    return default
 
 
 def side_price(q, side):
@@ -325,7 +361,22 @@ def cycle(client, r, stake, dry):
                           for s in sigs))
         return tuples
 
-    rows = live.run_window(client, tuples, stake=stake)
+    # ONE CAP ACROSS BOTH SIDES, THEN ONE CALL PER SIDE. signals_from has
+    # already truncated to MAX_PER_WINDOW over the combined list, so splitting
+    # here cannot smuggle in extra bets -- which calling run_window twice
+    # without that ordering absolutely would, since run_window applies its own
+    # ceiling per call and would allow the cap on each side separately.
+    #
+    # The split exists because the two sides carry different stakes, and
+    # run_window takes one stake for the whole window.
+    rows = []
+    for side_name in ("UP", "DOWN"):
+        part = [t for t in tuples if t[2] == side_name]
+        if not part:
+            continue
+        st = stake_for("YES" if side_name == "UP" else "NO", stake)
+        print(f"  [favlive] {len(part)} {side_name} order(s) at ${st:.2f}")
+        rows.extend(live.run_window(client, part, stake=st))
     placed = [x for x in rows if len(x) > 8 and x[8] == "PLACED"]
     if placed and alert.enabled():
         try:
@@ -352,8 +403,14 @@ def main():
           f"({100*r['band'][0]:.0f}-{100*r['band'][1]:.0f}c, "
           f"{'/'.join(r['sides'])}, T-{S.ENTRY})")
     print("=" * 84)
-    print(f"  stake ${stake:.2f}/bet   cap {MAX_PER_WINDOW}/window   "
-          f"day stop ${DAY_STOP:.2f}")
+    sides_txt = "/".join(r["sides"])
+    stake_txt = f"${stake:.2f}/bet"
+    if "NO" in r["sides"]:
+        no_stake = stake_for("NO", stake)
+        if abs(no_stake - stake) > 1e-9:
+            stake_txt = (f"YES ${stake:.2f} / NO ${no_stake:.2f} per bet")
+    print(f"  {stake_txt}   sides {sides_txt}   "
+          f"cap {MAX_PER_WINDOW}/window   day stop ${DAY_STOP:.2f}")
     print(f"  mode: {'DRY RUN (nothing sent)' if dry else 'LIVE -- REAL MONEY'}")
     print(f"  alerts: {'on' if alert.enabled() else 'off'}")
     if not dry:
