@@ -81,7 +81,18 @@ SIDES_OVERRIDE = tuple(
 # five-day live record; NO has a 2,052-bet null and one confirmed fill. Equal
 # sizing would assert an equal confidence that does not exist.
 STAKE_BY_SIDE = {}
-DAY_STOP = float(os.environ.get("FAVLIVE_DAY_STOP") or 20.0)
+# THE DAY STOP CAN BE TURNED OFF, AND ONLY BY NAME. "off" is spelled out
+# rather than expressed as a huge number, because 999999 in a workflow file
+# reads like a limit to whoever finds it next and is in fact the absence of
+# one. Disabling it should be legible at a glance and impossible to set by
+# accident -- a typo in a number still parses as a number.
+#
+# WHAT IS LEFT WHEN IT IS OFF: the funding check, which halts once the
+# balance cannot cover a window. That makes the effective floor the account
+# balance rather than a loss limit, and the Control tab the only fast stop.
+_DAY_STOP_RAW = (os.environ.get("FAVLIVE_DAY_STOP") or "").strip()
+DAY_STOP_OFF = _DAY_STOP_RAW.lower() in ("off", "none", "disabled")
+DAY_STOP = 20.0 if (DAY_STOP_OFF or not _DAY_STOP_RAW) else float(_DAY_STOP_RAW)
 POLL_S = 10
 # How often the day's settled P&L is re-read, and how old that figure may get
 # before it stops counting as a guard. Five minutes is far finer than the stop
@@ -409,8 +420,13 @@ def main():
         no_stake = stake_for("NO", stake)
         if abs(no_stake - stake) > 1e-9:
             stake_txt = (f"YES ${stake:.2f} / NO ${no_stake:.2f} per bet")
+    ds_txt = "OFF (no automatic halt)" if DAY_STOP_OFF else f"${DAY_STOP:.2f}"
     print(f"  {stake_txt}   sides {sides_txt}   "
-          f"cap {MAX_PER_WINDOW}/window   day stop ${DAY_STOP:.2f}")
+          f"cap {MAX_PER_WINDOW}/window   day stop {ds_txt}")
+    if DAY_STOP_OFF:
+        print("  *** DAY STOP DISABLED. The only automatic halt left is the")
+        print("  *** funding check, so the floor is the account balance.")
+        print("  *** Stop it by setting the Control tab to HALTED.")
     print(f"  mode: {'DRY RUN (nothing sent)' if dry else 'LIVE -- REAL MONEY'}")
     print(f"  alerts: {'on' if alert.enabled() else 'off'}")
     if not dry:
@@ -443,7 +459,15 @@ def main():
             # A LOSS is a negative net. Compared as a magnitude against the
             # stop so the sign cannot be read backwards -- getting that wrong
             # would halt on a good day and run through a bad one.
-            if pnl is not None and pnl <= -DAY_STOP:
+            if DAY_STOP_OFF:
+                # Still READ it, still SAY it. Turning the stop off removes
+                # the automatic halt, not the obligation to show the number
+                # the halt would have used -- a silent unlimited session is a
+                # different and worse thing than a visible one.
+                if pnl is not None:
+                    print(f"  [favlive] day stop OFF -- net ${pnl:+.2f} "
+                          "settled today, no automatic halt")
+            elif pnl is not None and pnl <= -DAY_STOP:
                 print(f"  [favlive] DAY STOP: net ${pnl:+.2f} settled today is "
                       f"at or past -${DAY_STOP:.2f}. No more orders today.")
                 control.halt(client,
@@ -452,8 +476,13 @@ def main():
             # Block only when the guard is genuinely blind: never read, or so
             # stale it no longer bounds anything. A single failed call is not
             # a reason to stop betting for the session.
+            # A STALE GUARD ONLY BLOCKS IF THERE IS A GUARD. This refuses to
+            # bet when the day figure is too old to bound anything, which is
+            # right when the stop is armed and pointless when it is off --
+            # there is nothing being bounded, so an unreadable settlements
+            # call would stop all betting for no protective reason at all.
             stale = (time.time() - pnl_at) if pnl_at else 1e9
-            if pnl is None or stale > PNL_MAX_AGE_S:
+            if (not DAY_STOP_OFF) and (pnl is None or stale > PNL_MAX_AGE_S):
                 print("  [favlive] the day stop cannot be evaluated "
                       + ("(never read)" if pnl is None
                          else f"({stale/60:.0f} min stale)")
