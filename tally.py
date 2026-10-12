@@ -472,7 +472,34 @@ def main():
 
     pxs = [b["entry"] / 100.0 for b in settled if b["entry"]]
     avg = sum(pxs) / len(pxs) if pxs else 0.93
-    need = avg + 0.07 * avg * (1 - avg)      # price plus the fee, as a rate
+
+    # BREAK-EVEN IS WHAT WAS PAID, NOT WHAT WAS QUOTED.
+    #
+    # This used to be avg + 0.07*avg*(1-avg) -- the QUOTE plus a modelled
+    # fee. The quote is the price the order was sized against; it is not the
+    # price that left the account. IOC orders on this book fill better than
+    # the limit more often than not: across 118 live bets the quotes average
+    # 91.6c and the fills 90.8c. Scoring against a price nobody paid put the
+    # bar 1.4 points too high, and every "break-even sits inside the
+    # interval" verdict in this project inherited that.
+    #
+    # The honest bar is the one the money defines: you need to win often
+    # enough that the contracts you hold cover what they cost, so
+    #
+    #     break-even = total cost / total contracts
+    #
+    # Cost here already includes the fee actually charged, so nothing is
+    # modelled. It is the RATIO OF THE SUMS, not the average of each bet's
+    # ratio -- those differ whenever bets are different sizes, and this
+    # record now spans $4, $7 and $10.
+    #
+    # NOTE THE DIRECTION: this correction LOWERS the bar and makes the live
+    # record look better. That is the direction a mistake is hardest to
+    # notice, which is why the reasoning is spelled out rather than the
+    # number simply changed.
+    tot_cost = sum(b["cost"] or 0.0 for b in settled)
+    tot_ct = sum(int(b["contracts"] or 0) for b in settled)
+    need = (tot_cost / tot_ct) if tot_ct else avg + 0.07 * avg * (1 - avg)
     wr = len(won) / len(settled)
     lo, hi = wilson(len(won), len(settled))
 
