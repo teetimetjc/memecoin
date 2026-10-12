@@ -1,0 +1,73 @@
+name: Confirm a DOWN order buys NO (ONE small real order)
+
+# THIS SPENDS REAL MONEY, deliberately and once, on the only question that a
+# backtest cannot answer.
+#
+# live.py sends a DOWN bet as an ASK on the YES contract at price 1-p.
+# Selling YES you do not own is the standard way to hold NO, but live.py's
+# own comment records the mapping as "inferred, not documented". If it is
+# backwards, every NO bet opens the opposite position at a price chosen for
+# the other side. That is why ALLOW_DOWN is off everywhere else, and why no
+# amount of replay evidence can turn it on.
+#
+# A few dollars settles it. The rails:
+#   - manual dispatch only, and the confirm input must be typed as CONFIRM
+#   - NOCHECK_CONFIRM=1 is set only here
+#   - ONE order, a hard cap of 6 contracts, stake ceiling $6
+#   - the script refuses unless the Control tab says RUNNING, so the kill
+#     switch still works on the one job that bets on untested code
+#   - LIVE_ALLOW_DOWN=1 exists in THIS job only and is not committed anywhere
+#     the scheduled bot can read
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type CONFIRM to place one small real NO order
+        required: true
+        default: 'no'
+      stake:
+        description: Dollars for the single test order (max 6)
+        required: false
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  nocheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Refuse unless confirmed
+        if: github.event.inputs.confirm != 'CONFIRM'
+        run: |
+          echo "confirm input was '${{ github.event.inputs.confirm }}', not CONFIRM."
+          echo "Nothing was placed."
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Place one NO order and read the account back
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          ALLOW_LIVE_TRADING: '1'
+          LIVE_TRADING: '1'
+          # The switch that is off everywhere else, on for this one job.
+          LIVE_ALLOW_DOWN: '1'
+          NOCHECK_CONFIRM: '1'
+          # place() rejects anything at or above MAX_ENTRY, which defaults to
+          # 50c -- the band being tested is 90-96c.
+          MIN_ENTRY_CENTS: '90'
+          MAX_ENTRY_CENTS: '96'
+          NOCHECK_STAKE: ${{ github.event.inputs.stake || '5' }}
+        run: python nocheck.py
