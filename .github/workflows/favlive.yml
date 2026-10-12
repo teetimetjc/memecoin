@@ -238,12 +238,20 @@ jobs:
           # This is running it to build a live record, not because the
           # evidence says it pays.
           FAVLIVE_SIDES: 'YES,NO'
-          # A QUARTER THE SIZE, because the two sides are not equally
-          # evidenced. YES has a live record; NO has a null and one fill. The
-          # stake says which is which, and it is FIXED -- raising it because a
-          # few land is exactly how $4 became $10 the day before the worst
-          # session yet.
-          FAVLIVE_STAKE_NO: '4'
+          # RAISED TO $10 ON 2026-10-12, hours after being set to $4, at the
+          # operator's explicit request and with the reason stated: to
+          # accelerate the findings. That is a deliberate purchase of variance
+          # to learn faster, not a claim that NO is now evidenced.
+          #
+          # IT IS STILL NOT EVIDENCED. +0.03% over 2,052 bets at t=0.04, one
+          # confirmed fill, and a few dozen forward bets collected inside a
+          # single falling day. Equal stakes now assert an equal confidence
+          # the data does not support, and the ROI is identical at every stake
+          # -- size scales whatever edge exists, including an edge of zero.
+          #
+          # The same sequence on the YES side, $4 -> $7 -> $10, finished the
+          # day before the worst session in the record.
+          FAVLIVE_STAKE_NO: '10'
           # Earned by that one confirmed fill, and by nothing else.
           LIVE_ALLOW_DOWN: '1'
           # The band must match the rule being run, or the guard rejects the
