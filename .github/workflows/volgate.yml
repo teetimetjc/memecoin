@@ -1,0 +1,41 @@
+name: Does a falling entry lose more often (read-only)
+
+# Runs volgate.py, which asks whether the narrow slice should care about the
+# direction the price was moving when it decided to bet, rather than only
+# where the price was.
+#
+# Prompted by 2026-10-12 08:35 UTC: three orders quoted 90-94c, filled at
+# 61-67c, all three lost. The quote that selected them had expired.
+#
+# NO EXCHANGE CREDENTIALS HERE, and that is the point. The pre-decision ask
+# path at T-14 / T-12 / T-9 is already stored in the M15 sheet, so this needs
+# the Google credential and nothing else. It cannot place an order because it
+# cannot reach the exchange, and KALSHI_API_KEY is not in its environment to
+# be printed by accident.
+#
+# Manual only. It reads a fixed history, so a schedule would reprint the same
+# answer until more markets settle.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  volgate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Score the gate
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python volgate.py
