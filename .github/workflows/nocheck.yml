@@ -37,7 +37,7 @@ permissions:
 jobs:
   nocheck:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 95
     steps:
       - name: Refuse unless confirmed
         if: github.event.inputs.confirm != 'CONFIRM'
@@ -70,7 +70,13 @@ jobs:
           MIN_ENTRY_CENTS: '90'
           MAX_ENTRY_CENTS: '96'
           NOCHECK_STAKE: ${{ github.event.inputs.stake || '5' }}
-          # Wait for the next T-9 window rather than depending on when a
-          # human happened to press the button.
-          NOCHECK_WAIT_S: '1080'
+          # WAIT LONG, because the band is a regime and not a schedule. An
+          # 18-minute wait on 2026-10-12 watched NO fall 17c -> 3.5c in two
+          # minutes as the market turned up: there was simply no NO favourite
+          # to buy, and hand-firing until one appears wastes a dispatch each
+          # time. 85 minutes covers five close windows. The rails are
+          # unchanged -- still ONE order, still capped, still refuses unless
+          # the Control tab says RUNNING -- so a longer wait costs nothing
+          # beyond runner minutes.
+          NOCHECK_WAIT_S: '5100'
         run: python nocheck.py
