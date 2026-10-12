@@ -1,0 +1,38 @@
+name: Replay both sides over today (read-only)
+
+# Runs noday.py: every major window closed in the last N hours, priced on
+# BOTH sides at T-9 and settled, so the NO side the bot does not bet can be
+# compared against the YES side it does.
+#
+# Places no orders. Reads candles and market metadata only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: How many hours back to replay
+        required: false
+        default: '12'
+
+permissions:
+  contents: read
+
+jobs:
+  noday:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Replay both sides
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python noday.py ${{ github.event.inputs.hours || '12' }}
