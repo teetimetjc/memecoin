@@ -20,19 +20,32 @@ name: Snapshot the live record (read-only, writes a data branch)
 # an orphan branch that nothing merges and nothing builds from -- and the
 # Scorecard tab tally itself writes, which is overwritten in place.
 
-# HOURLY, because two things downstream go stale without it: the Scorecard
-# tab tally writes for the Looker dashboard, and snapshot.json on the data
-# branch. Both were built assuming this ran on its own and it did not -- the
-# dashboard sat on whatever the last manual run had left behind.
+# EVERY FIFTEEN MINUTES, TWO MINUTES AFTER EACH CLOSE. The markets close at
+# :00, :15, :30 and :45, and a whole run costs thirteen seconds of free
+# runner time, so there is no reason to make the dashboard wait an hour to
+# show a bet that has already settled. Two minutes past the quarter is
+# normally enough for Kalshi to have posted the settlement; anything it has
+# not posted yet simply appears on the next run.
 #
-# Minute 17 rather than 0: most schedules land on the hour, and a run queued
-# behind that traffic is a run that fires late. A dropped trigger here just
-# means an hour-stale dashboard, which is why this does not need the
-# belt-and-braces second trigger source favlive got.
+# This feeds two things that go stale without it: the Scorecard tab tally
+# writes for the Looker dashboard, and snapshot.json on the data branch.
+# Both were built assuming this ran on its own, and for a day it did not --
+# the dashboard sat on whatever the last manual run had left behind.
+#
+# A dropped trigger costs fifteen minutes of staleness, which is why this
+# does not need the belt-and-braces second trigger source favlive got.
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '2,17,32,47 * * * *'
+
+# AT FOUR RUNS AN HOUR, TWO COULD OVERLAP. Both would clear and rewrite the
+# same Scorecard tab, which is a race with no upside. cancel-in-progress is
+# false so a run already talking to the exchange is never killed mid-write:
+# the newcomer waits, and the whole job is thirteen seconds.
+concurrency:
+  group: snapshot
+  cancel-in-progress: false
 
 permissions:
   contents: write
