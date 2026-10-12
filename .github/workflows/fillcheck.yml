@@ -1,0 +1,35 @@
+name: Fill check (read-only)
+
+# Prints every fill the exchange holds for one market, field by field, with
+# nothing computed on top. For checking a fill that looks too good to be
+# true before it is allowed to stand in the record.
+#
+# Read-only: no order path and no Pushover secret is reachable here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: 'the market, e.g. KXETH15M-26OCT111615-15'
+        required: true
+
+jobs:
+  fillcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Read the fills
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          # Through the environment, never interpolated into the shell.
+          TICKER: ${{ inputs.ticker }}
+        run: python fillcheck.py
