@@ -1,1 +1,247 @@
-{{file:/tmp/claude-0/-home-user/694801dc-34f0-53ec-a582-c6ddfe3c2bd2/scratchpad/favlive.yml}}
+name: Favlive (frozen spec, $10 bets)
+
+# Runs the frozen narrow-slice spec against the real exchange: read the book at
+# T-9, buy the 90-96c YES side at $10, hold to settlement.
+#
+# THE MODE INPUT IS THE SAFETY INTERLOCK AND IT DEFAULTS TO NOT SPENDING.
+#
+#   replay  compare the live selector against the scorer on all of history.
+#           Reads only. Run this first and require zero mismatches.
+#   dry     the full live loop -- real markets, real prices, real timing --
+#           printing the orders it would send and sending none.
+#   live    actually places orders. Sets ALLOW_LIVE_TRADING=1, which is the
+#           deliberate human thumbs-up no_trade_guard.py exists to demand.
+#   auto    whatever `default_mode` below says. FOR AUTOMATED CALLERS ONLY --
+#           see WHY 'auto' EXISTS.
+#
+# SCHEDULED RUNS USE THE `default_mode` BELOW, and it is 'dry' until changed by
+# hand. Flipping it is a one-line commit in this file -- which is exactly the
+# property no_trade_guard was written to preserve: nothing in the code can turn
+# betting on for you, and the change shows up in a diff with a date on it.
+#
+# THE STAKE HISTORY, because a record that cannot say what it was betting is
+# a record of nothing:
+#
+#   $4   from 2026-10-07  the opening size
+#   $7   from 2026-10-10  after 73 bets at 94.5%
+#   $10  from 2026-10-11  after 105 bets at 95.2%
+#   $7   from 2026-10-12  on a size hypothesis that did not hold up
+#   $10  from 2026-10-12  reversed the same hour -- see below
+#
+# THE SIZE HYPOTHESIS HAS NO MECHANISM, and it should not have been raised.
+# A buy takes the cheapest offers first and works upward, so a larger order
+# sweeps UP the book and pays MORE, never less. Order size cannot produce a
+# fill below the quote. The within-day split does not support it either:
+#
+#     Oct 10   $4 slip -1.5c  |  $7 slip -0.9c   <- larger filled BETTER
+#     Oct 11   $7 slip -1.3c  |  $10 slip -4.4c  <- larger filled worse
+#
+# One day each way. What does hold is a trend in TIME:
+#
+#     slip by day   Oct 7 -0.0c  Oct 8 -0.7c  Oct 9 -1.0c
+#                   Oct 10 -1.4c  Oct 11 -2.2c  Oct 12 -7.7c
+#
+# A market getting choppier. The cheap fills come from the price moving
+# between the quote and the order landing, which happens whether the order is
+# for four contracts or eleven. So the stake changes the size of each loss
+# and nothing else, which is a risk choice rather than a diagnosis.
+#
+# WHAT ACTUALLY ADDRESSES THE BAD FILLS is MAX_DROP_CENTS below, which works
+# at any stake.
+#
+# THE CLEAREST SINGLE EXAMPLE, from 2026-10-12 at 08:35 UTC. Three orders in
+# the same close window:
+#
+#   DOGE  quote 92.4c -> filled 61.0c   lost
+#   SOL   quote 90.0c -> filled 67.0c   lost
+#   XRP   quote 94.3c -> filled 61.0c   lost
+#
+# -$19.39 in one minute, 61% of that day's loss. The quote said a 92%
+# favourite; the price actually paid said 61%. A fill that far below the ask
+# means the book had gapped down between the read and the order -- these were
+# not favourites bought cheap, they were collapses bought mid-collapse. Both
+# guards below would have declined all three: MAX_DROP_CENTS on the gap, and
+# MAX_PER_WINDOW on the fact that three bets in one window were never three
+# independent bets.
+#
+# AND THE RECORD AS A WHOLE IS FLAT, not falling: per-bet P&L mean -$0.008,
+# t = -0.04 over 126 bets, clustered by close time. There is no downward trend
+# to explain. Five days at +$30.80 and one day at -$31.76 is the entire
+# history, and the guards target the day, not the drift.
+#
+# STANDING CAVEAT: as of this commit the account is below its starting
+# balance, the record is net negative at 126 bets, and Polymarket's null over
+# 4,634 bets of the same rule is unanswered. None of the stake changes above
+# were verdicts that the edge is real.
+#
+# WHY THE NARROW SLICE AND NOT THE WIDER RULE. The expensive favourite bets the
+# NO side, and buying NO means selling YES -- a mapping live.py records as an
+# unconfirmed inference. Reading it backwards puts every NO bet on the wrong
+# side of the market. favlive.py refuses that rule until LIVE_ALLOW_DOWN=1 is
+# set, which should happen only after one NO order has been placed and the
+# resulting position read back and confirmed.
+#
+# WHY A LONG RUN ON AN HOURLY CRON. GitHub drops scheduled triggers at roughly
+# the same rate whatever the interval -- four or five a day -- so a 15-minute
+# cron would miss windows wholesale. A long session on an hourly trigger with a
+# concurrency group means a dropped trigger usually costs nothing: the running
+# job still owns the group and the next trigger queues behind it.
+#
+# WHY THE SESSION IS 5h45m AND NOT 3h45m. The concurrency group only covers a
+# drop that lands WHILE a job is running. A drop that lands in the gap after
+# one ends is a real hole, and nothing queues to fill it. On 2026-10-08 three
+# consecutive triggers dropped and the bot was off the market for 3h38m,
+# missing roughly fifteen windows. Lengthening the session does not change the
+# drop rate; it shrinks the target. Runner minutes are free here because the
+# repository is public.
+#
+# WHY 'auto' EXISTS. A second, INDEPENDENT trigger source (cron-job.org
+# hitting workflow_dispatch hourly at :22) is what actually closes the hole.
+# An external caller can only reach workflow_dispatch, and THERE IS NO WAY TO
+# SEND "no opinion" FOR A REQUIRED INPUT: omit `mode` and GitHub substitutes
+# the declared default, 'dry'. The session would then run the full loop, place
+# nothing, and print a log indistinguishable from a healthy live run. Sending
+# mode=live instead works, but moves the live switch out of this file and into
+# a third-party web form, destroying the one property that matters above --
+# that spending real money is a commit with a date on it.
+#
+# So 'auto' means "start a session; the repository decides what kind". The
+# token the pinger carries needs Actions: read and write and NOTHING ELSE --
+# in particular NOT Contents, because contents write would let a leaked token
+# push a workflow that prints KALSHI_API_KEY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'replay | dry | live | auto  (live SPENDS REAL MONEY)'
+        required: true
+        default: 'dry'
+      stake:
+        description: 'dollars per bet'
+        required: false
+        default: '10'
+      seconds:
+        description: 'how long the session runs'
+        required: false
+        default: '20700'
+      alerts:
+        description: 'Pushover notifications: 1 on, 0 off'
+        required: false
+        default: '1'
+  schedule:
+    - cron: '52 * * * *'
+
+concurrency:
+  group: favlive
+  cancel-in-progress: false
+
+jobs:
+  favlive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      # The mode scheduled runs use. 'dry' until deliberately changed.
+      default_mode: 'live'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Resolve the mode
+        id: mode
+        run: |
+          M="${{ github.event.inputs.mode }}"
+          # Empty means a schedule event, which carries no inputs at all.
+          # 'auto' means a dispatch that deliberately declines to choose.
+          # Both defer to default_mode; an explicit replay/dry/live wins.
+          if [ -z "$M" ] || [ "$M" = "auto" ]; then M="$default_mode"; fi
+          case "$M" in
+            replay|dry|live) ;;
+            *) echo "unknown mode: $M"; exit 1 ;;
+          esac
+          echo "mode=$M" >> "$GITHUB_OUTPUT"
+          echo "Running in mode: $M  (requested: ${{ github.event.inputs.mode || 'schedule' }})"
+
+      - name: Replay the selector against history
+        if: steps.mode.outputs.mode == 'replay'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python favreplay.py
+
+      # Dry and live are the SAME command with the same settings. The only
+      # difference is the two live switches, so a dry run exercises every line
+      # the live run will, which is the point of having one.
+      - name: Dry run -- places nothing
+        if: steps.mode.outputs.mode == 'dry'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          BET_ALERTS: '0'
+          FAVLIVE_RULE: 'narrow slice'
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '10' }}
+          MIN_ENTRY_CENTS: '90'
+          MAX_ENTRY_CENTS: '96'
+          ORDER_PREFIX: 'slice'
+        run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
+
+      - name: LIVE -- places real orders
+        if: steps.mode.outputs.mode == 'live'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          BET_ALERTS: ${{ github.event.inputs.alerts || '1' }}
+          # The two switches live.py demands, together, deliberately.
+          ALLOW_LIVE_TRADING: '1'
+          LIVE_TRADING: '1'
+          FAVLIVE_RULE: 'narrow slice'
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '10' }}
+          # The band must match the rule being run, or the guard rejects the
+          # strategy it was asked to run. 90-96c is the narrow slice.
+          MIN_ENTRY_CENTS: '90'
+          MAX_ENTRY_CENTS: '96'
+          ORDER_PREFIX: 'slice'
+          # TWO IS THE CAP BECAUSE A WINDOW IS ONE BET, NOT THREE. Bets that
+          # share a close time share an outcome: of the 24 multi-bet windows
+          # in the live record, 23 resolved every leg the same way (96%). So
+          # five bets in one window is one bet at five times the size, and the
+          # record shows exactly that -- 1-per-window +$3.78, 3-per-window
+          # -$8.47. The effective sample is 87 windows, not 126 bets, which is
+          # also why the day stop trips faster than the bet count suggests.
+          FAVLIVE_MAX_PER_WINDOW: '2'
+          # THE DAY STOP MOVES WITH THE STAKE OR IT STOPS MEANING ANYTHING.
+          # At $10 a loss is about $10.05, so $35 would trip after three and
+          # halt the bot on an ordinary day. $50 keeps the five-loss headroom
+          # the number was chosen for.
+          FAVLIVE_DAY_STOP: '50'
+          # The last look before each order: decline if the ask has fallen
+          # more than this far since the quote the decision was made on. A buy
+          # limit cannot refuse a cheap fill, so not sending is the only
+          # lever. See MAX_DROP_CENTS in live.py for the evidence.
+          #
+          # FIVE, NOT TEN, because the damage starts well before ten. Splitting
+          # the 126-bet record on how far the fill landed below the quote:
+          #
+          #   within 2c of quote   98 bets  95.9% won  break-even 92.3%  +$10.50
+          #   more than 2c below   28 bets  78.6% won  break-even 81.3%  -$11.46
+          #
+          # That is the whole of the net loss, in one column. Sweeping the
+          # threshold, every value from 2c to 15c leaves the kept record better
+          # than the raw one -- which is why the DIRECTION is trustworthy even
+          # though the exact number is not: 5c keeps 115 bets at 95.7% for
+          # +$16.25, against +$12.61 at 10c, on a difference of six bets. Do
+          # not read 5 as optimised; read it as "tighter than ten".
+          MAX_DROP_CENTS: '5'
+        run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
