@@ -1,0 +1,39 @@
+name: Cheap offers (read-only)
+
+# How often does a sell order appear far below the going rate, and does the
+# price recover afterwards? Measured from the per-minute low of the yes ask
+# in Kalshi's candlesticks.
+#
+# A high count here is a reason to investigate, never on its own a reason to
+# build: a candle says the offer existed somewhere inside sixty seconds, not
+# that it survived a second, and these are taken in milliseconds by bots
+# that do nothing else.
+#
+# Read-only, writes nothing -- no sheet, no tab, no order path.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'seconds to spend walking candlesticks'
+        required: false
+        default: '2400'
+
+jobs:
+  cheapask:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Count the dips
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python cheapask.py ${{ github.event.inputs.budget || '2400' }}
