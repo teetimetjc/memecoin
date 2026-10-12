@@ -66,8 +66,25 @@ import score as S
 TAB = S.TAB
 MAJORS = set(S.MAJORS)
 STAKE = S.STAKE
-# The band the live bot actually runs, from specs/narrow_slice.md.
-BAND = (0.90, 0.96)
+# THREE NESTED BANDS, AND WHY NOT JUST THE LIVE ONE. The narrow slice is
+# 90-96c, which is roughly one market in twenty: the whole post-freeze
+# history holds about 120 such bets, and 120 cannot answer a question about
+# a tail. The hypothesis here is not about the slice, it is about market
+# dynamics -- whether a price falling into a band predicts that band failing
+# -- so it is tested where there is enough data to see it, then checked for
+# the same DIRECTION inside the live band.
+#
+# Only the price band changes between the three. All of them stay YES-only,
+# at the same T-9 entry, held to settlement, priced the same way. Widening
+# the band is not switching to the expensive-favourite rule, which bets
+# either side and whose NO leg measured no edge at all over 2,052 bets.
+#
+# The slice line is the one to read for a verdict about the live bot. The
+# wider lines say whether the effect exists at all, because an effect that is
+# absent at 1,500 bets is not hiding in 120.
+BANDS = (("live slice  90-96c", (0.90, 0.96), 100),
+         ("wider       80-96c", (0.80, 0.96), 500),
+         ("widest      70-96c", (0.70, 0.96), 500))
 # The three offsets available at the moment of a T-9 decision. Order matters:
 # oldest first, so DROP reads as "fell by" when positive.
 PATH = (14, 12, 9)
@@ -130,9 +147,9 @@ def load_paths():
     return kept
 
 
-def slice_bets(M):
-    """The narrow slice, priced exactly as score.py prices it."""
-    lo, hi = BAND
+def slice_bets(M, band):
+    """YES bets in one price band, priced exactly as score.py prices it."""
+    lo, hi = band
     out = []
     for m in M:
         px = m["ask"]
@@ -200,36 +217,45 @@ def main():
     print("=" * 96)
 
     M = load_paths()
-    bs = slice_bets(M)
-    if len(bs) < 200:
-        print(f"\n  only {len(bs)} slice bets -- too few to read. "
-              "NOT ENOUGH DATA YET.")
-        return 0
-    print(f"  {len(bs):,} of them fall in the 90-96c slice\n")
-
-    # The shape of the thing being gated, before any gating.
-    d = sorted(b["drop"] for b in bs)
-    r = sorted(b["rng"] for b in bs)
 
     def pct(v, q):
         return v[min(len(v) - 1, int(q * len(v)))]
 
-    print("  WHAT THE SLICE LOOKS LIKE GOING IN:")
-    print(f"    drop  (ask14 - ask9)  median {pct(d,0.5):+.1f}c   "
-          f"75th {pct(d,0.75):+.1f}c   90th {pct(d,0.90):+.1f}c   "
-          f"99th {pct(d,0.99):+.1f}c")
-    print(f"    range (max - min)     median {pct(r,0.5):.1f}c   "
-          f"75th {pct(r,0.75):.1f}c   90th {pct(r,0.90):.1f}c   "
-          f"99th {pct(r,0.99):.1f}c")
-    print("\n  A median drop near zero is the expected shape: most entries "
-          "are quiet.")
-    print("  The question is entirely about the tail.")
+    base = None
+    for name, band, floor in BANDS:
+        bs = slice_bets(M, band)
+        print("\n" + "-" * 96)
+        print(f"BAND: {name}      {len(bs):,} YES bets")
+        print("-" * 96)
+        if len(bs) < floor:
+            print(f"  only {len(bs):,} bets, under the {floor:,} this band "
+                  "needs to be read. NOT ENOUGH DATA YET.")
+            continue
 
-    base = sweep(bs, "drop", "DROP INTO THE ENTRY")
-    sweep(bs, "rng", "RANGE ACROSS THE PATH")
+        d = sorted(b["drop"] for b in bs)
+        r = sorted(b["rng"] for b in bs)
+        print("  WHAT GOES IN:")
+        print(f"    drop  (ask14 - ask9)  median {pct(d,0.5):+.1f}c   "
+              f"75th {pct(d,0.75):+.1f}c   90th {pct(d,0.90):+.1f}c   "
+              f"99th {pct(d,0.99):+.1f}c")
+        print(f"    range (max - min)     median {pct(r,0.5):.1f}c   "
+              f"75th {pct(r,0.75):.1f}c   90th {pct(r,0.90):.1f}c   "
+              f"99th {pct(r,0.99):.1f}c")
+        print("\n  A median drop near zero is the expected shape: most "
+              "entries are quiet. The question is entirely about the tail.")
+
+        b1 = sweep(bs, "drop", "DROP INTO THE ENTRY")
+        sweep(bs, "rng", "RANGE ACROSS THE PATH")
+        if base is None:
+            base = b1
 
     print("=" * 96)
     print("  HOW TO READ THIS")
+    print()
+    print("  THE WIDER BANDS ARE FOR POWER, NOT FOR A VERDICT. They say")
+    print("  whether a falling entry predicts a loss at all. Only the live")
+    print("  slice line speaks about the live bot, and if the wider bands")
+    print("  show nothing then the slice has nothing to find either.")
     print()
     print("  A gate worth building shows BOTH of these:")
     print("    - the refused bets lose, or win clearly less, at every cut")
