@@ -36,6 +36,22 @@ name: Snapshot the live record (read-only, writes a data branch)
 # does not need the belt-and-braces second trigger source favlive got.
 on:
   workflow_dispatch:
+    inputs:
+      # ACCEPTED AND IGNORED, ON PURPOSE. The external pinger for this job was
+      # created by cloning the favlive one, which sends
+      # {"ref":"main","inputs":{"mode":"auto"}}. A workflow_dispatch with no
+      # inputs block rejects any inputs at all with 422 Unexpected inputs
+      # provided, so every ping failed and the dashboard sat on whatever the
+      # last manual run had written -- for three and a half hours on
+      # 2026-10-12, with the job history showing the failures on a site nobody
+      # was watching.
+      #
+      # Declaring the field is the fix that does not depend on anyone
+      # remembering to edit a body in a web form. Nothing reads it.
+      mode:
+        description: Ignored. Present so a cloned favlive pinger is accepted.
+        required: false
+        default: 'auto'
   schedule:
     - cron: '2,17,32,47 * * * *'
 
