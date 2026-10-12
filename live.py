@@ -562,7 +562,26 @@ def verify_positions():
         return []
     for p in pos[:10]:
         # A positive position is YES, a negative one is NO, in Kalshi's model.
-        q = p.get("position") or p.get("market_exposure") or 0
+        #
+        # THE FIELD NAMES MATTER AND THESE WERE WRONG. This read "position"
+        # and "market_exposure"; the endpoint returns "position_fp" and
+        # "market_exposure_dollars". Neither key existed, so every position
+        # fell through to 0 and printed as "flat" -- including a confirmed
+        # -5.00 NO position on 2026-10-12. The one check whose entire job is
+        # catching a bet on the wrong side has been blind since it was
+        # written, and it failed silently, which is why nobody noticed.
+        #
+        # ONLY THE POSITION FIELDS, NEVER THE EXPOSURE ONES. Exposure is a
+        # cost and it is always POSITIVE: the confirmed NO position above
+        # reported market_exposure_dollars "4.250000" alongside position_fp
+        # "-5.00". Falling back to exposure for the SIGN would print "YES"
+        # for a NO holding, which is precisely the error this check exists
+        # to catch -- a wrong-side bet reported as the right side.
+        q = p.get("position_fp")
+        if q in (None, ""):
+            q = p.get("position")
+        if q in (None, ""):
+            q = 0
         try:
             qn = float(q)
         except (TypeError, ValueError):
