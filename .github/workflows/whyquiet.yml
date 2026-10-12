@@ -1,0 +1,38 @@
+name: Why is the bot quiet (read-only)
+
+# Reconstructs, from the exchange's own candles, how many windows in the last
+# few hours sat in the live 90-96c band at T-9 -- i.e. how many the bot could
+# have bet. Answers "is the market quiet or is the signal path broken?"
+# without waiting 5h45m for the session's log to become readable.
+#
+# Places no orders. Reads candles and market metadata only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: How many hours back to reconstruct
+        required: false
+        default: '6'
+
+permissions:
+  contents: read
+
+jobs:
+  whyquiet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Reconstruct the decisions
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python whyquiet.py ${{ github.event.inputs.hours || '6' }}
