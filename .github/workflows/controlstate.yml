@@ -1,0 +1,36 @@
+name: Read the Control tab (read-only)
+
+# Prints whether the bot is allowed to bet, and the balance.
+#
+# Exists because a halt is silent and sticky: live.run_window places nothing
+# when the Control tab does not say RUNNING, and the only record of that is a
+# line in a job log GitHub will not serve until the 5h45m session ends.
+#
+# Needs KALSHI creds for the balance read, which is a portfolio GET. It places
+# no orders: controlstate.py imports no ordering code.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  controlstate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Read the switch
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python controlstate.py
