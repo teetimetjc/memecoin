@@ -94,24 +94,41 @@ def load():
         q = {}
         for off in (LIVE_OFF, TEST_OFF):
             b, a = _f(c(r, f"bid{off}")), _f(c(r, f"ask{off}"))
-            q[off] = a if (b is not None and a is not None
-                           and 0 < b <= a < 1) else None
+            # BOTH SIDES OF THE QUOTE ARE KEPT NOW. This stored the ask alone,
+            # which was all the frozen YES-only spec needed; the NO price is
+            # one minus the BID, so discarding it made the NO side
+            # unmeasurable from this script.
+            q[off] = ((b, a) if (b is not None and a is not None
+                                 and 0 < b <= a < 1) else None)
         out.append(dict(ct=str(c(r, "Close Time")), q=q, yes=(res == "yes")))
     return out, before
 
 
-def arm(rows, off):
+def arm(rows, off, side="YES"):
+    """Bets at offset `off` on `side`.
+
+    The default is YES so every existing caller -- and the frozen spec's own
+    pass conditions -- behave exactly as before. NO pays one minus the bid and
+    wins when the market settles no, the same arithmetic score.bets and
+    live.side_price use. Writing it a third way here is how a tested rule
+    quietly becomes an untested one.
+    """
     out = []
     for m in rows:
-        px = m["q"].get(off)
-        if px is None or not (BAND[0] <= px < BAND[1]):
+        q = m["q"].get(off)
+        if q is None:
+            continue
+        bid, ask = q
+        px = ask if side == "YES" else (1.0 - bid)
+        if not (BAND[0] <= px < BAND[1]):
             continue
         n = int(STAKE // px)
         if n <= 0:
             continue
+        won = m["yes"] if side == "YES" else (not m["yes"])
         cost = n * px + fee(n, px)
-        out.append(dict(ct=m["ct"], px=px, cost=cost, won=m["yes"],
-                        pnl=(n * 1.0 - cost) if m["yes"] else -cost))
+        out.append(dict(ct=m["ct"], px=px, cost=cost, won=won,
+                        pnl=(n * 1.0 - cost) if won else -cost))
     return out
 
 
@@ -167,8 +184,36 @@ def main():
     print(f"  {len(rows)} graded majors closing after the freeze "
           f"({before} before it, skipped)\n")
 
+    # THE FROZEN SPEC, UNCHANGED. These two lines, YES-only, are what
+    # specs/t6_slice.md pre-registered and what the pass conditions below
+    # read. Nothing added afterwards touches them.
     a9 = summarise(f"T-{LIVE_OFF} (live rule)", arm(rows, LIVE_OFF))
     a6 = summarise(f"T-{TEST_OFF} (this spec)", arm(rows, TEST_OFF))
+
+    # ------------------------------------------------------------------
+    # SUPPLEMENTARY, AND NOT PART OF THE FROZEN TEST. The live bot started
+    # betting both sides on 2026-10-12, so the natural question is whether
+    # T-6 still looks better once NO is included. It is reported separately
+    # and it decides nothing: a pre-registered test whose scope grows after
+    # the data starts arriving is no longer pre-registered, and widening the
+    # spec here would throw away the only property that makes the 500-bet
+    # verdict worth waiting for.
+    #
+    # It also quadruples the comparisons -- two offsets became two offsets by
+    # three side-groupings -- so the noise floor rises accordingly.
+    print()
+    print("  --- supplementary, NOT the frozen spec, decides nothing ---")
+    n9 = summarise(f"T-{LIVE_OFF} NO side", arm(rows, LIVE_OFF, "NO"))
+    n6 = summarise(f"T-{TEST_OFF} NO side", arm(rows, TEST_OFF, "NO"))
+    summarise(f"T-{LIVE_OFF} both sides",
+              arm(rows, LIVE_OFF) + arm(rows, LIVE_OFF, "NO"))
+    summarise(f"T-{TEST_OFF} both sides",
+              arm(rows, TEST_OFF) + arm(rows, TEST_OFF, "NO"))
+    if n9 and n6:
+        print("  (the NO side measured +0.03% over 2,052 bets at t=0.04 "
+              "before any of this;")
+        print("   a few dozen forward bets do not revisit that)")
+    print()
 
     print("\n" + "=" * 90)
     if not a6 or a6["n"] < NEED_N:
