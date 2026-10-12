@@ -1,0 +1,36 @@
+name: Does NO pay in a choppy market (read-only)
+
+# Runs condno.py: the 90-96c band on BOTH sides at T-9, split by how decisive
+# the other majors in the same close window were.
+#
+# Asked because on 2026-10-12 the bot sat idle for hours with the five majors
+# quoting 9-29c YES -- which is 71-91c NO, favourites in the band on the side
+# the bot does not bet.
+#
+# GOOGLE CREDENTIAL ONLY. The pre-decision quotes are already in the M15
+# sheet, so this never reaches the exchange and KALSHI_API_KEY is not in its
+# environment to be printed by accident.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  condno:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Score the conditional test
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python condno.py
