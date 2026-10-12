@@ -112,6 +112,38 @@ MIN_ENTRY = float(os.environ.get("MIN_ENTRY_CENTS") or 20.0)
 # beyond that we would rather miss the bet.
 SLIP_BUFFER_CENTS = 1.0
 
+# HOW FAR THE ASK MAY HAVE FALLEN BETWEEN THE DECISION AND THE ORDER.
+#
+# A BUY LIMIT SETS A MAXIMUM, NEVER A MINIMUM. The order goes out at
+# ceil(quote + 1c) and takes whatever the book offers up to that price, so a
+# collapsing market hands us a cheap fill we never asked for. There is no
+# exchange-side way to refuse one: "do not fill me below X" is not a thing a
+# buy order can say.
+#
+# AND A CHEAP FILL IS A WARNING, NOT A BARGAIN. Across the first 124 live
+# bets, split by how the fill compared to the quote:
+#
+#     fill 15c+ BELOW quote      4 bets   25.0% won   -59.94% of stake
+#     fill 5-15c below           8 bets   75.0% won    -5.33%
+#     fill 0-5c below           48 bets   95.8% won    +4.15%
+#     fill at or above quote    64 bets   96.9% won    +4.50%
+#
+# On 2026-10-12 at 08:35 three orders quoted near 90c filled at 61c, 67c and
+# 61c, and all three lost: -$19.39 from one close. The price was not cheap,
+# it was falling, and the favourite was in the process of stopping being one.
+#
+# So the only lever is to NOT SEND. This re-reads the ask immediately before
+# building the order and declines if it has dropped more than this far below
+# the quote the decision was made on.
+#
+# TWELVE OBSERVATIONS IS NOT A LOT, and a threshold fitted to twelve points
+# would be exactly the overfitting this project keeps finding. The reason to
+# believe this one is mechanical rather than statistical: an ask collapsing
+# in the seconds before a 15-minute close is information about the outcome,
+# not noise around a price. The number is set wide enough to catch only the
+# collapses, not ordinary jitter.
+MAX_DROP_CENTS = float(os.environ.get("MAX_DROP_CENTS") or 10.0)
+
 # How long to wait before re-trying a market the order host has not listed yet.
 # The window is 15 minutes and we fire about 35 seconds in, so this spends
 # slack we have plenty of.
@@ -220,6 +252,41 @@ def current_entry(ticker, side):
 _INDEX_CACHE = {}
 
 
+def fresh_ask_cents(ticker):
+    """The yes ask right now, in cents, or None if it cannot be read.
+
+    Deliberately NOT cached, unlike market_exchange_index below. The whole
+    purpose is to catch a price that has moved since the decision, and a
+    cached quote is the stale quote this exists to detect.
+
+    Returning None on any failure is intentional: the caller treats an
+    unreadable quote as "no reason to decline", because a guard that blocks
+    every bet whenever the network hiccups is worse than the thing it
+    guards against.
+    """
+    import predictor as P
+    try:
+        hdrs = P._kalshi_headers("GET", f"/trade-api/v2/markets/{ticker}")
+        r = requests.get(f"{ORDER_HOST}/trade-api/v2/markets/{ticker}",
+                         headers=hdrs or {}, timeout=10)
+        if not r.ok:
+            return None
+        m = (r.json().get("market") or {})
+        for k in ("yes_ask", "yes_ask_dollars"):
+            v = m.get(k)
+            if v is None:
+                continue
+            try:
+                x = float(v)
+            except (TypeError, ValueError):
+                continue
+            # The API gives cents on one field and dollars on the other.
+            return x * 100.0 if x <= 1.0 else x
+    except Exception:
+        return None
+    return None
+
+
 def market_exchange_index(ticker):
     """The exchange this market trades on, or None if it cannot be read."""
     if ticker in _INDEX_CACHE:
@@ -267,6 +334,22 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
     if exch is None:
         return ("SKIPPED", "could not read the market's exchange index",
                 0, 0.0, "")
+
+    # THE LAST LOOK. See MAX_DROP_CENTS above: a buy limit cannot refuse a
+    # cheap fill, so the only way to avoid buying into a collapse is to
+    # notice it and not send. Checked here, after the cheap guards and
+    # immediately before the order is built, so the quote is as fresh as it
+    # can be.
+    # A drop of exactly MAX_DROP_CENTS is allowed through: the test is
+    # STRICTLY greater, so the constant reads as "more than this much" and a
+    # bet is never declined by a rounding tie.
+    if side == "UP":
+        now_c = fresh_ask_cents(ticker)
+        if now_c is not None and now_c < entry_cents - MAX_DROP_CENTS:
+            return ("SKIPPED",
+                    f"ask fell {entry_cents - now_c:.0f}c since the quote "
+                    f"({entry_cents:.0f}c -> {now_c:.0f}c): buying a "
+                    f"collapse, not a favourite", 0, 0.0, "")
 
     limit_c = min(99.0, math.ceil(entry_cents + SLIP_BUFFER_CENTS))
     contracts = int(stake / (limit_c / 100.0))     # never round UP into overspend
