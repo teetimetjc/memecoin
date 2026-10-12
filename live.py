@@ -252,6 +252,47 @@ def current_entry(ticker, side):
 _INDEX_CACHE = {}
 
 
+def fresh_side_cents(ticker, side):
+    """What one contract of `side` costs RIGHT NOW, in cents, or None.
+
+    The NO half of this was missing and that was not a small omission. The
+    last-look guard existed only for UP, so every NO bet would have gone out
+    with no protection at all against the one failure mode measured to cost
+    real money: a fill well below the quote, which is the book gapping away
+    between the decision and the order rather than a bargain.
+
+    It is the same phenomenon mirrored. A cheap YES fill means the ask
+    collapsed; a cheap NO fill means the BID ran up, because NO costs one
+    minus the bid. The confirmation order on 2026-10-12 showed exactly that:
+    NO quoted at 91c, filled at 85c, because YES climbed from 9c to 15c while
+    the order was in flight.
+    """
+    import predictor as P
+    try:
+        hdrs = P._kalshi_headers("GET", f"/trade-api/v2/markets/{ticker}")
+        r = requests.get(f"{ORDER_HOST}/trade-api/v2/markets/{ticker}",
+                         headers=hdrs or {}, timeout=10)
+        if not r.ok:
+            return None
+        m = (r.json().get("market") or {})
+        want = (("yes_ask", "yes_ask_dollars") if side == "UP"
+                else ("yes_bid", "yes_bid_dollars"))
+        for k in want:
+            v = m.get(k)
+            if v is None:
+                continue
+            try:
+                x = float(v)
+            except (TypeError, ValueError):
+                continue
+            c = x * 100.0 if x <= 1.0 else x
+            # UP pays the ask; DOWN pays one minus the bid.
+            return c if side == "UP" else (100.0 - c)
+    except Exception:
+        return None
+    return None
+
+
 def fresh_ask_cents(ticker):
     """The yes ask right now, in cents, or None if it cannot be read.
 
@@ -343,13 +384,16 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
     # A drop of exactly MAX_DROP_CENTS is allowed through: the test is
     # STRICTLY greater, so the constant reads as "more than this much" and a
     # bet is never declined by a rounding tie.
-    if side == "UP":
-        now_c = fresh_ask_cents(ticker)
-        if now_c is not None and now_c < entry_cents - MAX_DROP_CENTS:
-            return ("SKIPPED",
-                    f"ask fell {entry_cents - now_c:.0f}c since the quote "
-                    f"({entry_cents:.0f}c -> {now_c:.0f}c): buying a "
-                    f"collapse, not a favourite", 0, 0.0, "")
+    # BOTH SIDES, because the guard was UP-only and the NO side was about to
+    # go live without it. A cheap NO fill is the same adverse selection as a
+    # cheap YES one, driven by the bid rising instead of the ask falling.
+    now_c = fresh_side_cents(ticker, side)
+    if now_c is not None and now_c < entry_cents - MAX_DROP_CENTS:
+        what = "ask fell" if side == "UP" else "bid ran up, so NO fell"
+        return ("SKIPPED",
+                f"{what} {entry_cents - now_c:.0f}c since the quote "
+                f"({entry_cents:.0f}c -> {now_c:.0f}c): buying a "
+                f"collapse, not a favourite", 0, 0.0, "")
 
     limit_c = min(99.0, math.ceil(entry_cents + SLIP_BUFFER_CENTS))
     contracts = int(stake / (limit_c / 100.0))     # never round UP into overspend
