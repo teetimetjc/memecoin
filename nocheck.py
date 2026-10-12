@@ -64,14 +64,22 @@ STAKE = float(os.environ.get("NOCHECK_STAKE") or 5.0)
 MAX_CONTRACTS = 6
 MAX_STAKE = 6.0
 # Do not race settlement: the order needs time to fill and be read back.
-MIN_SECONDS = 180
-MAX_SECONDS = 900
+# 15-minute markets close on the quarter hour, so a window of T-3 to T-15
+# leaves a dead minute: dispatched at :44, the next close is 60s away (under
+# the floor) and the one after is 960s away (over a 900s ceiling). The first
+# run hit exactly that and reported "nothing in band" when the truth was
+# "nothing was eligible yet". 1100s covers the whole gap.
+MIN_SECONDS = 150
+MAX_SECONDS = 1100
 
 
 def find():
     """One market with NO in band and enough time left. None if there isn't."""
     now = time.time()
     best = None
+    # Every candidate seen, so "nothing in band" can be told apart from
+    # "nothing was looked at" -- the distinction the first run could not make.
+    saw = []
     for s in MAJORS:
         try:
             ms = C.open_markets(s)
@@ -92,6 +100,7 @@ def find():
             if bid is None:
                 continue
             no_px = 100.0 * (1.0 - bid)
+            saw.append((s, no_px, left))
             if not (LO <= no_px < HI):
                 continue
             cand = (no_px, str(m.get("ticker")), s, left)
@@ -99,6 +108,14 @@ def find():
             # most ordinary test of the mechanism.
             if best is None or cand[0] < best[0]:
                 best = cand
+    if saw:
+        print(f"  {len(saw)} eligible market(s) in the time window:")
+        for ser, px, left in sorted(saw, key=lambda x: x[1]):
+            mark = "  <- in band" if LO <= px < HI else ""
+            print(f"    {ser:<12} NO {px:>5.1f}c  {left:>5.0f}s left{mark}")
+    else:
+        print(f"  no market had {MIN_SECONDS}-{MAX_SECONDS}s left at all -- "
+              "this is a timing miss, not an empty band.")
     return best
 
 
