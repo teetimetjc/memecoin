@@ -259,11 +259,18 @@ jobs:
           # -$8.47. The effective sample is 87 windows, not 126 bets, which is
           # also why the day stop trips faster than the bet count suggests.
           FAVLIVE_MAX_PER_WINDOW: '2'
-          # THE DAY STOP MOVES WITH THE STAKE OR IT STOPS MEANING ANYTHING.
-          # At $10 a loss is about $10.05, so $35 would trip after three and
-          # halt the bot on an ordinary day. $50 keeps the five-loss headroom
-          # the number was chosen for.
-          FAVLIVE_DAY_STOP: '50'
+          # DAY STOP OFF, at the operator's request on 2026-10-12 with the
+          # day at -$40 against the $50 ceiling. They want to watch it by hand
+          # rather than have the session halt itself, and to call the stop
+          # themselves if it keeps going.
+          #
+          # WHAT THIS REMOVES: the only automatic loss limit. The funding
+          # check still halts once the balance cannot cover a window, so the
+          # floor is now the account balance (~$118) and not a number anyone
+          # chose. The Control tab is the fast stop.
+          #
+          # Put a dollar figure back here to re-arm it.
+          FAVLIVE_DAY_STOP: 'off'
           # The last look before each order: decline if the ask has fallen
           # more than this far since the quote the decision was made on. A buy
           # limit cannot refuse a cheap fill, so not sending is the only
