@@ -221,6 +221,31 @@ jobs:
           LIVE_TRADING: '1'
           FAVLIVE_RULE: 'narrow slice'
           FAVLIVE_STAKE: ${{ github.event.inputs.stake || '10' }}
+          # BOTH SIDES, FROM 2026-10-12. The narrow slice spec is YES-only and
+          # stays that way in score.RULES; this overrides the sides for the
+          # live bot only, so the frozen spec still measures what it was
+          # written to measure.
+          #
+          # WHY NOW. The DOWN mapping was the blocker and it is confirmed: one
+          # real order intending NO at 91c returned outcome_side 'no',
+          # position_fp -5.00, exposure $4.25. And the cost of staying YES-only
+          # is measured -- replaying 2026-10-12 with both sides found 38 NO
+          # signals against 8 YES ones, because in a falling market every
+          # favourite is on the side the bot could not take.
+          #
+          # WHAT IS STILL NOT TRUE: that NO has an edge. It measured +0.03%
+          # over 2,052 bets (t=0.04) and a regime-conditional re-test agreed.
+          # This is running it to build a live record, not because the
+          # evidence says it pays.
+          FAVLIVE_SIDES: 'YES,NO'
+          # A QUARTER THE SIZE, because the two sides are not equally
+          # evidenced. YES has a live record; NO has a null and one fill. The
+          # stake says which is which, and it is FIXED -- raising it because a
+          # few land is exactly how $4 became $10 the day before the worst
+          # session yet.
+          FAVLIVE_STAKE_NO: '4'
+          # Earned by that one confirmed fill, and by nothing else.
+          LIVE_ALLOW_DOWN: '1'
           # The band must match the rule being run, or the guard rejects the
           # strategy it was asked to run. 90-96c is the narrow slice.
           MIN_ENTRY_CENTS: '90'
