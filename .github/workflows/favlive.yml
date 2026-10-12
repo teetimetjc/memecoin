@@ -197,6 +197,19 @@ jobs:
       - name: LIVE -- places real orders
         if: steps.mode.outputs.mode == 'live'
         env:
+          # UNBUFFERED, OR THE LOG IS USELESS WHILE IT MATTERS. Python block-
+          # buffers stdout when it is a pipe rather than a terminal, so these
+          # sessions wrote roughly 4KB at a time: on 2026-10-12 a whole hour of
+          # scans sat in the buffer, and GitHub will not serve a job's log
+          # until the job ends anyway. Between the two, the bot was
+          # undiagnosable for the 5h45m that it was running -- the exact
+          # window in which anyone would want to know what it was doing.
+          #
+          # Worse, the buffer dies with the process. Cancelling the run to read
+          # the log destroyed the most recent hour instead of revealing it,
+          # which is how the one question being asked (why no order against
+          # two in-band signals at 16:06 UTC) ended up unanswerable.
+          PYTHONUNBUFFERED: '1'
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
