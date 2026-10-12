@@ -17,10 +17,22 @@ name: Snapshot the live record (read-only, writes a data branch)
 #
 # THE READ IS STILL READ-ONLY WHERE IT MATTERS. tally places no orders and
 # no Pushover secret is reachable here. The only write is this one file, to
-# an orphan branch that nothing merges and nothing builds from.
+# an orphan branch that nothing merges and nothing builds from -- and the
+# Scorecard tab tally itself writes, which is overwritten in place.
 
+# HOURLY, because two things downstream go stale without it: the Scorecard
+# tab tally writes for the Looker dashboard, and snapshot.json on the data
+# branch. Both were built assuming this ran on its own and it did not -- the
+# dashboard sat on whatever the last manual run had left behind.
+#
+# Minute 17 rather than 0: most schedules land on the hour, and a run queued
+# behind that traffic is a run that fires late. A dropped trigger here just
+# means an hour-stale dashboard, which is why this does not need the
+# belt-and-braces second trigger source favlive got.
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
 
 permissions:
   contents: write
