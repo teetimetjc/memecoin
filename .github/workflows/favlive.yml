@@ -252,6 +252,32 @@ jobs:
           # The same sequence on the YES side, $4 -> $7 -> $10, finished the
           # day before the worst session in the record.
           FAVLIVE_STAKE_NO: '10'
+          # THE STAKE LADDER. Three settled losses in a row drop the stake to
+          # $4; three settled wins in a row restore it. Measured over the
+          # 136-bet record normalised to flat $10, this returned +$24.13
+          # against +$17.57 for no rule, and cut the worst drawdown from
+          # -$40.00 to -$29.98. Drawdown-from-peak triggers were tested too
+          # and did WORSE on both counts, because losses cluster -- bets in
+          # one close window resolve together 23 times in 24 -- so a streak
+          # fires at the bad window while a drawdown trigger fires after it
+          # and then holds you small through the recovery.
+          #
+          # Those numbers rest on three trigger events. The direction is what
+          # is trusted, not the thresholds, and they should not be retuned
+          # after a bad week.
+          LADDER_DOWN_AFTER: '3'
+          LADDER_UP_AFTER: '3'
+          LADDER_REDUCED: '4'
+          # The replacement for the day stop that was switched off: a much
+          # looser brake, but a brake. Measured from LADDER_START below, not
+          # from the account's all-time peak.
+          LADDER_HALT_DRAWDOWN: '60'
+          # STARTS FROM NOW, NOT FROM THE WHOLE HISTORY. Replaying everything
+          # would put the account on the reduced rung immediately -- it
+          # tripped at the 08:35 window on 10-12 and never saw three wins in
+          # a row afterwards -- which would have undone the stake increase
+          # requested minutes earlier.
+          LADDER_START: '2026-10-13T00:30:00Z'
           # Earned by that one confirmed fill, and by nothing else.
           LIVE_ALLOW_DOWN: '1'
           # The band must match the rule being run, or the guard rejects the
