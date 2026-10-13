@@ -42,13 +42,21 @@ def main():
     print(f"  {'ticker':<34} {'fills':>5} {'contracts':>10} {'cost':>8} "
           f"{'side':>6}  {'ours':>9}")
     miss = 0
+    big, missing = [], []
     for tk in sorted(agg, key=lambda t: -agg[t]["ct"]):
-        a = agg[tk]
-        b = ours.get(tk)
+        a = agg[tk]; b = ours.get(tk)
+        if not b: miss += 1; missing.append((tk, a))
+        if a["ct"] >= 8: big.append((tk, a, b))
+    print("  TICKERS OF 8+ CONTRACTS (a $10 bet buys ~10; 20 would be double):")
+    for tk, a, b in big:
         mark = f"{b['contracts']:>9}" if b else "  MISSING"
-        if not b: miss += 1
         print(f"  {tk:<34} {a['n']:>5} {a['ct']:>10.2f} {a['cost']:>8.2f} "
               f"{'/'.join(sorted(a['side'])):>6}  {mark}")
+    print()
+    print(f"  NOT IN OUR RECORD ({len(missing)}), newest first by ticker:")
+    for tk, a in sorted(missing, key=lambda x: x[0].split("-")[1] if "-" in x[0] else "", reverse=True)[:40]:
+        print(f"  {tk:<34} {a['n']:>5} {a['ct']:>10.2f} {a['cost']:>8.2f} "
+              f"{'/'.join(sorted(a['side'])):>6}")
     print()
     print(f"  {len(agg)} ticker(s) traded on the exchange, {miss} not in our record")
     if miss:
