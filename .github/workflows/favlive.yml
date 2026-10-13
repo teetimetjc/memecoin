@@ -237,6 +237,24 @@ jobs:
           # over 2,052 bets (t=0.04) and a regime-conditional re-test agreed.
           # This is running it to build a live record, not because the
           # evidence says it pays.
+          # QUIET HOURS, from 2026-10-13. 04:00-11:59 UTC is 11pm-7am in
+          # Chicago: the bot scans and logs that window but places nothing.
+          #
+          # The live record splits 46 bets at -3.95% ROI overnight against 96
+          # at +1.15% for the rest of the day -- the entire account loss sits
+          # in those hours. Four of the five overnight losses filled below the
+          # quote, three of them in one 08:35 window at 61-67c against quotes
+          # of 90-94c, and the backtest finds 11pm-3am CT negative on BOTH
+          # sides, the only slice where that happens. The mechanism fits in a
+          # sentence: overnight books are thin, so orders sweep further and
+          # pay worse.
+          #
+          # Neither window is significant alone (t=+0.30 day, t=-0.43 night).
+          # This acts on a mechanism plus two agreeing datasets, not on proof.
+          #
+          # The paper record of the skipped window is priced at the QUOTE and
+          # will therefore flatter it, because the fills are what went wrong.
+          FAVLIVE_QUIET_UTC: '4-12'
           FAVLIVE_SIDES: 'YES,NO'
           # RAISED TO $10 ON 2026-10-12, hours after being set to $4, at the
           # operator's explicit request and with the reason stated: to
