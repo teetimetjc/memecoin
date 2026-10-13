@@ -40,6 +40,8 @@ import backfill as B
 # guide at all here: 70-96c returned -$0.240/bet against +$0.185 for 90-96c.
 # Different market, open question.
 BANDS = [(0.85, 0.90), (0.87, 0.90), (0.90, 0.93), (0.93, 0.96), (0.90, 0.96)]
+# The widest bid-ask that still counts as a tradeable quote.
+MAX_SPREAD = float(__import__("os").environ.get("SURVEY_MAX_SPREAD") or 0.04)
 LO, HI = 0.85, 0.96          # the widest span worth pulling candles for
 WINDOW_H = 4
 PER_SERIES = 14
@@ -68,11 +70,24 @@ def first_touch(series, ticker, close):
         b = B._f(vb.get("close_dollars")) if isinstance(vb, dict) else None
         if t is None or a is None or b is None:
             continue
-        if not (0 < b <= a < 1):
+        # A WIDE QUOTE IS NOT A PRICE, and leaving this out produced
+        # nonsense: 94c favourites "winning" 76% across 2,361 bets. An
+        # illiquid sports market sits at 5c bid / 94c ask all game, and
+        # without a spread test that registers as a 94c favourite when the
+        # real price is nowhere near it. Every crypto script in this repo
+        # already carries this guard; it did not get copied across.
+        #
+        # 4c rather than the crypto scripts' 25c: that one exists to reject
+        # a crossed or empty book, while this one has to reject a price
+        # nobody could actually trade at. A 92c favourite with a 4c spread
+        # is already paying more in spread than the trade's whole margin.
+        if not (0 < b <= a < 1) or (a - b) > MAX_SPREAD:
             continue
         rows.append((t, a))
     rows.sort()
     entries = {}
+    # Caller gets the kept-minute count so the filter's bite is visible
+    # rather than silent.
     inband = 0
     for _t, a in rows:
         if LO <= a < HI:
