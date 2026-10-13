@@ -65,7 +65,7 @@ def main():
 
     started = time.time()
     rows = []
-    seen = no_vol = short = 0
+    seen = no_vol = short = no_cand = 0
     for s in ser:
         if time.time() - started > BUDGET:
             break
@@ -92,16 +92,26 @@ def main():
             if life < MIN_LIFE_H:
                 short += 1
                 continue
-            vol = B._f(m.get("volume")) or 0
-            if vol < MIN_VOLUME:
-                no_vol += 1
-                continue
+            # VOLUME COMES FROM THE CANDLES, NOT THE MARKET RECORD. volprobe
+            # found the /markets list response carries no `volume` key at all
+            # on settled markets (2,341 of 2,341 missing), so the old
+            # `m.get("volume") or 0` scored every market as zero and the first
+            # run dropped all 14,487 of them. The candlesticks do carry a
+            # per-period volume, so the filter is applied after the fetch.
             hrs = min(int(life) + 1, 240)
             dd, _x = B.get(
                 f"/trade-api/v2/series/{tk}/markets/{m.get('ticker')}/candlesticks",
                 start_ts=int(c) - hrs * 3600, end_ts=int(c), period_interval=60)
+            cands = (dd or {}).get("candlesticks") or []
+            if not cands:
+                no_cand += 1
+            vol = sum((B._f(cd.get("volume")) or 0.0) for cd in cands)
+            if vol < MIN_VOLUME:
+                no_vol += 1
+                time.sleep(B.PAUSE)
+                continue
             path = []
-            for cd in (dd or {}).get("candlesticks") or []:
+            for cd in cands:
                 t = B._f(cd.get("end_period_ts"))
 
                 def g(k):
@@ -147,7 +157,8 @@ def main():
     print(f"  {seen:,} settled markets examined")
     print(f"  {short:,} dropped for living under {MIN_LIFE_H}h")
     print(f"  {no_vol:,} dropped for volume under {MIN_VOLUME}  "
-          "<- the empty-book filter")
+          "<- real traded volume, from the candles")
+    print(f"  (of those, {no_cand:,} returned no candlesticks at all)")
     print(f"  {len(rows)} usable entries\n")
     if len(rows) < 40:
         print("  TOO FEW TO READ. If most of the drops are the volume filter,")
