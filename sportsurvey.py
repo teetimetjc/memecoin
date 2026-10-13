@@ -31,7 +31,16 @@ Read-only.
 import collections, sys, time
 import backfill as B
 
-LO, HI = 0.90, 0.96
+# SEVERAL BANDS, NOT ONE. Picking a band before measuring is how the crypto
+# rule got its 90-96c -- it came out of a search, and the search is also why
+# it needed a frozen forward test to mean anything. Reporting bands side by
+# side costs nothing extra: the same candles are already in memory.
+#
+# The crypto record is a reason not to assume cheaper is better there, and no
+# guide at all here: 70-96c returned -$0.240/bet against +$0.185 for 90-96c.
+# Different market, open question.
+BANDS = [(0.85, 0.90), (0.87, 0.90), (0.90, 0.93), (0.93, 0.96), (0.90, 0.96)]
+LO, HI = 0.85, 0.96          # the widest span worth pulling candles for
 WINDOW_H = 4
 PER_SERIES = 14
 MIN_SETTLED = 60
@@ -42,7 +51,7 @@ SPORT_WORDS = ("sport", "football", "basketball", "baseball", "hockey",
 
 
 def first_touch(series, ticker, close):
-    """(entry_price, minutes_in_band) on the first visit to the band."""
+    """{band: entry_price} for the first visit to each band, plus minutes."""
     end = B.ts(close)
     if end is None:
         return None, 0
@@ -63,14 +72,15 @@ def first_touch(series, ticker, close):
             continue
         rows.append((t, a))
     rows.sort()
-    entry = None
+    entries = {}
     inband = 0
     for _t, a in rows:
         if LO <= a < HI:
             inband += 1
-            if entry is None:
-                entry = a
-    return entry, inband
+        for b in BANDS:
+            if b[0] <= a < b[1] and b not in entries:
+                entries[b] = a
+    return entries, inband
 
 
 def main():
@@ -116,35 +126,41 @@ def main():
             looked += 1
             e, mins = first_touch(tk, str(m.get("ticker")), m.get("close_time"))
             band_minutes += mins
-            if e is not None:
-                bets.append((e, res == "yes"))
+            for b, px in e.items():
+                bets.append((b, px, res == "yes"))
             time.sleep(B.PAUSE)
         if looked:
             out.append(dict(tk=tk, settled=len(mk), looked=looked,
                             bets=bets, mins=band_minutes,
                             title=str(s.get("title") or "")[:28]))
 
-    print(f"  {'series':<26} {'settled':>8} {'seen':>5} {'hit band':>9} "
-          f"{'avg entry':>10} {'won':>7} {'gap':>7}")
+    def line(lab, rows):
+        n = len(rows)
+        if not n:
+            print(f"  {lab:<30} {'-':>7}")
+            return
+        px = 100.0 * sum(p for _, p, _ in rows) / n
+        w = 100.0 * sum(1 for _, _, y in rows if y) / n
+        print(f"  {lab:<30} {n:>6} bets  entry {px:>5.1f}c  won {w:>5.1f}%  "
+              f"gap {w-px:>+6.1f} pts")
+
     tot = []
     for r in sorted(out, key=lambda x: -len(x["bets"])):
-        n = len(r["bets"])
-        if not n:
-            print(f"  {r['tk']:<26} {r['settled']:>8,} {r['looked']:>5} "
-                  f"{0:>9} {'-':>10} {'-':>7} {'-':>7}")
-            continue
-        px = 100.0 * sum(p for p, _ in r["bets"]) / n
-        w = 100.0 * sum(1 for _, y in r["bets"] if y) / n
-        print(f"  {r['tk']:<26} {r['settled']:>8,} {r['looked']:>5} "
-              f"{n:>9} {px:>9.1f}c {w:>6.1f}% {w-px:>+6.1f}")
         tot.extend(r["bets"])
+        if not r["bets"]:
+            continue
+        print(f"\n  {r['tk']}  ({r['settled']:,} settled, "
+              f"{r['looked']} sampled)")
+        for b in BANDS:
+            line(f"    {100*b[0]:.0f}-{100*b[1]:.0f}c",
+                 [x for x in r["bets"] if x[0] == b])
 
     print("\n" + "=" * 102)
     if tot:
-        px = 100.0 * sum(p for p, _ in tot) / len(tot)
-        w = 100.0 * sum(1 for _, y in tot if y) / len(tot)
-        print(f"  ALL SPORTS POOLED: {len(tot)} bets, avg entry {px:.1f}c, "
-              f"won {w:.1f}%, gap {w-px:+.1f} points")
+        print("  ALL SPORTS POOLED, BY BAND:")
+        for b in BANDS:
+            line(f"    {100*b[0]:.0f}-{100*b[1]:.0f}c",
+                 [x for x in tot if x[0] == b])
         print()
         print("  A POSITIVE GAP IS NOT AN EDGE YET. These are a dozen markets")
         print("  per series on an arbitrary first-touch rule, and every series")
