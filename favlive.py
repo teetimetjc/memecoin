@@ -82,6 +82,23 @@ SIDES_OVERRIDE = tuple(
 # five-day live record; NO has a 2,052-bet null and one confirmed fill. Equal
 # sizing would assert an equal confidence that does not exist.
 STAKE_BY_SIDE = {}
+# QUIET HOURS: scan and log, but place nothing. "4-12" means 04:00-11:59 UTC,
+# which is 11pm-7am in Chicago while CDT holds.
+#
+# WHY. In the live record that window is 46 bets at -3.95% ROI while the rest
+# of the day is 96 bets at +1.15%. Four of its five losses filled BELOW the
+# quote and three of those were one 08:35 window at 61-67c against quotes of
+# 90-94c. The mechanism is statable in a sentence -- overnight books are thin,
+# so orders sweep further for worse prices -- and the backtest agrees: 11pm-3am
+# CT is negative on BOTH sides there.
+#
+# WHAT THE PAPER RECORD WILL NOT SHOW, and this matters more than it sounds.
+# The signals logged here are priced at the QUOTE. The overnight problem is
+# the FILL, and a skipped order has no fill. So the paper record of this
+# window will look systematically BETTER than trading it would have been, and
+# the gap is precisely the thing that made the window lose. Read it as "did
+# the favourite hold", never as "we would have made this money".
+QUIET_UTC = (os.environ.get("FAVLIVE_QUIET_UTC") or "").strip()
 # THE DAY STOP CAN BE TURNED OFF, AND ONLY BY NAME. "off" is spelled out
 # rather than expressed as a huge number, because 999999 in a workflow file
 # reads like a limit to whoever finds it next and is in fact the absence of
@@ -149,6 +166,19 @@ def rule():
             "only after one NO order has been placed and the position read "
             "back. Until then use the narrow slice, which is YES-only.")
     return r
+
+
+def quiet_now():
+    """True if orders are suppressed right now. Open range: 4-12 is 4..11."""
+    if not QUIET_UTC or "-" not in QUIET_UTC:
+        return False
+    try:
+        a, b = (int(x) for x in QUIET_UTC.split("-", 1))
+    except ValueError:
+        return False
+    h = time.gmtime().tm_hour
+    # A wrapping window such as 22-6 is read as "22:00 through 05:59".
+    return (a <= h < b) if a < b else (h >= a or h < b)
 
 
 def stake_for(side, default):
@@ -380,6 +410,9 @@ def cycle(client, r, stake, dry, factor=1.0):
         ORDERED.add(s["ticker"])
 
     if dry:
+        if quiet_now() and live.enabled():
+            print(f"  [favlive] QUIET HOURS ({QUIET_UTC} UTC) -- "
+                  f"{len(tuples)} signal(s) logged, nothing placed.")
         print(f"  [favlive] DRY RUN -- {len(tuples)} order(s) NOT sent. "
               f"${stake:.2f} each would buy "
               + ", ".join(f"{int(stake/s['price'])}x {s['series']}"
@@ -435,6 +468,8 @@ def main():
         if abs(no_stake - stake) > 1e-9:
             stake_txt = (f"YES ${stake:.2f} / NO ${no_stake:.2f} per bet")
     ds_txt = "OFF (no automatic halt)" if DAY_STOP_OFF else f"${DAY_STOP:.2f}"
+    if QUIET_UTC:
+        print(f"  quiet hours: {QUIET_UTC} UTC -- scan and log, place nothing")
     print(f"  {stake_txt}   sides {sides_txt}   "
           f"cap {MAX_PER_WINDOW}/window   day stop {ds_txt}")
     if DAY_STOP_OFF:
@@ -453,6 +488,7 @@ def main():
     pnl_at = 0.0          # when the day's P&L was last read successfully
     pnl_val = None        # and what it was
     last_ladder_note = [""]   # so the ladder line prints on change, not per poll
+    quiet_said = [False]      # so the quiet-hours banner prints on entry only
     while time.time() < deadline:
         if not dry:
             # ONCE EVERY PNL_EVERY_S, NOT EVERY POLL. This sat inside the
@@ -520,11 +556,24 @@ def main():
                 return 0
             factor = (lad_stake / stake) if stake else 1.0
 
+        # QUIET HOURS SUPPRESS THE ORDER, NOT THE SCAN. The window still
+        # gets looked at and the signals still get printed, so the question
+        # "would it have been right?" stays answerable from the log -- and
+        # the M15 sheet keeps recording every market's quote and outcome
+        # regardless, which is the real paper record.
+        q = quiet_now()
+        if q and not dry and not quiet_said[0]:
+            print(f"  [favlive] QUIET HOURS {QUIET_UTC} UTC -- scanning and "
+                  "logging, placing nothing.")
+            quiet_said[0] = True
+        if not q:
+            quiet_said[0] = False
+
         # One cycle per window, keyed so a slow loop cannot bet it twice.
         key = int(time.time()) // 900
         if key not in seen:
             try:
-                if cycle(client, r, stake, dry, factor):
+                if cycle(client, r, stake, dry or q, factor):
                     seen.add(key)
             except Exception as e:
                 print(f"  [favlive] cycle error: {str(e)[:160]}")
