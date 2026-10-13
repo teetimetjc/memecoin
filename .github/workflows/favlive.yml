@@ -142,7 +142,31 @@ jobs:
     timeout-minutes: 350
     env:
       # The mode scheduled runs use. 'dry' until deliberately changed.
-      default_mode: 'live'
+      # PAUSED 2026-10-13, at the operator's decision, after 148 settled
+      # bets ending at -$25.29. Sessions still run, still scan and still log
+      # every signal -- they place nothing.
+      #
+      # WHY DRY RATHER THAN DELETING THE SCHEDULE. The research value is in
+      # the record, and the record only grows if the scan keeps running. A
+      # dry session writes the same signals to the same sheet, so the paper
+      # history of this rule continues accumulating for free while no money
+      # is at risk. Deleting the cron would stop the one useful thing the
+      # bot still does.
+      #
+      # WHAT THE EVIDENCE SAID AT THE TIME:
+      #   live        148 bets   won 90.54%   needed 90.97%   -$25.29
+      #   Polymarket 5,727 YES bets  +$0.012/bet  t=+0.29
+      #   Polymarket 5,561 NO  bets  -$0.024/bet  t=-0.54
+      #   one Polymarket week (May 11-17) was -$491 against +$426 for the
+      #   other 27 combined
+      #
+      # Eleven thousand bets across two venues measuring an edge of zero,
+      # with the result dominated by single weeks. Nothing here was broken;
+      # the trade was priced correctly the whole time.
+      #
+      # To resume: set this back to 'live' and dispatch a fresh run, because
+      # a queued run carries the workflow file as of its creation.
+      default_mode: 'dry'
     steps:
       - uses: actions/checkout@v4
         with:
