@@ -288,11 +288,25 @@ def day_pnl():
 
 
 def _money(d, keys):
-    """First readable dollar value among `keys`, converting cents if needed.
+    """First readable dollar value among `keys`.
 
-    The _fp/_dollars migration has caught this project six times, so the
-    dollar spelling is preferred and a bare value above a plausible dollar
-    bound is treated as cents rather than assumed to be dollars.
+    THE OLD RULE WAS A GUESS AND IT WAS WRONG. It read:
+
+        return x / 100.0 if (not k.endswith("_dollars") and abs(x) > 1000) else x
+
+    so a bare cents field only converted when it exceeded 1000. A settlement
+    revenue of 400 -- four dollars -- is under that threshold and sailed
+    through as $400. On 2026-10-12 this made favlive report the day's net as
+    "+$14343.07" against a true figure near -$40, and it printed $0.00 and
+    +$400.00 in the same session.
+
+    The consequence was not cosmetic: the $50 day stop read this number, so
+    it could never have tripped. The account ran all day with a brake that
+    was reporting five figures of imaginary profit.
+
+    THE RULE NOW: a *_dollars field is dollars, anything else is cents, with
+    no magnitude guess anywhere. Sizes do not disambiguate units -- $4 and
+    400c are the same money and only the field name says which is written.
     """
     for k in keys:
         v = d.get(k)
@@ -304,8 +318,7 @@ def _money(d, keys):
             continue
         if x != x:
             continue
-        return x / 100.0 if (k.endswith(("_dollars",)) is False and
-                             abs(x) > 1000) else x
+        return x if k.endswith("_dollars") else x / 100.0
     return None
 
 
