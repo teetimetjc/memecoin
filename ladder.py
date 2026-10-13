@@ -58,6 +58,22 @@ HALT_DRAWDOWN = float(os.environ.get("LADDER_HALT_DRAWDOWN") or 60.0)
 # before the peak itself starts rolling off the back of the window, which
 # would make the drawdown look smaller than it is.
 LIMIT = int(os.environ.get("LADDER_LIMIT") or 500)
+# ONLY SETTLEMENTS AFTER THIS COUNT. An ISO timestamp, or empty for all of
+# them.
+#
+# WHY IT EXISTS. Replaying the whole history put the account straight onto
+# the reduced rung: the ladder tripped at the 08:35 three-loss window on
+# 2026-10-12 and there has been no three-win streak since to restore it. So
+# switching the ladder on would silently have cancelled the stake increase
+# the operator had just asked for, which is a confusing way to lose an
+# argument nobody had.
+#
+# Starting the ladder from a chosen moment keeps the stake where it was put
+# and still arms the brake going forward. The cost is honest and worth
+# stating: a drawdown that began before this timestamp is invisible to the
+# halt, so the $60 floor measures from here, not from the account's real
+# peak.
+START = (os.environ.get("LADDER_START") or "").strip()
 
 
 def _money(d, keys):
@@ -100,6 +116,8 @@ def settlements():
         when = str(s.get("settled_time") or "")
         if rev is None or cost is None or not when:
             continue
+        if START and when <= START:
+            continue
         out.append((when, rev - cost, rev > 0))
     out.sort(key=lambda x: x[0])
     return out
@@ -117,7 +135,9 @@ def state(base_stake):
     if rows is None:
         return base_stake, False, "settlements unreadable; ladder not applied"
     if not rows:
-        return base_stake, False, "no settlements yet; full stake"
+        return base_stake, False, (
+            "no settlements since the ladder start; full stake"
+            if START else "no settlements yet; full stake")
 
     # Replay the ladder forward. Reduced is sticky until UP_AFTER wins in a
     # row, which is the hysteresis that stops it flapping on alternating
@@ -151,7 +171,8 @@ def state(base_stake):
         return stake, True, (
             f"drawdown ${dd:.2f} from a peak of ${peak:+.2f} is at or past "
             f"${HALT_DRAWDOWN:.2f}")
-    note = (f"{len(rows)} settled, net ${run:+.2f}, peak ${peak:+.2f}, "
+    note = ((f"since {START}, " if START else "")
+            + f"{len(rows)} settled, net ${run:+.2f}, peak ${peak:+.2f}, "
             f"drawdown ${dd:.2f}, "
             + (f"REDUCED to ${stake:.2f} "
                f"({DOWN_AFTER} losses in a row; {UP_AFTER} wins restores it)"
