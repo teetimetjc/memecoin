@@ -1,0 +1,34 @@
+name: Where are the YES and NO whynight (read-only)
+
+# Exploratory. Splits the whole M15 history by time of day, weekday, coin and
+# volatility regime, and reports both sides in each pocket.
+#
+# Deliberately uses the pre-freeze data too: the job is to FIND candidates,
+# not to confirm anything, and a candidate found in mined data is worth one
+# thing -- a forward test.
+#
+# Google credential only. Never reaches the exchange.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  whynight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Find the whynight
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python whynight.py
