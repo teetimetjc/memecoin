@@ -61,6 +61,7 @@ import requests
 import alert
 import collect15 as C
 import control
+import ladder
 import live
 import predictor as P
 import score as S
@@ -308,7 +309,7 @@ def _money(d, keys):
     return None
 
 
-def cycle(client, r, stake, dry):
+def cycle(client, r, stake, dry, factor=1.0):
     mk = open_markets()
     now = time.time()
     # Only the window whose close is ENTRY_MIN..ENTRY_MAX away is actionable.
@@ -385,7 +386,7 @@ def cycle(client, r, stake, dry):
         part = [t for t in tuples if t[2] == side_name]
         if not part:
             continue
-        st = stake_for("YES" if side_name == "UP" else "NO", stake)
+        st = stake_for("YES" if side_name == "UP" else "NO", stake) * factor
         print(f"  [favlive] {len(part)} {side_name} order(s) at ${st:.2f}")
         rows.extend(live.run_window(client, part, stake=st))
     placed = [x for x in rows if len(x) > 8 and x[8] == "PLACED"]
@@ -438,6 +439,7 @@ def main():
     seen = set()
     pnl_at = 0.0          # when the day's P&L was last read successfully
     pnl_val = None        # and what it was
+    last_ladder_note = [""]   # so the ladder line prints on change, not per poll
     while time.time() < deadline:
         if not dry:
             # ONCE EVERY PNL_EVERY_S, NOT EVERY POLL. This sat inside the
@@ -489,11 +491,27 @@ def main():
                       + " -- not betting this cycle.")
                 time.sleep(POLL_S)
                 continue
+        # THE LADDER, replayed from the exchange each cycle rather than held
+        # in memory. Sessions here are cancelled and restarted constantly, and
+        # a ladder kept in process state would reset to full stake every time
+        # -- the opposite of what it is for.
+        factor = 1.0
+        if not dry:
+            lad_stake, lad_halt, lad_note = ladder.state(stake)
+            if lad_note != last_ladder_note[0]:
+                print(f"  [ladder] {lad_note}")
+                last_ladder_note[0] = lad_note
+            if lad_halt:
+                print(f"  [favlive] LADDER HALT: {lad_note}")
+                control.halt(client, f"ladder halt: {lad_note}")
+                return 0
+            factor = (lad_stake / stake) if stake else 1.0
+
         # One cycle per window, keyed so a slow loop cannot bet it twice.
         key = int(time.time()) // 900
         if key not in seen:
             try:
-                if cycle(client, r, stake, dry):
+                if cycle(client, r, stake, dry, factor):
                     seen.add(key)
             except Exception as e:
                 print(f"  [favlive] cycle error: {str(e)[:160]}")
