@@ -20,8 +20,33 @@ import tally
 
 def main():
     want = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("TICKER","")).strip()
+    if want.upper() in ("", "ALL"):
+        # ALL: dump the recent fills and every open position. Added because
+        # "why is this bet $5?" cannot be answered without seeing the fill,
+        # and the answer has twice been a partial fill rather than a stake.
+        d = tally.get("/portfolio/fills", limit=40)
+        fills = (d or {}).get("fills") or []
+        print(f"\n  last {len(fills)} fill(s), newest first:")
+        for f in fills[:12]:
+            print(f"    {str(f.get('created_time'))[:19]}  "
+                  f"{str(f.get('ticker')):<28} side={str(f.get('side')):<4} "
+                  f"action={str(f.get('action')):<5} count={f.get('count_fp')} "
+                  f"yes={f.get('yes_price_dollars')} no={f.get('no_price_dollars')}")
+        p2 = tally.get("/portfolio/positions", limit=60)
+        pos = [x for x in ((p2 or {}).get("market_positions") or [])
+               if str(x.get("position_fp") or "0") not in ("0", "0.00", "")]
+        print(f"\n  {len(pos)} OPEN position(s):")
+        for x in pos:
+            q = float(x.get("position_fp") or 0)
+            print(f"    {str(x.get('ticker')):<30} position {q:+.2f} "
+                  f"({'NO (down)' if q<0 else 'YES (up)'})  "
+                  f"exposure ${x.get('market_exposure_dollars')}  "
+                  f"fees ${x.get('fees_paid_dollars')}")
+        print("\n  A position whose size is less than stake/price means the")
+        print("  order was IOC and the book could not fill all of it.")
+        return 0
     if not want:
-        print("usage: poscheck.py TICKER"); return 1
+        print("usage: poscheck.py TICKER|ALL"); return 1
     print("="*86); print(f"RAW FILLS AND POSITIONS FOR {want}"); print("="*86)
 
     d = tally.get("/portfolio/fills", limit=200)
