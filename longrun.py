@@ -66,6 +66,7 @@ def main():
     started = time.time()
     rows = []
     seen = no_vol = short = no_cand = 0
+    allvol = []
     for s in ser:
         if time.time() - started > BUDGET:
             break
@@ -105,7 +106,13 @@ def main():
             cands = (dd or {}).get("candlesticks") or []
             if not cands:
                 no_cand += 1
-            vol = sum((B._f(cd.get("volume")) or 0.0) for cd in cands)
+            # THE KEY IS volume_fp. candprobe printed real candles: the
+            # fields are end_period_ts, price, yes_bid, yes_ask, volume_fp,
+            # open_interest_fp. There is no plain "volume" key, which is why
+            # the previous pass dropped all 5,906 markets with zero
+            # survivors. Same mistake as the market record, one level down.
+            vol = sum((B._f(cd.get("volume_fp")) or 0.0) for cd in cands)
+            allvol.append(vol)
             if vol < MIN_VOLUME:
                 no_vol += 1
                 time.sleep(B.PAUSE)
@@ -160,6 +167,18 @@ def main():
           "<- real traded volume, from the candles")
     print(f"  (of those, {no_cand:,} returned no candlesticks at all)")
     print(f"  {len(rows)} usable entries\n")
+    if allvol:
+        av = sorted(allvol)
+
+        def qq(f):
+            return av[min(len(av) - 1, int(f * len(av)))]
+        print(f"  TRADED VOLUME over the life of all {len(av):,} long-lived "
+              f"markets:\n    median {st.median(av):,.0f}  p25 {qq(.25):,.0f}  "
+              f"p75 {qq(.75):,.0f}  p90 {qq(.90):,.0f}  max {av[-1]:,.0f}")
+        for thr in (1, 10, 100, 1000):
+            n = sum(1 for v in av if v >= thr)
+            print(f"    >= {thr:>5}: {n:,} ({100.0*n/len(av):.1f}%)")
+        print()
     if len(rows) < 40:
         print("  TOO FEW TO READ. If most of the drops are the volume filter,")
         print("  that is itself the finding: these markets are not traded.")
