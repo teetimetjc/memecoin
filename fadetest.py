@@ -36,7 +36,17 @@ import collections, statistics as st, sys, time
 import backfill as B
 import score as S
 
-ENTRY = S.ENTRY
+# ENTRY OFFSETS SWEPT, because T-9 was never chosen for this trade. It is
+# where the FAVOURITE rule enters -- the point at which a 90c price was
+# judged informative enough to back. A fade asks a different question: how
+# long does the price need to reverse? Nine minutes is an inherited number
+# and there is no reason to think it is right here.
+#
+# The trade-off runs both ways and the sweep is the only way to see it.
+# Earlier, the favourite is less extreme so NO costs more and a double is a
+# bigger ask. Later, NO is cheaper so a double is easier, but there is less
+# time to get there.
+ENTRIES = (14, 12, 9, 6, 4)
 YES_LO, YES_HI = 0.90, 0.96     # the favourite band, as the live rule used
 STAKE = 5.0
 TARGETS = (1.5, 2.0, 3.0)
@@ -96,63 +106,72 @@ def main():
         if time.time() - started > BUDGET:
             break
         q = path(series, str(m.get("ticker")), m.get("close_time"))
-        if ENTRY not in q:
+        if not q:
             continue
         looked += 1
-        ybid, yask = q[ENTRY]
-        if not (YES_LO <= yask < YES_HI):
-            continue
-        no_ask = 1.0 - ybid                     # what buying NO costs
-        n = int(STAKE / no_ask)
-        if n < 1:
-            continue
-        cost = n * no_ask + fee(n, no_ask)
         res = str(m.get("result") or "").lower()
         if res not in ("yes", "no"):
             continue
         won = (res == "no")                     # a NO bet wins if it settles no
-        # forward walk, earliest minute first
-        offs = sorted((o for o in q if o < ENTRY), reverse=True)
-        out = {}
-        for tgt in TARGETS:
-            want = no_ask * tgt
-            sold = None
-            for o in offs:
-                nb = 1.0 - q[o][1]              # NO bid = 1 - yes ask
-                if nb >= want:
-                    sold = nb
-                    break
-            if sold is not None:
-                out[tgt] = (n * sold - fee(n, sold)) - cost
-            else:
-                out[tgt] = (n * 1.0 if won else 0.0) - cost
-        rows.append(dict(entry=no_ask, n=n, cost=cost, won=won, out=out,
-                         hold=(n * 1.0 if won else 0.0) - cost))
+        for E in ENTRIES:
+            if E not in q:
+                continue
+            ybid, yask = q[E]
+            if not (YES_LO <= yask < YES_HI):
+                continue
+            no_ask = 1.0 - ybid                 # what buying NO costs
+            n = int(STAKE / no_ask)
+            if n < 1:
+                continue
+            cost = n * no_ask + fee(n, no_ask)
+            # forward walk from the entry to the close, earliest minute first
+            offs = sorted((o for o in q if o < E), reverse=True)
+            out = {}
+            for tgt in TARGETS:
+                want = no_ask * tgt
+                sold = None
+                for o in offs:
+                    nb = 1.0 - q[o][1]          # NO bid = 1 - yes ask
+                    if nb >= want:
+                        sold = nb
+                        break
+                if sold is not None:
+                    out[tgt] = (n * sold - fee(n, sold)) - cost
+                else:
+                    out[tgt] = (n * 1.0 if won else 0.0) - cost
+            rows.append(dict(E=E, entry=no_ask, n=n, cost=cost, won=won,
+                             out=out, hold=(n * 1.0 if won else 0.0) - cost))
         time.sleep(B.PAUSE)
 
-    print(f"  {looked:,} markets quoted at T-{ENTRY}; "
-          f"{len(rows)} had YES in band\n")
+    print(f"  {looked:,} markets examined; {len(rows)} entries across "
+          f"{len(ENTRIES)} offsets\n")
     if len(rows) < 40:
         print("  too few to read -- raise the budget.")
         return 0
-    risked = sum(r["cost"] for r in rows)
-    print(f"  {len(rows)} bets, ${risked:,.2f} staked, "
-          f"mean NO entry {100*st.mean([r['entry'] for r in rows]):.1f}c, "
-          f"NO won {100*sum(1 for r in rows if r['won'])/len(rows):.1f}%\n")
 
-    def rep(lab, vals, hits=None):
+    def rep(lab, g, key):
+        if not g:
+            print(f"    {lab:<22} no bets")
+            return
+        vals = [r["hold"] if key is None else r["out"][key] for r in g]
+        risked = sum(r["cost"] for r in g)
         tot = sum(vals)
-        extra = (f"   hit target {hits}/{len(rows)} "
-                 f"({100*hits/len(rows):.0f}%)") if hits is not None else ""
-        print(f"  {lab:<28} net ${tot:>+9.2f}  ${tot/len(vals):>+7.3f}/bet  "
-              f"ROI {100*tot/risked:>+7.2f}%{extra}")
+        hits = ("" if key is None else
+                f"   hit {sum(1 for r in g if r['out'][key] != r['hold'])}"
+                f"/{len(g)}")
+        print(f"    {lab:<22} {len(g):>4} bets  net ${tot:>+8.2f}  "
+              f"${tot/len(g):>+7.3f}/bet  ROI {100*tot/risked:>+7.2f}%{hits}")
 
-    rep("HOLD to settlement", [r["hold"] for r in rows])
-    for tgt in TARGETS:
-        hits = sum(1 for r in rows
-                   if any(True for _ in [0])
-                   and r["out"][tgt] != r["hold"])
-        rep(f"SELL at {tgt:g}x entry", [r["out"][tgt] for r in rows], hits)
+    for E in ENTRIES:
+        g = [r for r in rows if r["E"] == E]
+        if not g:
+            continue
+        print(f"\n  ENTRY T-{E}   mean NO cost "
+              f"{100*st.mean([r['entry'] for r in g]):.1f}c, "
+              f"NO settled {100*sum(1 for r in g if r['won'])/len(g):.1f}%")
+        rep("hold", g, None)
+        for tgt in TARGETS:
+            rep(f"sell at {tgt:g}x", g, tgt)
 
     print("\n" + "=" * 96)
     print("  DEPTH IS NOT MODELLED AND IT IS PROBABLY FATAL. $5 at 10c is")
