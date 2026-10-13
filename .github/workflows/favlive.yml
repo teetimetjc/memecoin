@@ -255,7 +255,27 @@ jobs:
           # The paper record of the skipped window is priced at the QUOTE and
           # will therefore flatter it, because the fills are what went wrong.
           FAVLIVE_QUIET_UTC: '4-12'
-          FAVLIVE_SIDES: 'YES,NO'
+          # YES ONLY AGAIN, from 2026-10-13. The NO side ran live for about
+          # eighteen hours and is switched off on the evidence, not on the
+          # eighteen hours:
+          #
+          #   Polymarket  5,561 NO bets   -$0.024/bet   t=-0.54
+          #   Kalshi      2,052 NO bets   +0.03%        t=+0.04
+          #   Kalshi        256 NO bets   -$0.191/bet   (full history)
+          #   live           10 NO bets   7 won         -$20.59
+          #
+          # The live ten decide nothing either way; seven-for-seven did not
+          # make the side good on Monday and three losses do not make it bad
+          # on Tuesday. What decides it is roughly eight thousand bets across
+          # two venues measuring an edge of zero. Running it doubled the bet
+          # count at zero expectancy, which doubles exposure to the tail week
+          # that defines this strategy's risk and buys no information that
+          # eight thousand bets have not already given.
+          #
+          # NOT AN ENDORSEMENT OF YES. The same Polymarket dataset puts the
+          # YES side at +$0.012/bet, t=0.29, over 5,727 bets -- also zero.
+          # This stops a known bleed; it does not turn on a winner.
+          FAVLIVE_SIDES: 'YES'
           # RAISED TO $10 ON 2026-10-12, hours after being set to $4, at the
           # operator's explicit request and with the reason stated: to
           # accelerate the findings. That is a deliberate purchase of variance
@@ -297,7 +317,18 @@ jobs:
           # requested minutes earlier.
           LADDER_START: '2026-10-13T00:30:00Z'
           # Earned by that one confirmed fill, and by nothing else.
-          LIVE_ALLOW_DOWN: '1'
+          # BACK OFF, as defence in depth rather than as the switch that
+          # matters. FAVLIVE_SIDES above already stops NO signals being
+          # generated; this stops live.place sending a DOWN order at all, so
+          # a misread of either one is not enough on its own to bet a side
+          # that measured zero across eight thousand bets.
+          #
+          # The mapping it originally guarded is CONFIRMED and stays
+          # confirmed: one real order on 2026-10-12 intending NO at 91c
+          # returned outcome_side 'no', position_fp -5.00, exposure $4.25.
+          # Turning this back on needs a decision about edge, not another
+          # test of the plumbing.
+          LIVE_ALLOW_DOWN: '0'
           # The band must match the rule being run, or the guard rejects the
           # strategy it was asked to run. 90-96c is the narrow slice.
           MIN_ENTRY_CENTS: '90'
