@@ -91,8 +91,11 @@ def path(series, ticker, close):
 def main():
     print("=" * 96)
     print("FADE THE FAVOURITE: buy NO at ~10c, sell at a fixed multiple")
-    print(f"  trigger: YES {100*YES_LO:.0f}-{100*YES_HI:.0f}c at T-{ENTRY},"
-          f"  ${STAKE:.0f} a bet, walk forward T-8..T-1")
+    print(f"  trigger: YES {100*YES_LO:.0f}-{100*YES_HI:.0f}c at the entry "
+          f"offset,  ${STAKE:.0f} a bet")
+    print(f"  entries swept: "
+          + ", ".join(f"T-{e}" for e in ENTRIES)
+          + "; each walks forward from its own entry to the close")
     print("=" * 96)
     mk = []
     for s in S.MAJORS:
