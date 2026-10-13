@@ -187,17 +187,35 @@ def enabled():
             and os.environ.get("ALLOW_LIVE_TRADING", "").strip() == "1")
 
 
-def _client_order_id(ts, symbol):
-    """Stable per signal, so a retried run cannot double-bet the same window.
+def _client_order_id(ticker, side):
+    """Stable per MARKET, so nothing can double-bet one market. Ever.
 
-    The prefix namespaces the key by STRATEGY. Two rules can both want BTC in
+    IT USED TO KEY ON THE SCAN TIMESTAMP, and that failed exactly as you
+    would expect once two processes were alive at once. On 2026-10-13 a
+    session was cancelled while its replacement started; both scanned the
+    same DOGE market 23 seconds apart, produced different ids because the
+    timestamps differed, and the exchange -- seeing two unrelated orders --
+    filled both. 20 contracts, $19.20, on a market meant to take $10.
+
+    The in-process ORDERED set cannot help here: it is per process, and the
+    whole problem is that there were two.
+
+    The ticker already encodes the market and its close time, so keying on it
+    makes the id identical across processes, across retries and across
+    restarts. The exchange then rejects the duplicate itself, which is the
+    only layer that can see both orders.
+
+    The prefix still namespaces by STRATEGY. Two rules can both want BTC in
     the window closing at 18:45 -- v6 at 35 seconds in, the frozen specs at
-    T-9 -- and with a shared prefix those are the same id, so whichever ran
-    second would be silently de-duplicated against the first and never placed.
-    The default stays "v6" so existing behaviour is unchanged.
+    T-9 -- and with a shared prefix those would be the same id, so whichever
+    ran second would be silently deduplicated and never placed.
+
+    The side is included because buying YES and buying NO on one market are
+    different trades. The band cannot currently hold both at once, but an id
+    that would silently drop one of them if it ever could is a trap.
     """
     tag = os.environ.get("ORDER_PREFIX", "").strip() or "v6"
-    return f"{tag}-{ts.replace(' ', 'T').replace(':', '')}-{symbol}"[:64]
+    return f"{tag}-{ticker}-{side}"[:64]
 
 
 def current_entry(ticker, side):
@@ -411,7 +429,7 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
         # it, so a retried run cannot bet the same signal twice, and the V2
         # endpoint requires UUID form rather than a free-text id.
         "client_order_id": str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                          _client_order_id(ts, symbol))),
+                                          _client_order_id(ticker, side))),
         "side": "bid" if side == "UP" else "ask",
         "count": f"{contracts}.00",
         "price": f"{yes_price:.4f}",

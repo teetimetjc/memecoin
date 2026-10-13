@@ -277,8 +277,8 @@ def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
             cost=round(b["cost"], 2),
             stake=stake_of(b),
             result=s["result"],
-            rev=round(s["rev"], 2),
-            pnl=round(s["rev"] - b["cost"], 2),
+            rev=round(b.get("rev_share", s["rev"]), 2),
+            pnl=round(b.get("rev_share", s["rev"]) - b["cost"], 2),
         ))
     doc = dict(
         asof=time.strftime("%-d %b %Y, %H:%M UTC", time.gmtime()),
@@ -362,7 +362,8 @@ def write_scorecard(settled, setts):
     rows, run = [], 0.0
     for b in sorted(settled, key=lambda x: x["ts"]):
         s = setts[b["ticker"]]
-        pnl = (s["rev"] or 0.0) - (b["cost"] or 0.0)
+        rv = b.get("rev_share", s["rev"]) or 0.0
+        pnl = rv - (b["cost"] or 0.0)
         run += pnl
         ct = ct_parts(b["ts"])
         fill = 100 * b["fillpx"] if b.get("fillpx") else None
@@ -374,8 +375,8 @@ def write_scorecard(settled, setts):
             round(b["entry"] or 0, 1),
             round(fill, 1) if fill is not None else "",
             round(b["cost"] or 0, 2),
-            s["result"], 1 if (s["rev"] or 0) > 0 else 0,
-            round(s["rev"] or 0, 2), round(pnl, 2), round(run, 2),
+            s["result"], 1 if rv > 0 else 0,
+            round(rv, 2), round(pnl, 2), round(run, 2),
             # The bar this bet had to clear: the price actually paid, as a
             # percentage. A win rate without it beside it says nothing.
             round(100 * (b["cost"] or 0) / max(1, int(b["contracts"] or 1)), 1),
@@ -433,17 +434,62 @@ def main():
         tk = str(s.get("ticker") or "")
         rev = _f(s.get("revenue_dollars"))
         if rev is None:
+            # UNITS BY FIELD NAME, NOT BY SIZE. This read
+            #     if abs(rev) > 100: rev = rev / 100.0
+            # which converts 2000c to $20 correctly and leaves 50c reading as
+            # $50. Magnitude cannot disambiguate units -- the same mistake in
+            # favlive reported a day's net as "+$14343.07" and left the day
+            # stop unable to fire. A bare `revenue` is cents, full stop.
             rev = _f(s.get("revenue"))
-            if rev is not None and abs(rev) > 100:
+            if rev is not None:
                 rev = rev / 100.0
         setts[tk] = dict(result=str(s.get("market_result")
                                     or s.get("result") or "").lower(),
                          rev=rev or 0.0)
 
+    # ONE SETTLEMENT, SHARED BY EVERY BET ON THAT MARKET.
+    #
+    # A settlement pays the whole POSITION, but this dict is keyed by ticker
+    # and every bet on that ticker was reading the full figure. On 2026-10-13
+    # two orders landed on one DOGE market -- 20 contracts, $19.20, paying
+    # $20 -- and both rows claimed the $20, so the record showed +$10.45 and
+    # +$10.34 on bets that between them made 80 cents. The headline read
+    # +$12.93 when the truth was still negative, and the dashboard reported
+    # a profit that did not exist.
+    #
+    # The revenue is split in proportion to contracts, which is exactly how
+    # the payout was earned. Equal splitting would be wrong the moment two
+    # bets on one market are different sizes.
+    by_ticker = {}
+    for b in bets:
+        by_ticker.setdefault(b["ticker"], []).append(b)
+    share = {}
+    for tk, group in by_ticker.items():
+        tot = sum(int(x["contracts"] or 0) for x in group) or 1
+        for x in group:
+            share[id(x)] = (int(x["contracts"] or 0) / tot) if len(group) > 1 else 1.0
+        if len(group) > 1 and tk in setts:
+            print(f"  NOTE: {len(group)} bets on {tk} -- one settlement of "
+                  f"${setts[tk]['rev']:.2f} split across them by contract "
+                  "count. Two orders reached the same market, which should "
+                  "not happen and is being fixed separately.")
+
+    def rev_for(b):
+        """This bet's share of its market's settlement."""
+        s = setts.get(b["ticker"])
+        return (s["rev"] * share.get(id(b), 1.0)) if s else 0.0
+
+    # ATTACHED TO THE BET, so every consumer sees the same number. The JSON
+    # payload and the Scorecard tab each recomputed P&L from setts[ticker]
+    # independently, which is how one fix in main() would have left two
+    # other views still double-counting.
+    for b in bets:
+        b["rev_share"] = rev_for(b)
+
     settled = [b for b in bets if b["ticker"] in setts]
     pending = [b for b in bets if b["ticker"] not in setts]
-    won = [b for b in settled if setts[b["ticker"]]["rev"] > 0]
-    lost = [b for b in settled if setts[b["ticker"]]["rev"] <= 0]
+    won = [b for b in settled if rev_for(b) > 0]
+    lost = [b for b in settled if rev_for(b) <= 0]
 
     fills = actual_costs()
     est = 0
@@ -460,7 +506,7 @@ def main():
             est += 1
 
     staked = sum(b["cost"] or 0 for b in settled)
-    returned = sum(setts[b["ticker"]]["rev"] for b in settled)
+    returned = sum(rev_for(b) for b in settled)
     net = returned - staked
 
     print(f"  bets placed       {len(bets)}")
