@@ -1,0 +1,61 @@
+name: Halt or resume betting (Control tab)
+
+# Flips the one cell live.run_window checks before placing anything:
+# HALTED stops betting, RUNNING allows it. Collection and logging continue
+# either way, so a halt costs money-making and not data.
+#
+# WHY THIS EXISTS AS A WORKFLOW. control.py has had --halt and --run since
+# before the bot could bet, and no way to reach them: every other route to
+# stopping betting is a commit to favlive.yml plus a 5h45m wait for the
+# running session to end. This is the switch that works in one minute.
+#
+# It places no orders and imports no ordering code.
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: 'halt | run'
+        required: true
+        default: 'halt'
+      reason:
+        description: 'why (recorded next to the switch)'
+        required: false
+        default: 'operator request'
+
+permissions:
+  contents: read
+
+jobs:
+  halt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Flip the switch
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          HALT_REASON: ${{ github.event.inputs.reason }}
+        run: |
+          case "${{ github.event.inputs.state }}" in
+            halt) python control.py --halt ;;
+            run)  python control.py --run ;;
+            *) echo "state must be halt or run"; exit 1 ;;
+          esac
+      - name: Show the resulting state
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python controlstate.py
