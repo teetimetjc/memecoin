@@ -276,6 +276,7 @@ def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
             contracts=int(b["contracts"] or 0),
             cost=round(b["cost"], 2),
             stake=stake_of(b),
+            side=str(b.get("side") or "").upper(),
             result=s["result"],
             rev=round(b.get("rev_share", s["rev"]), 2),
             pnl=round(b.get("rev_share", s["rev"]) - b["cost"], 2),
@@ -328,7 +329,14 @@ def emit_json(bets, settled, won, setts, staked, returned, net, avg, need):
 
 
 SCORECARD_TAB = "Scorecard"
+# SIDE IS A COLUMN BECAUSE A DASHBOARD CANNOT FILTER ON WHAT IT CANNOT SEE.
+# The scorecard carried no side at all, so the only apparent way to keep the
+# DOWN and NO bets out of a chart was to delete their rows from the sheet --
+# which would have destroyed the evidence that switched that side off, and
+# the deletion would have been silent and permanent. One column is the whole
+# fix: filter Side = UP in the dashboard and the rows stay on the record.
 SCORECARD_COLS = ["Date CT", "Time CT", "Timestamp UTC", "Series", "Ticker",
+                  "Side",
                   "Stake $", "Contracts", "Quote c", "Fill c", "Cost $",
                   "Result", "Won", "Revenue $", "P&L $", "Running P&L $",
                   "Break-even %"]
@@ -371,6 +379,7 @@ def write_scorecard(settled, setts):
             ct[0], ct[1], b["ts"],
             b["ticker"].split("-")[0].replace("KX", "").replace("15M", ""),
             b["ticker"],
+            str(b.get("side") or "").upper(),
             stake_of(b) or "", int(b["contracts"] or 0),
             round(b["entry"] or 0, 1),
             round(fill, 1) if fill is not None else "",
