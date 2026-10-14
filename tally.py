@@ -176,10 +176,43 @@ def actual_costs():
     The fill carries the executed price and the fee actually charged, so cost
     is contracts*price + fee with nothing estimated. Keyed by order id so a
     market with several orders does not pool them.
+
+    ONE PAGE WAS NOT THE WHOLE HISTORY, AND THE SHORTFALL WAS SILENT.
+
+    This read `get("/portfolio/fills", limit=200)` -- the 200 most recent
+    fills, no cursor. Orders fill in several pieces, so as new bets arrived
+    an old order would end up with SOME of its fills inside the window and
+    some past the edge. The sum then covered part of the order and was
+    recorded as the whole cost of it.
+
+    On 2026-10-14 that put the 8 Oct XRP bet at $0.94 for four contracts
+    bought near 92c -- about one contract's worth -- and showed it as
+    +$3.06 instead of +$0.24. Nine hours later the same bet re-priced
+    itself to $3.76 as the window moved. The UP-only record read -$1.35 in
+    the morning and -$3.62 by midday with no bet having lost: the history
+    was quietly rewriting itself, always in the flattering direction,
+    because a missing fill can only make a bet look cheaper.
+
+    So: page through with the cursor, and then REFUSE any fill set whose
+    contract count does not match what the sheet says was bought. A partial
+    read is worse than no read, because the fallback is merely pessimistic
+    while a partial sum is wrong and believable.
     """
-    d = get("/portfolio/fills", limit=200)
     by = collections.defaultdict(lambda: dict(cost=0.0, n=0.0, px=[]))
-    for f in ((d or {}).get("fills") or []):
+    fills, cur, pages = [], None, 0
+    while pages < 40:
+        p = dict(limit=200)
+        if cur:
+            p["cursor"] = cur
+        d = get("/portfolio/fills", **p)
+        got = (d or {}).get("fills") or []
+        fills += got
+        cur = (d or {}).get("cursor")
+        pages += 1
+        if not cur or not got:
+            break
+        time.sleep(0.15)
+    for f in fills:
         oid = str(f.get("order_id") or "")
         if not oid:
             continue
@@ -501,18 +534,33 @@ def main():
     lost = [b for b in settled if rev_for(b) <= 0]
 
     fills = actual_costs()
-    est = 0
+    est = partial = 0
     for b in bets:
         f = fills.get(b["oid"])
-        if f and f["cost"]:
+        want = int(b["contracts"] or 0)
+        # THE COUNT MUST MATCH, or the fills seen are not the whole order.
+        # A partial sum reads as a cheaper bet and a bigger profit, which is
+        # how an 8 Oct bet showed +$3.06 on a cost of $0.94 for four
+        # contracts. Pessimistic and right beats flattering and wrong.
+        if f and f["cost"] and want and abs(f["n"] - want) < 0.01:
             b["cost"] = f["cost"]
             b["fillpx"] = sum(f["px"]) / len(f["px"])
+        elif f and f["cost"] and want:
+            b["cost"] = b["limit_cost"] or 0.0
+            b["fillpx"] = None
+            est += 1
+            partial += 1
         else:
             # No matching fill readable: fall back to the limit-priced figure
             # and SAY SO, rather than let a pessimistic number pass as exact.
             b["cost"] = b["limit_cost"] or 0.0
             b["fillpx"] = None
             est += 1
+
+    if partial:
+        print(f"  NOTE: {partial} bet(s) had an incomplete fill set and were "
+              "costed at the limit instead. The fills endpoint did not return "
+              "every piece of those orders.")
 
     staked = sum(b["cost"] or 0 for b in settled)
     returned = sum(rev_for(b) for b in settled)
