@@ -1,4 +1,4 @@
-name: Favlive (frozen spec, $10 bets)
+name: Favlive (frozen spec, $4 bets)
 
 # Runs the frozen narrow-slice spec against the real exchange: read the book at
 # T-9, buy the 90-96c YES side at $10, hold to settlement.
@@ -120,7 +120,7 @@ on:
       stake:
         description: 'dollars per bet'
         required: false
-        default: '10'
+        default: '4'
       seconds:
         description: 'how long the session runs'
         required: false
@@ -142,6 +142,33 @@ jobs:
     timeout-minutes: 350
     env:
       # The mode scheduled runs use. 'dry' until deliberately changed.
+      #
+      # RESUMED 2026-10-14 AT $4, YES ONLY, as a measurement run. Splitting
+      # the 148-bet record by stake and side against each group's OWN
+      # break-even -- a winning contract pays $1, so the line is the mean
+      # cost per contract -- the account loss is not spread across the
+      # record, it sits in two places:
+      #
+      #   $4 YES    80 bets  won 95.00%  needed 91.61%  +3.4  +$10.84
+      #   $7 YES    26 bets  won 96.15%  needed 91.33%  +4.8   +$8.78
+      #   $10 YES   32 bets  won 81.25%  needed 88.83%  -7.6  -$24.25
+      #   DOWN      10 bets  won 70.00%  needed 91.70% -21.7  -$20.60
+      #
+      # Small YES is +$19.62 over 106 bets at +4.3% ROI. Every dollar lost
+      # is the $10 era plus DOWN.
+      #
+      # TWO THINGS THAT ARE NOT CLAIMED HERE. The +3.8 point gap has a 95%
+      # interval of 89.4-98.0% and break-even (91.5%) is inside it, so this
+      # is a sample too small to tell, not a demonstrated edge. And the $10
+      # group needed only 88.8% against small YES's 91.5%, meaning it was
+      # buying CHEAPER entries -- the adverse-selection problem, where fills
+      # well below the quote won 54% against 94% for clean ones. So "$10 did
+      # worse" is substantially "the $10 era bought different, worse bets".
+      # Stake size scales an edge; it cannot create one.
+      #
+      # This runs to roughly 200 settled bets, which is about where a gap
+      # this size either separates from break-even or does not.
+      #
       # PAUSED 2026-10-13, at the operator's decision, after 148 settled
       # bets ending at -$25.29. Sessions still run, still scan and still log
       # every signal -- they place nothing.
@@ -166,7 +193,7 @@ jobs:
       #
       # To resume: set this back to 'live' and dispatch a fresh run, because
       # a queued run carries the workflow file as of its creation.
-      default_mode: 'dry'
+      default_mode: 'live'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -212,7 +239,7 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BET_ALERTS: '0'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '10' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '4' }}
           MIN_ENTRY_CENTS: '90'
           MAX_ENTRY_CENTS: '96'
           ORDER_PREFIX: 'slice'
@@ -244,7 +271,7 @@ jobs:
           ALLOW_LIVE_TRADING: '1'
           LIVE_TRADING: '1'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '10' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '4' }}
           # BOTH SIDES, FROM 2026-10-12. The narrow slice spec is YES-only and
           # stays that way in score.RULES; this overrides the sides for the
           # live bot only, so the frozen spec still measures what it was
@@ -329,7 +356,10 @@ jobs:
           # after a bad week.
           LADDER_DOWN_AFTER: '3'
           LADDER_UP_AFTER: '3'
-          LADDER_REDUCED: '4'
+          # HALF THE BASE STAKE. At a $4 base a $4 reduced rung is not a
+          # ladder at all -- it would fire and change nothing. $2 keeps the
+          # direction the measurement supported while the base is small.
+          LADDER_REDUCED: '2'
           # The replacement for the day stop that was switched off: a much
           # looser brake, but a brake. Measured from LADDER_START below, not
           # from the account's all-time peak.
@@ -339,7 +369,7 @@ jobs:
           # tripped at the 08:35 window on 10-12 and never saw three wins in
           # a row afterwards -- which would have undone the stake increase
           # requested minutes earlier.
-          LADDER_START: '2026-10-13T00:30:00Z'
+          LADDER_START: '2026-10-14T00:30:00Z'
           # Earned by that one confirmed fill, and by nothing else.
           # BACK OFF, as defence in depth rather than as the switch that
           # matters. FAVLIVE_SIDES above already stops NO signals being
