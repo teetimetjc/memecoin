@@ -64,6 +64,7 @@ import control
 import ladder
 import live
 import shadow
+import version
 import predictor as P
 import score as S
 
@@ -483,6 +484,16 @@ def main():
         no_stake = stake_for("NO", stake)
         if abs(no_stake - stake) > 1e-9:
             stake_txt = (f"YES ${stake:.2f} / NO ${no_stake:.2f} per bet")
+    # WRITE DOWN WHAT THIS SESSION IS before it places anything. Every
+    # comparison in this project is "period X vs period Y", and what separates
+    # them is a settings change that previously lived only in a git commit.
+    # Logged for dry sessions too: a dry period is still a period the record
+    # has to be able to explain.
+    try:
+        version.log(client, stake, dry)
+    except Exception as e:
+        print(f"  [favlive] version log failed (ignored): {str(e)[:80]}")
+
     ds_txt = "OFF (no automatic halt)" if DAY_STOP_OFF else f"${DAY_STOP:.2f}"
     if QUIET_UTC:
         print(f"  quiet hours: {QUIET_UTC} UTC -- scan and log, place nothing")
