@@ -447,4 +447,23 @@ jobs:
           # +$16.25, against +$12.61 at 10c, on a difference of six bets. Do
           # not read 5 as optimised; read it as "tighter than ten".
           MAX_DROP_CENTS: '5'
+          # HOW FAR WE CHASE A RISING ASK, raised from 1c on 2026-10-15.
+          #
+          # The two guards are opposites and do not interact. MAX_DROP_CENTS
+          # above fires when the ask has FALLEN -- don't buy a collapse. This
+          # one binds only when the ask has RISEN -- how far to follow.
+          #
+          # 65 of 229 orders filled nothing because the ask moved up past a
+          # limit of quote+1c. Those markets settled YES 98.4% of the time
+          # (61 of 62) against a 92.7% break-even; the orders that filled won
+          # 95.8%. The bot was being selected against at both ends.
+          #
+          # A limit is a MAXIMUM, so on a calm book this changes nothing: the
+          # IOC still fills at the best offer. It only binds on the bets
+          # currently being missed.
+          SLIP_BUFFER_CENTS: '3'
+          # And the ceiling that the buffer alone does not provide: a 95.9c
+          # entry plus 3c would be a 98.9c limit, needing ~99% to break even,
+          # above what even this cohort won. 97c is one cent past the band cut.
+          MAX_LIMIT_CENTS: '97'
         run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
