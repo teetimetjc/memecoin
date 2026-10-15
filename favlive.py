@@ -63,6 +63,7 @@ import collect15 as C
 import control
 import ladder
 import live
+import abort
 import shadow
 import version
 import predictor as P
@@ -104,6 +105,10 @@ STAKE_BY_SIDE = {}
 # or delay an order -- it runs after the window's orders are already sent.
 # Set FAVLIVE_SHADOW=0 to silence it entirely.
 SHADOW_ON = (os.environ.get("FAVLIVE_SHADOW") or "1").strip() not in ("0", "", "off")
+# A dry session has no fills to measure, so the abort check normally has
+# nothing to do. This lets a dry run exercise the code path anyway, which is
+# the point of having a dry run for an order-sending module.
+ABORT_DRY_LOG = (os.environ.get("ABORT_DRY_LOG") or "0").strip() == "1"
 QUIET_UTC = (os.environ.get("FAVLIVE_QUIET_UTC") or "").strip()
 # THE DAY STOP CAN BE TURNED OFF, AND ONLY BY NAME. "off" is spelled out
 # rather than expressed as a huge number, because 999999 in a workflow file
@@ -451,6 +456,16 @@ def cycle(client, r, stake, dry, factor=1.0):
             shadow.observe(client, tuples, rows, stake)
         except Exception as e:
             print(f"  [favlive] shadow failed (ignored): {str(e)[:80]}")
+
+    # THE ABORT CHECK. Reads the real fill and the real bid, decides, and
+    # writes the row down. It only SENDS a sell when ABORT_SELL=1 and the
+    # session is live -- unset, it is a measurement that costs nothing and
+    # tells us what arming it would have been worth.
+    if not dry or ABORT_DRY_LOG:
+        try:
+            abort.consider(client, rows, dry)
+        except Exception as e:
+            print(f"  [favlive] abort check failed (ignored): {str(e)[:80]}")
 
     placed = [x for x in rows if len(x) > 8 and x[8] == "PLACED"]
     if placed and alert.enabled():
