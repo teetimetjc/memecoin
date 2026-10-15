@@ -395,6 +395,12 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
     """
     import predictor as P
 
+    # CLEARED FIRST, BEFORE ANY EARLY RETURN. Sited after the guard, a bet
+    # skipped for being out of band would carry the PREVIOUS order's
+    # timestamps and pre-submission ask into its row -- instrumentation
+    # attributed to the wrong bet, which is worse than none.
+    LAST_META.clear()
+
     if not ticker:
         return "SKIPPED", "no Kalshi market for this window", 0, 0.0, ""
     if entry_cents is None or entry_cents <= 0:
@@ -427,7 +433,6 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
     # BOTH SIDES, because the guard was UP-only and the NO side was about to
     # go live without it. A cheap NO fill is the same adverse selection as a
     # cheap YES one, driven by the bid rising instead of the ask falling.
-    LAST_META.clear()
     now_c = fresh_side_cents(ticker, side)
     LAST_META["presubmit_c"] = round(now_c, 1) if now_c is not None else ""
     if now_c is not None and now_c < entry_cents - MAX_DROP_CENTS:
