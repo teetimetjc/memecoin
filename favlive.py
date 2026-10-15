@@ -63,6 +63,7 @@ import collect15 as C
 import control
 import ladder
 import live
+import shadow
 import predictor as P
 import score as S
 
@@ -98,6 +99,10 @@ STAKE_BY_SIDE = {}
 # window will look systematically BETTER than trading it would have been, and
 # the gap is precisely the thing that made the window lose. Read it as "did
 # the favourite hold", never as "we would have made this money".
+# SHADOW MODE: observation only, default ON because it cannot place, block
+# or delay an order -- it runs after the window's orders are already sent.
+# Set FAVLIVE_SHADOW=0 to silence it entirely.
+SHADOW_ON = (os.environ.get("FAVLIVE_SHADOW") or "1").strip() not in ("0", "", "off")
 QUIET_UTC = (os.environ.get("FAVLIVE_QUIET_UTC") or "").strip()
 # THE DAY STOP CAN BE TURNED OFF, AND ONLY BY NAME. "off" is spelled out
 # rather than expressed as a huge number, because 999999 in a workflow file
@@ -435,6 +440,17 @@ def cycle(client, r, stake, dry, factor=1.0):
         st = stake_for("YES" if side_name == "UP" else "NO", stake) * factor
         print(f"  [favlive] {len(part)} {side_name} order(s) at ${st:.2f}")
         rows.extend(live.run_window(client, part, stake=st))
+    # SHADOW OBSERVATION, AFTER THE ORDERS AND AFTER NOTHING ELSE DEPENDS ON
+    # IT. Placed strictly here so it cannot sit between the decision and the
+    # order: an extra round trip in that gap is extra time for the ask to
+    # move, which would change real fills. See shadow.py on what the
+    # post-submission reading can and cannot tell us.
+    if not dry and SHADOW_ON:
+        try:
+            shadow.observe(client, tuples, rows, stake)
+        except Exception as e:
+            print(f"  [favlive] shadow failed (ignored): {str(e)[:80]}")
+
     placed = [x for x in rows if len(x) > 8 and x[8] == "PLACED"]
     if placed and alert.enabled():
         try:

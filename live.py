@@ -30,6 +30,7 @@ The rules it enforces:
   against us between quote and send results in no fill rather than a bad one.
 """
 
+import calendar
 import json
 import math
 import os
@@ -178,7 +179,28 @@ def _max_bets():
 LIVE_HEADERS = [
     "Timestamp", "Symbol", "Side", "Ticker", "Entry ¢", "Limit ¢",
     "Contracts", "Cost $", "Status", "Order ID", "Detail",
+    # EXECUTION INSTRUMENTATION, added 2026-10-15. Recording only: nothing
+    # below changes which bets are placed or at what price.
+    #
+    # The audit found the last-look guard was already fetching the executable
+    # ask immediately before each order, comparing it, and then THROWING IT
+    # AWAY. So the one number that would settle whether a bad fill came from
+    # a stale quote or from the book moving in flight was being computed and
+    # discarded on every single bet. These columns keep it.
+    #
+    # Quote age is the gap between the scan that produced Entry ¢ and the
+    # moment the order was sent; without it, "was the quote stale?" is
+    # unanswerable, which is exactly where the 12 Oct reconstruction died.
+    "Presubmit ¢", "Quote age s", "Submit UTC", "Ack ms",
 ]
+
+
+# WHAT THE LAST ORDER ACTUALLY DID, filled by place() and read by run_window
+# immediately afterwards. A module global rather than a sixth return value
+# because place() has four callers outside this file (manual_bet, nocheck,
+# bounce_live_test) that unpack exactly five, and widening the signature to
+# add logging would break three scripts to instrument one.
+LAST_META = {}
 
 
 def enabled():
@@ -405,7 +427,9 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
     # BOTH SIDES, because the guard was UP-only and the NO side was about to
     # go live without it. A cheap NO fill is the same adverse selection as a
     # cheap YES one, driven by the bid rising instead of the ask falling.
+    LAST_META.clear()
     now_c = fresh_side_cents(ticker, side)
+    LAST_META["presubmit_c"] = round(now_c, 1) if now_c is not None else ""
     if now_c is not None and now_c < entry_cents - MAX_DROP_CENTS:
         what = "ask fell" if side == "UP" else "bid ran up, so NO fell"
         return ("SKIPPED",
@@ -456,9 +480,21 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
         return "FAILED", "could not sign the order request", 0, 0.0, ""
     hdrs["Content-Type"] = "application/json"
 
+    _t0 = time.time()
+    LAST_META["submit_utc"] = time.strftime("%Y-%m-%d %H:%M:%S",
+                                            time.gmtime(_t0))
+    # Quote age: how long the Entry price had been sitting before the order
+    # went out. `ts` is the scan timestamp the decision was made on.
+    try:
+        _dec = calendar.timegm(time.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S"))
+        LAST_META["quote_age_s"] = round(_t0 - _dec, 1)
+    except (ValueError, TypeError):
+        LAST_META["quote_age_s"] = ""
     try:
         r = requests.post(ORDER_URL, json=body, headers=hdrs, timeout=15)
+        LAST_META["ack_ms"] = int((time.time() - _t0) * 1000)
     except Exception as e:
+        LAST_META["ack_ms"] = int((time.time() - _t0) * 1000)
         return "FAILED", f"request failed: {e}", contracts, cost, ""
 
     if r.status_code in (200, 201):
@@ -541,12 +577,19 @@ def run_window(client, signals, stake=None):
         if (ts, symbol) in capped:
             return [ts, symbol, side, ticker,
                     round(entry, 1) if entry else "", "", "", "",
-                    "SKIPPED", "", f"held back by LIVE_MAX_BETS={cap}"]
+                    "SKIPPED", "", f"held back by LIVE_MAX_BETS={cap}",
+                    "", "", "", ""]
         status, detail, n, cost, oid = place(ts, symbol, side, ticker, entry, stake)
+        # Read straight after the call, before anything else can place an
+        # order. Single-threaded by construction: run_window bets one signal
+        # at a time.
+        meta = dict(LAST_META)
         return [ts, symbol, side, ticker,
                 round(entry, 1) if entry else "",
                 math.ceil(entry + SLIP_BUFFER_CENTS) if entry else "",
-                n, cost, status, oid, detail]
+                n, cost, status, oid, detail,
+                meta.get("presubmit_c", ""), meta.get("quote_age_s", ""),
+                meta.get("submit_utc", ""), meta.get("ack_ms", "")]
 
     rows = [attempt(s_) for s_ in signals]
 
@@ -661,6 +704,17 @@ def append(client, rows):
     except Exception:
         ws = sh.add_worksheet(title=LIVE_SHEET, rows=4000, cols=len(LIVE_HEADERS))
         ws.update("A1", [LIVE_HEADERS])
+    # WIDEN THE HEADER IF THIS FILE NOW WRITES MORE COLUMNS THAN THE TAB HAS.
+    # Appending 15 values under an 11-column header leaves four unlabelled
+    # columns, which a dashboard cannot address and a reader cannot trust.
+    # Only ever adds names to the right: existing columns keep their position
+    # and their meaning, so nothing downstream moves.
+    try:
+        have = ws.row_values(1)
+        if len(have) < len(LIVE_HEADERS) and have[:4] == LIVE_HEADERS[:4]:
+            ws.update(values=[LIVE_HEADERS], range_name="A1")
+    except Exception as e:
+        print(f"  [live] could not widen the header: {str(e)[:80]}")
     ws.append_rows(rows, value_input_option="USER_ENTERED", table_range="A1")
 
 

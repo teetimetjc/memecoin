@@ -198,7 +198,7 @@ def actual_costs():
     read is worse than no read, because the fallback is merely pessimistic
     while a partial sum is wrong and believable.
     """
-    by = collections.defaultdict(lambda: dict(cost=0.0, n=0.0, px=[]))
+    by = collections.defaultdict(lambda: dict(cost=0.0, n=0.0, px=[], qty=[]))
     fills, cur, pages = [], None, 0
     while pages < 40:
         p = dict(limit=200)
@@ -231,6 +231,14 @@ def actual_costs():
         by[oid]["cost"] += cnt * px + fee
         by[oid]["n"] += cnt
         by[oid]["px"].append(px)
+        # QUANTITY, SO THE AVERAGE CAN BE WEIGHTED BY IT. The reported fill
+        # price was sum(px)/len(px) -- the mean of the PRICES, ignoring how
+        # many contracts went through at each. An order filling 9 contracts
+        # at 90c and 1 at 60c was shown as 75c when it really paid 87c. The
+        # cost figure was always right (it is cnt*px summed), so P&L was
+        # never affected; only the displayed fill, which is the column the
+        # whole slippage analysis reads.
+        by[oid]["qty"].append(cnt)
     return by
 
 
@@ -544,7 +552,9 @@ def main():
         # contracts. Pessimistic and right beats flattering and wrong.
         if f and f["cost"] and want and abs(f["n"] - want) < 0.01:
             b["cost"] = f["cost"]
-            b["fillpx"] = sum(f["px"]) / len(f["px"])
+            qsum = sum(f["qty"]) or 0.0
+            b["fillpx"] = ((sum(p * q for p, q in zip(f["px"], f["qty"])) / qsum)
+                           if qsum else (sum(f["px"]) / len(f["px"])))
         elif f and f["cost"] and want:
             b["cost"] = b["limit_cost"] or 0.0
             b["fillpx"] = None
