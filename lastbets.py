@@ -25,8 +25,13 @@ def main():
         i = h.get(k)
         return r[i] if i is not None and i < len(r) else ""
 
+    # SORTED PADDED. The sheet writes '2026-10-15 1:35:24' with no leading
+    # zero, so a plain string sort puts 10:35 BEFORE 2:35 and the newest rows
+    # are not the last ones. tally.norm_ts pads before comparing; using it
+    # here is the difference between reading the latest bet and reading a
+    # bet from nine hours earlier while believing it is the latest.
     body = [r for r in rows[1:] if r and r[0]]
-    body.sort(key=lambda r: r[0])
+    body.sort(key=lambda r: T.norm_ts(r[0]))
     print(f"{'timestamp':<20} {'sym':<10} {'entry':>6} {'presub':>7} "
           f"{'drop':>6} {'limit':>6} {'age s':>6} {'ack ms':>7} "
           f"{'status':<9} detail")
