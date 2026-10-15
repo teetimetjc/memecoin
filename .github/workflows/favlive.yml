@@ -305,7 +305,28 @@ jobs:
           #
           # The paper record of the skipped window is priced at the QUOTE and
           # will therefore flatter it, because the fills are what went wrong.
-          FAVLIVE_QUIET_UTC: '4-12'
+          # QUIET HOURS LIFTED 2026-10-15. Running around the clock.
+          #
+          # The pause was set on the all-stakes, all-sides split: 46 overnight
+          # bets at -3.95% ROI against 96 daytime bets at +1.15%. Re-cut to
+          # the configuration actually being run -- $4/$7, YES only -- the
+          # overnight hours are POSITIVE:
+          #
+          #   overnight (11p-7a CT)  39 bets  won 94.87%  needed 91.09%  +$6.38  +3.59%
+          #   daytime                80 bets  won 96.25%  needed 91.60%  +$18.16 +5.52%
+          #
+          # So the -$9.22 attributed to the night was DOWN bets and $10 bets
+          # that happened to fall at night, not the hours themselves. Two of
+          # the 39 overnight bets lost, and one of those filled at 84c against
+          # a 90c quote -- the exact gap MAX_DROP_CENTS now refuses.
+          #
+          # THIS IS THIN AND IS NOT CLAIMED OTHERWISE: one more loss takes
+          # that +3.78 gap to about +1.2. Daytime still reads better. The
+          # reason to run all night is RATE, not edge -- it roughly doubles
+          # the bets per day and halves the time to the 200-bet decision.
+          #
+          # Set this back to '4-12' to restore the pause.
+          FAVLIVE_QUIET_UTC: ''
           # YES ONLY AGAIN, from 2026-10-13. The NO side ran live for about
           # eighteen hours and is switched off on the evidence, not on the
           # eighteen hours:
