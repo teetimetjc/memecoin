@@ -52,6 +52,21 @@ HEADERS = [
     # rule could not be evaluated. Separate columns rather than one verdict,
     # because the point is to compare rules independently.
     "R_spread", "R_depth", "R_crossed", "R_askmove",
+    # THE ABORT MEASUREMENT. What the position could have been sold back for,
+    # seconds after it was bought. Buying cannot be undone -- a buy limit has
+    # no floor, so a collapsing book hands over a cheap fill no matter what
+    # was asked for -- but the position does not have to be kept.
+    #
+    # The comparison this feeds: a fill well below quote wins about 71% of
+    # the time, so HOLDING one is worth roughly 71c per contract. If the
+    # position can be sold back for more than that after fees, aborting beats
+    # holding. That number has only ever been estimated; these columns
+    # measure it.
+    #
+    # Selling a YES position means hitting the yes BID, which is the side of
+    # the book that falls first in a collapse, so the honest expectation is
+    # that it is worse than the naive guess.
+    "Abort bid ¢", "Abort fee ¢", "Abort net ¢",
     "Note",
 ]
 
@@ -207,6 +222,22 @@ def observe(client, signals, rows, stake):
                     if status == "PLACED" else "pre-trade (nothing was sent)")
             v, bid, ask, spread, depth, lv = evaluate(
                 ticker, side, entry, contracts, status, ob)
+
+            # What a sell-back would fetch right now, for bets that were
+            # actually filled. Selling YES hits the yes bid; selling a NO
+            # position means buying YES back, which pays the ask.
+            abort_bid = abort_fee = abort_net = ""
+            if status == "PLACED" and contracts:
+                px = bid if side == "UP" else (
+                    (100.0 - ask) if ask is not None else None)
+                if px is not None and 0 < px < 100:
+                    pp = px / 100.0
+                    # The exit is charged like the entry: 0.07*n*p*(1-p),
+                    # verified against 162 of 163 real fills.
+                    fee_c = 100.0 * (0.07 * contracts * pp * (1 - pp))
+                    abort_bid = round(px, 1)
+                    abort_fee = round(fee_c / contracts, 2)
+                    abort_net = round(px - fee_c / contracts, 1)
             out.append([
                 ts, symbol, side, ticker,
                 round(entry, 1) if entry else "", status, contracts, when,
@@ -217,6 +248,7 @@ def observe(client, signals, rows, stake):
                 lv,
                 "yes" if (bid is not None and ask is not None and bid >= ask) else "no",
                 v["R_spread"], v["R_depth"], v["R_crossed"], v["R_askmove"],
+                abort_bid, abort_fee, abort_net,
                 "" if ob is not None else "orderbook unreadable",
             ])
         if not out:
