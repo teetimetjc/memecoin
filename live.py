@@ -108,10 +108,60 @@ MAX_ENTRY = float(os.environ.get("MAX_ENTRY_CENTS") or 50.0)
 # say so, in a variable that appears in the workflow that set it.
 MIN_ENTRY = float(os.environ.get("MIN_ENTRY_CENTS") or 20.0)
 
-# How far above the quoted price we are willing to pay. One cent covers the
-# ordinary tick of movement between reading the book and the order landing;
-# beyond that we would rather miss the bet.
-SLIP_BUFFER_CENTS = 1.0
+# HOW FAR ABOVE THE QUOTE WE WILL CHASE, and why it is no longer one cent.
+#
+# THE MISSES WERE THE BEST BETS IN THE RECORD. 65 of 229 order attempts came
+# back "accepted but filled nothing": the ask had moved up past a limit of
+# quote+1c before the order landed. Scored on Kalshi's settlements, those
+# markets went:
+#
+#     UP/YES no-fills   62 settled   61 won   98.4%   vs 92.7% break-even
+#     orders that filled                      95.8%
+#
+# The mechanism is the mirror of the cheap-fill problem. A favourite whose
+# ask is RISING is a favourite getting stronger, and it settles YES more
+# often; a favourite whose ask is COLLAPSING is one the market has given up
+# on, and it settles NO more often. At one cent the bot was systematically
+# selected against at both ends -- filled on the ones falling apart, missing
+# the ones firming up.
+#
+# RAISING THIS IS NEARLY FREE ON CALM BOOKS, which is the point. A buy limit
+# is a MAXIMUM: an IOC order still fills at the best offer available, so when
+# the book has not moved, a 3c buffer pays exactly what a 1c buffer paid. It
+# binds only in the case currently being missed.
+#
+# WHAT IT COSTS WHEN IT BINDS, from the same 62 bets at $4:
+#     filled at the limit   +$12.84   (ceiling: this fill was not available)
+#     filled 1c above       ~+$10.6
+#     filled 2c above       ~+$8
+#     filled 3c above       ~+$5.8
+# Still positive at three cents, because a 5.7-point edge absorbs a lot. Set
+# to 3 rather than higher because the sensitivity is one-directional: every
+# extra cent raises the break-even the bet must clear, and the evidence is
+# 62 in-sample bets, not a settled fact.
+SLIP_BUFFER_CENTS = float(os.environ.get("SLIP_BUFFER_CENTS") or 3.0)
+
+# AND A CEILING ON THE LIMIT, WHICH THE BUFFER ALONE DOES NOT GIVE.
+#
+# At a 3c buffer an entry of 95.9c would send a limit of 98.9c, where the
+# contract needs ~99% to break even -- above even the 98.4% this cohort won.
+# Chasing is only worth it while the price chased to is still a price the
+# strategy would have taken. 97c is one cent above the 96c band cut: it keeps
+# the chase inside the tested region instead of letting a good idea run off
+# the end of its own evidence.
+MAX_LIMIT_CENTS = float(os.environ.get("MAX_LIMIT_CENTS") or 97.0)
+
+
+def limit_for(entry_cents):
+    """The limit price for a quote, in cents. ONE definition, used everywhere.
+
+    The Limit column in the sheet was computed separately from the limit the
+    order actually used. Identical formulas today, which is precisely how
+    they drift apart later and leave the log describing a different order
+    from the one that was sent.
+    """
+    return min(MAX_LIMIT_CENTS, 99.0,
+               math.ceil(entry_cents + SLIP_BUFFER_CENTS))
 
 # HOW FAR THE ASK MAY HAVE FALLEN BETWEEN THE DECISION AND THE ORDER.
 #
@@ -442,7 +492,7 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
                 f"({entry_cents:.0f}c -> {now_c:.0f}c): buying a "
                 f"collapse, not a favourite", 0, 0.0, "")
 
-    limit_c = min(99.0, math.ceil(entry_cents + SLIP_BUFFER_CENTS))
+    limit_c = limit_for(entry_cents)
     contracts = int(stake / (limit_c / 100.0))     # never round UP into overspend
     if contracts < 1:
         return "SKIPPED", f"${stake:.2f} buys no contracts at {limit_c:.0f}c", 0, 0.0, ""
@@ -591,7 +641,7 @@ def run_window(client, signals, stake=None):
         meta = dict(LAST_META)
         return [ts, symbol, side, ticker,
                 round(entry, 1) if entry else "",
-                math.ceil(entry + SLIP_BUFFER_CENTS) if entry else "",
+                limit_for(entry) if entry else "",
                 n, cost, status, oid, detail,
                 meta.get("presubmit_c", ""), meta.get("quote_age_s", ""),
                 meta.get("submit_utc", ""), meta.get("ack_ms", "")]
