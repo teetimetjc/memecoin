@@ -98,9 +98,33 @@ def orderbook(ticker):
                          timeout=BOOK_TIMEOUT_S)
         if not r.ok:
             return None
-        return (r.json() or {}).get("orderbook") or None
+        j = r.json() or {}
+        # THE KEY IS orderbook_fp. Reading .get("orderbook") returned None on
+        # all 56 attempts, so every depth, spread and abort-bid field came
+        # back blank and the measurement built to answer the abort question
+        # produced nothing for two days. Fourth instance of this same family:
+        # volume_fp, open_interest_fp, volume_fp on candles, now this one.
+        return j.get("orderbook_fp") or j.get("orderbook") or None
     except Exception:
         return None
+
+
+def _price_size(row):
+    """(price_in_cents, size) from one book level, or (None, 0).
+
+    UNIT BY VALUE, NOT BY ASSUMPTION, and only because the field name cannot
+    settle it here: the key says dollars, but every other price in this API
+    appears in both spellings somewhere, and the probe could only sample an
+    EMPTY book so the element shape was never confirmed on real data. A value
+    at or below 1.0 is dollars; above that it is already cents. The ambiguous
+    case -- exactly 1.00 -- is a 100c contract, which cannot trade, so
+    nothing real is lost either way.
+    """
+    try:
+        p, sz = float(row[0]), float(row[1])
+    except (TypeError, ValueError, IndexError):
+        return None, 0.0
+    return (p * 100.0 if p <= 1.0 else p), sz
 
 
 def _levels(ob, side):
@@ -113,23 +137,22 @@ def _levels(ob, side):
     """
     if not isinstance(ob, dict):
         return []
-    yes = ob.get("yes") or []
-    no = ob.get("no") or []
+    # ...and the inner keys are yes_dollars / no_dollars, in DOLLARS.
+    yes = ob.get("yes_dollars") or ob.get("yes") or []
+    no = ob.get("no_dollars") or ob.get("no") or []
     out = []
     if side == "UP":
         # Buying YES lifts the yes ask = 100 - (no bid).
         for row in no:
-            try:
-                p, sz = float(row[0]), float(row[1])
-            except (TypeError, ValueError, IndexError):
+            p, sz = _price_size(row)
+            if p is None:
                 continue
             out.append((100.0 - p, sz))
         out.sort(key=lambda t: t[0])          # cheapest ask first
     else:
         for row in yes:
-            try:
-                p, sz = float(row[0]), float(row[1])
-            except (TypeError, ValueError, IndexError):
+            p, sz = _price_size(row)
+            if p is None:
                 continue
             out.append((100.0 - p, sz))
         out.sort(key=lambda t: t[0])
