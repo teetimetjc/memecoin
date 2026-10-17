@@ -34,11 +34,11 @@ def try_path(path, **params):
         print("      not json")
         return None
     print(f"      top-level keys: {list(j.keys())}")
-    ob = j.get("orderbook")
+    ob = j.get("orderbook_fp") or j.get("orderbook")
     if ob is not None:
         print(f"      orderbook type {type(ob).__name__} "
               f"keys {list(ob.keys()) if isinstance(ob, dict) else 'n/a'}")
-        print(f"      sample: {json.dumps(ob)[:300]}")
+        print(f"      sample: {json.dumps(ob)[:600]}")
     return j
 
 
@@ -54,6 +54,18 @@ def main():
     if not mk:
         print("  no open markets at all")
         return 0
+    def live_quote(m):
+        v = m.get("yes_bid_dollars")
+        try:
+            return float(v) > 0
+        except (TypeError, ValueError):
+            return False
+    tradeable = [m for m in mk if live_quote(m)]
+    if tradeable:
+        mk = tradeable
+    else:
+        print("  WARNING: no 15m market is quoting right now; the book will")
+        print("  be empty and that is the market's state, not a bug.")
     tk = str(mk[0].get("ticker"))
     print(f"  probing with ticker {tk}\n")
 
