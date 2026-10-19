@@ -468,6 +468,21 @@ def ct_parts(ts):
         return (str(ts)[:10], str(ts)[11:16])
 
 
+def _ingest_settlements(rows, setts):
+    """Fold one page of settlements into the ticker -> {result, rev} map."""
+    for s in rows:
+        tk = str(s.get("ticker") or "")
+        rev = _f(s.get("revenue_dollars"))
+        if rev is None:
+            # UNITS BY FIELD NAME, NOT BY SIZE. A bare `revenue` is cents.
+            rev = _f(s.get("revenue"))
+            if rev is not None:
+                rev = rev / 100.0
+        setts[tk] = dict(result=str(s.get("market_result")
+                                    or s.get("result") or "").lower(),
+                         rev=rev or 0.0)
+
+
 def main():
     bets = rows_since(START)
     print("=" * 94)
@@ -478,25 +493,36 @@ def main():
         return 0
 
     # Settlements, keyed by ticker, for what each market actually returned.
-    d = get("/portfolio/settlements", limit=200)
+    # EVERY SETTLEMENT, NOT THE LAST 200. This read one page with no cursor,
+    # so the "all time" record was really "the most recent 200 settlements"
+    # and the window slid: on 2026-10-19 eleven new bets pushed eleven
+    # winners from 9-10 October out of the back, and the headline fell from
+    # +$12.25 to +$7.79 with no bet having lost. The count sat frozen at 200
+    # the whole time, which is what made it look like a stable total.
+    #
+    # The drift has a direction, which is what makes it worse than noise:
+    # the oldest bets are the early $4 era, the best stretch in the record,
+    # so the number was set to decline on winning days indefinitely.
+    #
+    # Same mistake as the fills pagination bug a week ago. One page is not a
+    # history, and a fixed-size window that always looks full is the hardest
+    # kind to notice.
     setts = {}
-    for s in ((d or {}).get("settlements") or []):
-        tk = str(s.get("ticker") or "")
-        rev = _f(s.get("revenue_dollars"))
-        if rev is None:
-            # UNITS BY FIELD NAME, NOT BY SIZE. This read
-            #     if abs(rev) > 100: rev = rev / 100.0
-            # which converts 2000c to $20 correctly and leaves 50c reading as
-            # $50. Magnitude cannot disambiguate units -- the same mistake in
-            # favlive reported a day's net as "+$14343.07" and left the day
-            # stop unable to fire. A bare `revenue` is cents, full stop.
-            rev = _f(s.get("revenue"))
-            if rev is not None:
-                rev = rev / 100.0
-        setts[tk] = dict(result=str(s.get("market_result")
-                                    or s.get("result") or "").lower(),
-                         rev=rev or 0.0)
-
+    cur, pages, got_any = None, 0, 0
+    while pages < 60:
+        p = dict(limit=200)
+        if cur:
+            p["cursor"] = cur
+        d = get("/portfolio/settlements", **p)
+        rows = (d or {}).get("settlements") or []
+        got_any += len(rows)
+        _ingest_settlements(rows, setts)
+        cur = (d or {}).get("cursor")
+        pages += 1
+        if not cur or not rows:
+            break
+        time.sleep(0.15)
+    print(f"  read {got_any} settlement(s) across {pages} page(s)")
     # ONE SETTLEMENT, SHARED BY EVERY BET ON THAT MARKET.
     #
     # A settlement pays the whole POSITION, but this dict is keyed by ticker

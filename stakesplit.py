@@ -64,15 +64,22 @@ def main():
         print("  No filled bets recorded yet.")
         return 0
 
-    d = T.get("/portfolio/settlements", limit=200)
+    # PAGED, for the same reason tally.py is: one page of 200 is a sliding
+    # window, not a history, and it silently drops the oldest bets as new
+    # ones settle.
     setts = {}
-    for s in ((d or {}).get("settlements") or []):
-        tk = str(s.get("ticker") or "")
-        rev = T._f(s.get("revenue_dollars"))
-        if rev is None:
-            rev = T._f(s.get("revenue"))
-            rev = rev / 100.0 if rev is not None else None
-        setts[tk] = dict(rev=rev or 0.0)
+    cur, pages = None, 0
+    while pages < 60:
+        q = dict(limit=200)
+        if cur:
+            q["cursor"] = cur
+        d = T.get("/portfolio/settlements", **q)
+        rows = (d or {}).get("settlements") or []
+        T._ingest_settlements(rows, setts)
+        cur = (d or {}).get("cursor")
+        pages += 1
+        if not cur or not rows:
+            break
 
     # One settlement shared across every bet on that ticker, by contract
     # count -- the same split tally.py makes. Claiming the whole payout on
