@@ -1,4 +1,4 @@
-name: Favlive (frozen spec, $5 bets)
+name: Favlive (frozen spec, $6 bets)
 
 # Runs the frozen narrow-slice spec against the real exchange: read the book at
 # T-9, buy the 90-96c YES side at $10, hold to settlement.
@@ -120,7 +120,7 @@ on:
       stake:
         description: 'dollars per bet'
         required: false
-        default: '5'
+        default: '6'
       seconds:
         description: 'how long the session runs'
         required: false
@@ -142,6 +142,24 @@ jobs:
     timeout-minutes: 350
     env:
       # The mode scheduled runs use. 'dry' until deliberately changed.
+      #
+      # RAISED TO $6 ON 2026-10-19, under a stated sizing rule rather than a
+      # feeling: step up $1 after a GREEN day, hold after a red one, and
+      # never exceed 5% of the bankroll. $6 is 4.8% of $124.09, so it is the
+      # largest step the rule allows tonight. All five days since the restart
+      # were green.
+      #
+      # IT BREAKS THE $5-UNTIL-200-BETS AGREEMENT, and that is recorded here
+      # rather than glossed: 109 bets in, win rate 96.33% against a 92.00%
+      # break-even, gap +4.33, and a 95% interval of 90.9-98.6% that STILL
+      # CONTAINS break-even. This scales a hypothesis.
+      #
+      # What makes it different from the $4 -> $7 -> $10 ladder of the first
+      # week is only that a rule governs it. A simulation over 70 days and
+      # 4,000 runs put "+$1 after a green day, hold after red" ahead of both
+      # a flat stake and a fixed every-3-days ramp, and found stepping DOWN
+      # after a red day actively worse -- it shrinks the stake exactly when
+      # the strategy is about to revert to normal.
       #
       # RAISED TO $5 ON 2026-10-18, at the operator's decision, with the
       # measurement run half finished: 81 bets, 96.30% won against a 92.09%
@@ -258,7 +276,7 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BET_ALERTS: '0'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '5' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '6' }}
           MIN_ENTRY_CENTS: '90'
           MAX_ENTRY_CENTS: '96'
           ORDER_PREFIX: 'slice'
@@ -290,7 +308,7 @@ jobs:
           ALLOW_LIVE_TRADING: '1'
           LIVE_TRADING: '1'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '5' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '6' }}
           # BOTH SIDES, FROM 2026-10-12. The narrow slice spec is YES-only and
           # stays that way in score.RULES; this overrides the sides for the
           # live bot only, so the frozen spec still measures what it was
