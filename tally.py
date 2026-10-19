@@ -383,6 +383,99 @@ SCORECARD_COLS = ["Date CT", "Time CT", "Timestamp UTC", "Series", "Ticker",
                   "Break-even %"]
 
 
+FILLRATE_TAB = "Fill Rate"
+
+FILLRATE_COLS = ["Date CT", "Signals", "Filled", "Missed", "Fill rate %",
+                 "Missed: book moved", "Missed: drop guard",
+                 "Missed: other", "Missed stake $"]
+
+
+def write_fillrate():
+    """One row per CT day: how many signals became bets, and how many did not.
+
+    WHY THIS TAB EXISTS. The Scorecard holds bets that FILLED, so a day can
+    read 100% and say nothing about the two signals that never became bets.
+    On 2026-10-19 two orders went out at 06:36 UTC, were accepted, and filled
+    nothing because the ask had moved up past the limit -- invisible in every
+    chart on the dashboard.
+
+    That cohort is not a rounding error. Orders missed because the ask ran
+    away settled YES 98.4% of the time across 62 of them, which is better
+    than the bets that did fill. A missed bet is a real cost and the
+    dashboard could not show it.
+
+    GROUPED BY CT DATE, deliberately, because that is what the rest of the
+    dashboard groups by. Timestamp UTC and Date CT disagree either side of
+    midnight and a page using both describes one bet under two dates.
+
+    Reads the Live Bets tab, which holds every ATTEMPT. Writes its own tab.
+    """
+    import live
+    try:
+        sh = P._get_client().open_by_key(P.SPREADSHEET_ID)
+        rows = sh.worksheet(live.LIVE_SHEET).get_all_values()
+    except Exception as e:
+        print(f"\n  could not read '{live.LIVE_SHEET}' for fill rate: "
+              f"{str(e)[:90]}")
+        return
+    if len(rows) < 2:
+        return
+    h = {k: i for i, k in enumerate(rows[0])}
+
+    def c(r, k):
+        i = h.get(k)
+        return r[i] if i is not None and i < len(r) else ""
+
+    day = collections.defaultdict(lambda: dict(
+        sig=0, fill=0, moved=0, guard=0, other=0, lost=0.0))
+    for r in rows[1:]:
+        if not r or not r[0] or norm_ts(r[0]) < norm_ts(START):
+            continue
+        st = str(c(r, "Status")).strip().upper()
+        if st not in ("PLACED", "SKIPPED"):
+            continue
+        d = day[ct_parts(r[0])[0]]
+        d["sig"] += 1
+        if st == "PLACED":
+            d["fill"] += 1
+            continue
+        det = str(c(r, "Detail")).lower()
+        if "filled nothing" in det:
+            d["moved"] += 1
+        elif "ask fell" in det or "bid ran up" in det:
+            d["guard"] += 1
+        else:
+            d["other"] += 1
+        # What the skipped bet would have staked, at the limit price.
+        lim = _f(c(r, "Limit ¢"))
+        n = _f(c(r, "Contracts")) or 0
+        if lim and n:
+            d["lost"] += n * lim / 100.0
+
+    out = []
+    for k in sorted(day, reverse=True):
+        v = day[k]
+        miss = v["sig"] - v["fill"]
+        out.append([k, v["sig"], v["fill"], miss,
+                    round(100.0 * v["fill"] / v["sig"], 1) if v["sig"] else "",
+                    v["moved"], v["guard"], v["other"], round(v["lost"], 2)])
+    try:
+        try:
+            ws = sh.worksheet(FILLRATE_TAB)
+        except Exception:
+            ws = sh.add_worksheet(title=FILLRATE_TAB, rows=400,
+                                  cols=len(FILLRATE_COLS))
+        ws.clear()
+        ws.update(values=[FILLRATE_COLS] + out, range_name="A1")
+        tot_s = sum(day[k]["sig"] for k in day)
+        tot_f = sum(day[k]["fill"] for k in day)
+        print(f"\n  wrote {len(out)} day(s) to '{FILLRATE_TAB}' -- "
+              f"{tot_f} of {tot_s} signals filled "
+              f"({100.0*tot_f/tot_s:.1f}%)" if tot_s else "")
+    except Exception as e:
+        print(f"\n  could not write '{FILLRATE_TAB}': {str(e)[:120]}")
+
+
 def write_scorecard(settled, setts):
     """One reconciled row per settled bet, for a dashboard to read.
 
@@ -693,6 +786,7 @@ def main():
 
     emit_json(bets, settled, won, setts, staked, returned, net, avg, need)
     write_scorecard(settled, setts)
+    write_fillrate()
     return 0
 
 
