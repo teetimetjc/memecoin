@@ -40,6 +40,8 @@ call and the current rung is derived, never remembered.
 
 import os
 
+import time
+
 import requests
 
 import predictor as P
@@ -118,17 +120,50 @@ def settlements():
     are none" must not be the same value -- treating an unreadable history as
     an empty one would reset the ladder to full stake on a network hiccup.
     """
-    hdrs = P._kalshi_headers("GET", "/trade-api/v2/portfolio/settlements")
-    if not hdrs:
-        return None
-    try:
-        r = requests.get(f"{P.KALSHI_BASE}/portfolio/settlements",
-                         headers=hdrs, params={"limit": LIMIT}, timeout=15)
-        if not r.ok:
+    # PAGED, BECAUSE THIS IS LIVE LOGIC AND THE WINDOW IS CLOSING IN.
+    #
+    # One page of LIMIT settlements was fine when the account had a hundred
+    # of them. The record passed 340 on 2026-10-19, and the ladder only
+    # counts settlements after LADDER_START -- about 150 of them. The moment
+    # the total passes LIMIT plus that span, the oldest settlements since
+    # START start falling off the back of the page and the ladder silently
+    # loses the beginning of its own streak.
+    #
+    # The failure would be quiet and in the dangerous direction: a losing
+    # streak that began just past the page edge reads as shorter than it is,
+    # so the stake would stay at full size exactly when it should be cut.
+    #
+    # Same bug as tally's settlements read, found the same day, in code that
+    # spends money rather than reports on it.
+    items = []
+    cur, pages = None, 0
+    while pages < 60:
+        hdrs = P._kalshi_headers("GET", "/trade-api/v2/portfolio/settlements")
+        if not hdrs:
             return None
-        items = r.json().get("settlements") or []
-    except Exception:
-        return None
+        q = {"limit": LIMIT}
+        if cur:
+            q["cursor"] = cur
+        try:
+            r = requests.get(f"{P.KALSHI_BASE}/portfolio/settlements",
+                             headers=hdrs, params=q, timeout=15)
+            if not r.ok:
+                return None
+            j = r.json() or {}
+        except Exception:
+            return None
+        rows = j.get("settlements") or []
+        items += rows
+        cur = j.get("cursor")
+        pages += 1
+        if not cur or not rows:
+            break
+        # Once every settlement on this page predates the ladder's start,
+        # nothing older can matter and the walk stops.
+        if START and all(str(x.get("settled_time") or "") <= START
+                         for x in rows):
+            break
+        time.sleep(0.15)
     out = []
     for s in items:
         rev = _money(s, ("revenue_dollars", "revenue"))
