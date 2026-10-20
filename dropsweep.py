@@ -77,6 +77,29 @@ def main():
         print("  >%-10.0f %-10d $%-11.2f $%-11.2f %+.2f"
               % (thr, len(dec), sum(b["pnl"] for b in dec), kn, kn - base))
     print()
+    print("  BY BUCKET -- where each bet's pre-send drop actually sat:")
+    print("  %-14s %-6s %-7s %-8s %-11s %s" %
+          ("drop at send", "bets", "losses", "win %", "net", "per bet"))
+    buckets = [("ask rose / flat", -99, 0.001), ("0 to 1c", 0.001, 1.0),
+               ("1 to 2c", 1.0, 2.0), ("2 to 3c", 2.0, 3.0),
+               ("3 to 4c", 3.0, 4.0), ("4 to 5c", 4.0, 5.0),
+               ("over 5c", 5.0, 99)]
+    for lab, lo, hi in buckets:
+        g = [b for b in bets if lo <= b["drop"] < hi]
+        if not g:
+            print("  %-14s %-6d" % (lab, 0))
+            continue
+        L = [b for b in g if b["pnl"] <= 0]
+        net = sum(b["pnl"] for b in g)
+        print("  %-14s %-6d %-7d %-8.1f $%-10.2f $%+.3f"
+              % (lab, len(g), len(L), 100.0*(len(g)-len(L))/len(g), net,
+                 net/len(g)))
+    print()
+    print("  EVERY LOSS, with the drop that was visible before sending:")
+    for b in sorted([x for x in bets if x["pnl"] <= 0],
+                    key=lambda x: -x["drop"]):
+        print("    drop %+5.1fc at send -> $%+.2f" % (b["drop"], b["pnl"]))
+    print()
     print("  'they made' is what the declined bets actually returned. A")
     print("  NEGATIVE figure there means the guard removes losses; a positive")
     print("  one means it throws away profit.")
