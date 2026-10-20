@@ -41,8 +41,12 @@ import backfill as B
 BAND = (0.90, 0.96)
 ENTRY_OFFSET = 9          # minutes before close
 LOOKBACK = 10             # minutes of history used for the features
-PER_SERIES = 400
-BUDGET = int(sys.argv[1]) if len(sys.argv) > 1 else 2300
+# 400 per series gave 2,000 markets and only 151 in-band observations -- too
+# few to split in half, let alone to bucket. The run cost 450s of a 2,300s
+# budget, so the constraint was never time; it was that a 90-96c favourite at
+# T-9 is about 7% of all markets.
+PER_SERIES = 1600
+BUDGET = int(sys.argv[1]) if len(sys.argv) > 1 else 2700
 SERIES = ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M")
 
 
