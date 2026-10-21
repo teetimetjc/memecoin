@@ -1,0 +1,35 @@
+name: Fast-turnover Kalshi series (read-only)
+
+# What else on the exchange opens and closes quickly, and is any of it
+# actually traded? More windows a day shortens the time to every decision
+# this project is waiting on -- but the long-dated test already showed that
+# a fast clock over an empty book is worse than nothing.
+#
+# Reads the series list, settled markets and candlesticks. Places no order,
+# cancels no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shortmkt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Survey fast-turnover series
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python shortmkt.py
