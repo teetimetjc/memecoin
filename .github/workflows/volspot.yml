@@ -1,0 +1,37 @@
+name: Pre-entry volatility of the underlying (read-only)
+
+# The hour-of-day test found nothing because every cell was too thin. This
+# asks the same question with far more data: not "which hour" but "how much
+# did the coin actually move in the 15 minutes before we bought".
+#
+# Spot is used as a FEATURE only. Every outcome still comes from Kalshi's own
+# settlement -- regrading a market against a price proxy would invent
+# disagreements with the exchange.
+#
+# Places nothing, cancels nothing, writes nothing.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  volspot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Test pre-entry underlying volatility
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python volspot.py
