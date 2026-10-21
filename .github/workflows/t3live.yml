@@ -1,0 +1,163 @@
+name: T-3 live test ($3 bets)
+
+# THE SAME RULE, SIX MINUTES LATER. lateentry, split chronologically, put
+# the 90-94c band at T-3 at +3.29% net ROI in the older half and +3.13% in
+# the newer one, against +0.05% and +0.26% for the same band at the T-9 the
+# frozen spec enters on. Twelve of twenty cells in that sweep were positive
+# in both halves, so the surface is mildly positive everywhere and what
+# marks this cell out is the SIZE of the gap against the live offset on the
+# same markets, not survival alone.
+#
+# IT IS A QUOTE RESULT AND THIS SESSION IS THE TEST OF THAT. Nothing yet
+# measures whether six contracts can be bought at T-3, where the book is
+# thinner than at T-9. latecollect was meant to answer it and collected
+# nothing for two days; this answers it with real fills instead, which is
+# the only evidence that cannot be argued with.
+#
+# WHY IT IS A SEPARATE WORKFLOW RATHER THAN A SETTING. Three reasons, all
+# about being able to stop one without touching the other:
+#
+#   Its own concurrency group. The frozen session holds 'favlive'; this
+#   holds 't3live'. Neither can cancel or queue behind the other.
+#
+#   Its own ORDER_PREFIX. Order ids are namespaced by strategy, so the
+#   record can always be split by which rule placed the bet, and the
+#   exchange treats the two as unrelated orders.
+#
+#   Cancelling this run stops only this. The Control tab remains the fast
+#   stop for both.
+#
+# $3, NOT $5, AND ONE BET PER WINDOW. The frozen session can stake $10 in a
+# window (2 x $5). Adding 1 x $3 takes the worst correlated window to about
+# $13, roughly 12% of a $106 bankroll. At 2 x $3 it would be $16, and since
+# legs in one window resolve together 96% of the time that is one bet at
+# $16, not four small ones. The cap is the difference between a test and a
+# second full-size strategy.
+#
+# BAND IS 90-94c, not the 90-96c the frozen spec uses, because 90-94 is the
+# cell that was measured. 94-96 at T-3 flipped sign across the two halves.
+#
+# IT YIELDS TO THE FROZEN SPEC. FAVLIVE_SKIP_HELD makes this session skip
+# any market the T-9 session already holds. Order ids are namespaced by
+# strategy, so the exchange would otherwise happily fill both and leave one
+# market held twice at two prices, with the settlement split between them.
+# The established strategy never yields; the new one does.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry | live  (live SPENDS REAL MONEY)'
+        required: true
+        default: 'dry'
+      stake:
+        description: 'dollars per bet'
+        required: false
+        default: '3'
+      seconds:
+        description: 'how long the session runs'
+        required: false
+        default: '20700'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: t3live
+  cancel-in-progress: false
+
+jobs:
+  t3live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Resolve the mode
+        id: mode
+        run: |
+          M="${{ github.event.inputs.mode }}"
+          if [ -z "$M" ]; then M="dry"; fi
+          case "$M" in
+            dry|live) ;;
+            *) echo "unknown mode: $M"; exit 1 ;;
+          esac
+          echo "mode=$M" >> "$GITHUB_OUTPUT"
+          echo "Running in mode: $M"
+
+      - name: Dry run -- places nothing
+        if: steps.mode.outputs.mode == 'dry'
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          BET_ALERTS: '0'
+          FAVLIVE_RULE: 'narrow slice'
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '3' }}
+          FAVLIVE_ENTRY_MIN_S: '135'
+          FAVLIVE_ENTRY_MAX_S: '225'
+          MIN_ENTRY_CENTS: '90'
+          MAX_ENTRY_CENTS: '94'
+          ORDER_PREFIX: 't3'
+          T3_SHADOW: '0'
+        run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
+
+      - name: LIVE -- places real orders
+        if: steps.mode.outputs.mode == 'live'
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          BET_ALERTS: '1'
+          ALLOW_LIVE_TRADING: '1'
+          LIVE_TRADING: '1'
+          FAVLIVE_RULE: 'narrow slice'
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '3' }}
+          # THE WHOLE POINT: enter at T-3 instead of T-9.
+          FAVLIVE_ENTRY_MIN_S: '135'
+          FAVLIVE_ENTRY_MAX_S: '225'
+          # The measured cell, not the frozen spec's wider band.
+          MIN_ENTRY_CENTS: '90'
+          MAX_ENTRY_CENTS: '94'
+          FAVLIVE_SIDES: 'YES'
+          LIVE_ALLOW_DOWN: '0'
+          FAVLIVE_QUIET_UTC: ''
+          # One bet per window. See the header on why this is the line
+          # between a test and a second full-size strategy.
+          FAVLIVE_MAX_PER_WINDOW: '1'
+          FAVLIVE_DAY_STOP: 'off'
+          # Yield to the frozen session's markets.
+          FAVLIVE_SKIP_HELD: '1'
+          # The guards that are earned, carried over unchanged. The drop
+          # guard matters MORE here, not less: six minutes closer to close
+          # is a thinner book and more room for the ask to fall between the
+          # decision and the order.
+          MAX_DROP_CENTS: '5'
+          SLIP_BUFFER_CENTS: '3'
+          # 94c band plus a 3c buffer is 97c, so the ceiling binds exactly
+          # at the top of the band rather than above it.
+          MAX_LIMIT_CENTS: '97'
+          # LADDER EFFECTIVELY OFF for this session. ladder.state reads
+          # settlements across the whole account, so it cannot tell this
+          # strategy's results from the frozen one's and would resize this
+          # bot on the other's losses. The drawdown halt is kept as a real
+          # brake at $30.
+          LADDER_DOWN_AFTER: '999'
+          LADDER_UP_AFTER: '999'
+          LADDER_REDUCED: '3'
+          LADDER_HALT_DRAWDOWN: '30'
+          LADDER_START: '2026-10-21T23:00:00Z'
+          # This session IS the T-3 bet, so there is nothing to shadow.
+          T3_SHADOW: '0'
+          ORDER_PREFIX: 't3'
+        run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
