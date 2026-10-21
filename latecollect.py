@@ -33,6 +33,7 @@ READ IT WITH THE BACKTEST, not instead of it. If the price is fair, depth
 does not matter; if the price is wrong but the book holds two contracts,
 the edge is unreachable at any stake that matters.
 """
+import collections
 import os
 import sys
 import time
@@ -76,8 +77,17 @@ def window_for(left):
     return None
 
 
+# WHY EVERY REJECTION IS COUNTED. This collector reported "wrote 0" five
+# times and each zero was indistinguishable from a quiet market, so the
+# first fix was aimed at a guess. longrun.py learned the same lesson the
+# same way and the rule it produced applies here: when a filter chain can
+# silently empty itself, print the distribution UNCONDITIONALLY so a run
+# with no survivors says which stage ate them.
+TALLY = collections.Counter()
+
+
 def rows_for_now(seen):
-    """Sample any in-band market inside its last 90 seconds, once each."""
+    """Sample any in-band market inside a T-3/T-2/T-1 window, once each."""
     out = []
     # ONE CALL PER SERIES. The unfiltered version of this returned an
     # arbitrary page of 200 open markets out of thousands, never containing
@@ -85,25 +95,42 @@ def rows_for_now(seen):
     # four runs while reporting success. See openmk.py.
     markets = openmk.open_markets(MAJORS)
     now = time.time()
+    TALLY["polls"] += 1
+    TALLY["markets seen"] += len(markets)
     for m in markets:
         tk = str(m.get("ticker") or "")
         if not tk.startswith(MAJORS):
+            TALLY["not a major series"] += 1
             continue
         close = B.ts(m.get("close_time"))
         if close is None:
+            TALLY["no close time"] += 1
             continue
         left = close - now
         off = window_for(left)
         # Keyed by (ticker, offset): the same market is wanted once in each
         # window, and only once in each.
-        if off is None or (tk, off) in seen:
+        if off is None:
+            TALLY["outside every sampling window"] += 1
+            continue
+        TALLY["inside a window"] += 1
+        if (tk, off) in seen:
+            TALLY["already sampled at this offset"] += 1
             continue
         q = C.quote_from_market(m)
         if not q or q.get("ask") is None:
+            TALLY["no readable ask"] += 1
             continue
         ask_c = 100.0 * q["ask"]
         if not (BAND[0] <= ask_c <= BAND[1]):
+            TALLY["ask outside the band"] += 1
+            # THE PRICE ITSELF, not just the fact of rejection. "nothing in
+            # band" reads the same whether the market was quoted at 62c or
+            # the quote came back empty, and those need different responses.
+            print(f"  [skip] {tk.split('-')[0]:<10} {off} {int(left):>3}s "
+                  f"ask {ask_c:.0f}c outside {BAND[0]:.0f}-{BAND[1]:.0f}c")
             continue
+        TALLY["sampled"] += 1
         ob = shadow.orderbook(tk)
         bid_c, book_ask = shadow._best(ob, "UP") if ob else (None, None)
         levels = shadow._levels(ob, "UP") if ob else []
@@ -184,6 +211,12 @@ def main():
                 print(f"  write failed (ignored): {str(e)[:90]}")
         time.sleep(POLL)
     print(f"\n  wrote {wrote} sample(s) to '{SHEET}'")
+    print("\n  WHERE EVERY CANDIDATE WENT:")
+    for k in ("polls", "markets seen", "not a major series", "no close time",
+              "outside every sampling window", "inside a window",
+              "already sampled at this offset", "no readable ask",
+              "ask outside the band", "sampled"):
+        print(f"    {k:<34} {TALLY.get(k, 0):>7,}")
     if not wrote:
         # A ZERO HERE IS A FAILURE, NOT A QUIET MARKET, and it needs to say
         # so. This collector ran for the better part of an hour and wrote
