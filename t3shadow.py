@@ -55,6 +55,8 @@ HEADERS = [
     "T3 size at ask", "T3 levels for n", "T3 fillable",
     # The comparison the whole file is for.
     "Moved ¢", "In band at T-3", "Correspondence", "Note",
+    # Appended on the right, after Note, so nothing already written shifts.
+    "Side",
 ]
 
 BAND_LO = float(os.environ.get("T3_BAND_LO") or 90.0)
@@ -102,7 +104,7 @@ def remember(tuples, rows, stake):
                 by_ticker[str(r[3])] = r
         for t in tuples or []:
             try:
-                ts, _symbol, _side, ticker, entry = t[:5]
+                ts, _symbol, t_side, ticker, entry = t[:5]
             except (ValueError, TypeError):
                 continue
             if not ticker:
@@ -110,6 +112,11 @@ def remember(tuples, rows, stake):
             row = by_ticker.get(str(ticker))
             PENDING[str(ticker)] = dict(
                 window=ts,
+                # THE SIDE THE BOT ACTUALLY TOOK. The book has to be read
+                # for that side; reading the YES ladder for a NO position
+                # reports the depth of the side we are not buying, which is
+                # the kind of mistake that looks like data.
+                side=(str(t_side) or "UP"),
                 entry=entry,
                 status=(str(row[8]) if row and len(row) > 8 else "NOROW"),
                 contracts=(int(row[6] or 0)
@@ -188,8 +195,23 @@ def sample(client):
                 continue
             pend = PENDING.get(tk)
             q = C.quote_from_market(m)
-            ask_c = _price_cents(q) if q else None
-            in_band = (ask_c is not None and BAND_LO <= ask_c <= BAND_HI)
+            # BOTH SIDES. A favourite at 90-96c can be on either, and a
+            # falling price is NO at 95c with YES at 2c. Checking the YES
+            # ask alone made latecollect discard every NO favourite as "out
+            # of band" and collect nothing for two days; this file was
+            # written the same way. Kalshi runs one book, so the NO ask is
+            # 100 minus the YES bid.
+            yes_ask_c = _price_cents(q) if q else None
+            yes_bid = q.get("bid") if q else None
+            no_ask_c = (100.0 - 100.0 * yes_bid) if yes_bid is not None else None
+            band_side = None
+            if yes_ask_c is not None and BAND_LO <= yes_ask_c <= BAND_HI:
+                band_side, ask_c = "UP", yes_ask_c
+            elif no_ask_c is not None and BAND_LO <= no_ask_c <= BAND_HI:
+                band_side, ask_c = "DOWN", no_ask_c
+            else:
+                ask_c = yes_ask_c
+            in_band = band_side is not None
 
             # Three cases, and all three are recorded. A market that was a
             # T-9 signal is the comparison; one that drifted into the band
@@ -203,16 +225,19 @@ def sample(client):
                 TALLY["skipped"] += 1
                 continue
             if pend is None:
-                TALLY["drifted in"] += 1
+                TALLY[f"drifted in {band_side}"] += 1
                 corr = "drifted IN -- never a T-9 signal"
             else:
                 TALLY["pending hits"] += 1
                 corr = "still in band" if in_band else "drifted OUT of band"
 
+            # The side to read the book for: what the bot took if this was
+            # a signal, otherwise whichever side put the market in band.
+            side = ((pend or {}).get("side") or band_side or "UP")
             want = (pend or {}).get("contracts") or 0
             ob = shadow.orderbook(tk)
-            bid_c, book_ask = shadow._best(ob, "UP") if ob else (None, None)
-            levels = shadow._levels(ob, "UP") if ob else []
+            bid_c, book_ask = shadow._best(ob, side) if ob else (None, None)
+            levels = shadow._levels(ob, side) if ob else []
             size = levels[0][1] if levels else None
             need, lv = float(want or 6), 0
             for _p, sz in levels:
@@ -222,7 +247,8 @@ def sample(client):
                 lv += 1
             fillable = ("yes" if (need <= 0 and lv == 1)
                         else ("sweeps %d levels" % lv if lv else "no book"))
-            t3 = book_ask if book_ask is not None else ask_c
+            t3 = book_ask if book_ask is not None else (
+                yes_ask_c if side == "UP" else no_ask_c)
             moved = ((t3 - pend["entry"])
                      if (pend and t3 is not None
                          and isinstance(pend.get("entry"), (int, float)))
@@ -249,6 +275,7 @@ def sample(client):
                 "yes" if in_band else "no",
                 corr,
                 "" if ob is not None else "orderbook unreadable",
+                side,
             ])
         if not out:
             # Print the tally even when nothing was written, so a session
