@@ -1,0 +1,34 @@
+name: XRP split by side, stake and hour (read-only)
+
+# patterns.py left exactly one candidate: XRP, negative in both halves. This
+# decides whether that hole is live or already closed -- the DOWN/NO bets
+# were the $10 era, and both are switched off.
+#
+# Reads the Live Bets sheet, the fills and the settlements. Places no order,
+# cancels no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xrp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Split XRP three ways
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python xrp.py
