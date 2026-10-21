@@ -1,0 +1,47 @@
+name: Late entry collector (read-only, places nothing)
+
+# Samples the real orderbook in the last ~90 seconds before close for any
+# market quoted 90-97c, and records the ask, the size at the ask, and how
+# many levels a 6-contract order would sweep.
+#
+# WHY IT IS SEPARATE FROM FAVLIVE. The backtest can say whether a 95c
+# favourite with a minute left is underpriced. It cannot say whether you
+# could buy it -- a quote is not a promise that anyone will sell you six
+# contracts at it. That question needs the live book, and it needs it
+# WITHOUT touching the bot: its own workflow, its own concurrency group,
+# no ordering code imported.
+#
+# It places nothing. The only credentials it needs are the read-only market
+# endpoints and the sheet.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: latecollect
+  cancel-in-progress: false
+
+jobs:
+  latecollect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Collect
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python latecollect.py 3300
