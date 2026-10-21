@@ -1,4 +1,4 @@
-name: Favlive (frozen spec, $6 bets)
+name: Favlive (frozen spec, $5 bets)
 
 # Runs the frozen narrow-slice spec against the real exchange: read the book at
 # T-9, buy the 90-96c YES side at $10, hold to settlement.
@@ -120,7 +120,7 @@ on:
       stake:
         description: 'dollars per bet'
         required: false
-        default: '6'
+        default: '5'
       seconds:
         description: 'how long the session runs'
         required: false
@@ -142,6 +142,32 @@ jobs:
     timeout-minutes: 350
     env:
       # The mode scheduled runs use. 'dry' until deliberately changed.
+      #
+      # LOWERED TO $5 ON 2026-10-21, at the operator's decision, after
+      # asking about $7 and being shown the case against it.
+      #
+      # THE RULE DECIDED IT, not the recent losses. 5% of a $106.14 bankroll
+      # is $5.31, so $6 was 5.65% -- over the line the sizing rule sets, and
+      # $7 would have been 6.6%, needing a ~$140 bankroll to qualify.
+      #
+      # WHAT IS NOT CLAIMED. The dashboard shows $6 as the worst stake
+      # bucket -- 67 bets, 88.06% won, -$17.34 -- and $7 as the best, 26
+      # bets at 96.15% and +$8.77. Neither row is about stake size. The
+      # stake buckets ARE calendar periods: $7 is Oct 10-12 when everything
+      # won, $6 is the last few days when little did. Stake scales an edge
+      # and cannot create or destroy one, so reading those rows as a verdict
+      # on size would be the same mistake the $4 -> $7 -> $10 ladder was in
+      # the first week.
+      #
+      # THE BACKDROP, which is the real reason not to be stepping up: 322
+      # bets, net +$0.18. The record peaked at +$24.63 on Oct 11 and has
+      # round-tripped the whole of it. The calibration gap is +1.26 points
+      # and genuinely positive, but the dollars are flat, which means the
+      # losses are landing on the larger bets.
+      #
+      # Note this contradicts the green-day ladder recorded below, which
+      # says hold after a red day rather than step down. The 5% cap is the
+      # outer bound and wins where the two disagree.
       #
       # RAISED TO $6 ON 2026-10-19, under a stated sizing rule rather than a
       # feeling: step up $1 after a GREEN day, hold after a red one, and
@@ -276,7 +302,7 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BET_ALERTS: '0'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '6' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '5' }}
           MIN_ENTRY_CENTS: '90'
           MAX_ENTRY_CENTS: '96'
           ORDER_PREFIX: 'slice'
@@ -308,7 +334,7 @@ jobs:
           ALLOW_LIVE_TRADING: '1'
           LIVE_TRADING: '1'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '6' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '5' }}
           # BOTH SIDES, FROM 2026-10-12. The narrow slice spec is YES-only and
           # stays that way in score.RULES; this overrides the sides for the
           # live bot only, so the frozen spec still measures what it was
