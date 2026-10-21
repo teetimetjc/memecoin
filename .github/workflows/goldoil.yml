@@ -1,0 +1,38 @@
+name: Gold and oil calibration (read-only)
+
+# shortmkt found thirteen more fifteen-minute series. Gold is the second
+# most liquid on the exchange and oil beats two of the coins already being
+# traded -- but the 90-96c rule was calibrated on crypto, and these are
+# different underlyings with different jump behaviour.
+#
+# The five crypto series run through the same code as a baseline, because a
+# gap means nothing except next to what the live markets give.
+#
+# Reads settled markets and candlesticks. Places no order, cancels no order,
+# writes no sheet.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  goldoil:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Calibrate gold and oil against the crypto baseline
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python goldoil.py
