@@ -65,6 +65,7 @@ import ladder
 import live
 import abort
 import shadow
+import t3shadow
 import version
 import predictor as P
 import score as S
@@ -457,6 +458,16 @@ def cycle(client, r, stake, dry, factor=1.0):
         except Exception as e:
             print(f"  [favlive] shadow failed (ignored): {str(e)[:80]}")
 
+    # WHAT THESE SAME SIGNALS LOOK LIKE AT T-3. Only the decisions are
+    # recorded here; the book is read six minutes later by t3shadow.sample
+    # in the main loop. Placed after the orders for the same reason the
+    # shadow observation is: nothing may sit between the decision and the
+    # order.
+    try:
+        t3shadow.remember(tuples, rows, stake)
+    except Exception as e:
+        print(f"  [favlive] t3 remember failed (ignored): {str(e)[:80]}")
+
     # THE ABORT CHECK. Reads the real fill and the real bid, decides, and
     # writes the row down. It only SENDS a sell when ABORT_SELL=1 and the
     # session is live -- unset, it is a measurement that costs nothing and
@@ -619,6 +630,12 @@ def main():
                     seen.add(key)
             except Exception as e:
                 print(f"  [favlive] cycle error: {str(e)[:160]}")
+
+        # THE T-3 SAMPLE RUNS EVERY POLL, not once per window. The T-3
+        # moment arrives six minutes after the T-9 decision, long after
+        # cycle() has returned for that window, so the loop has to be the
+        # thing looking. It places nothing and swallows its own errors.
+        t3shadow.sample(client)
         time.sleep(POLL_S)
     print("  [favlive] session finished")
     return 0
