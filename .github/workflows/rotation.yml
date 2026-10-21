@@ -1,0 +1,35 @@
+name: BTC/ETH rotation counterfactual (read-only)
+
+# goldoil found BTC and ETH negative in BOTH chronological halves -- the
+# only things tested here that have managed that. But the backtest is not
+# the account, so this recomputes the LIVE record without them and treats
+# the backtest as corroboration rather than as the verdict.
+#
+# Reads the Live Bets sheet, the fills and the settlements. Places no
+# order, changes no configuration, writes no sheet.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rotation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Recompute the record without BTC and ETH
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python rotation.py
