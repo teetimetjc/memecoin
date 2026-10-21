@@ -37,6 +37,7 @@ import time
 import predictor as P
 import backfill as B
 import collect15 as C
+import openmk
 import shadow
 
 SHEET = "Depth Check"
@@ -61,9 +62,11 @@ WANT_CONTRACTS = 6
 
 def rows_for_now(seen):
     out = []
-    d, _e = C.get("/trade-api/v2/markets", status="open", limit=200)
+    # One call per series -- see openmk.py on why the unfiltered form
+    # collects nothing while reporting success.
+    markets = openmk.open_markets(WATCH)
     now = time.time()
-    for m in ((d or {}).get("markets") or []):
+    for m in markets:
         tk = str(m.get("ticker") or "")
         if not tk.startswith(WATCH) or tk in seen:
             continue
@@ -141,6 +144,17 @@ def main():
                 print(f"  write failed (ignored): {str(e)[:90]}")
         time.sleep(POLL)
     print(f"\n  wrote {wrote} sample(s) to '{SHEET}'")
+    if not wrote:
+        # A ZERO HERE IS A FAILURE, NOT A QUIET MARKET, and it needs to say
+        # so. This collector ran for the better part of an hour and wrote
+        # nothing on four consecutive runs while exiting 0, and the zero was
+        # read upstream as "still accumulating". Markets close every fifteen
+        # minutes around the clock; a session this long that samples nothing
+        # has a broken read, not an empty exchange.
+        print("  *** WROTE NOTHING. Over a session this long the sampling "
+              "window opens dozens of times, so zero means the market list, "
+              "the band filter or the orderbook read is broken -- not that "
+              "the market was quiet. Do not report this as collected data.")
     print("  Compare the candidates' 'Size at ask' and 'Enough for $6' against")
     print("  the baseline rows from the SAME minutes. A candidate whose book")
     print("  is a fraction of the coins already traded has an edge that cannot")

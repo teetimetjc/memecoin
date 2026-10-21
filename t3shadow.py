@@ -150,12 +150,16 @@ def sample(client):
         import predictor as P
         import backfill as B
         import collect15 as C
+        import openmk
         import shadow
 
-        d, _e = C.get("/trade-api/v2/markets", status="open", limit=200)
+        # One call per series. The unfiltered form returns an arbitrary page
+        # of 200 open markets out of thousands and never includes these, so
+        # it collects nothing while looking healthy -- see openmk.py.
+        markets = openmk.open_markets(openmk.MAJORS)
         now = time.time()
         out = []
-        for m in ((d or {}).get("markets") or []):
+        for m in markets:
             tk = str(m.get("ticker") or "")
             if not tk:
                 continue

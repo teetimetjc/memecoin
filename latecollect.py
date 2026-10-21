@@ -40,6 +40,7 @@ import time
 import predictor as P
 import backfill as B
 import collect15 as C
+import openmk
 import live
 import shadow
 
@@ -78,9 +79,13 @@ def window_for(left):
 def rows_for_now(seen):
     """Sample any in-band market inside its last 90 seconds, once each."""
     out = []
-    d, _e = C.get("/trade-api/v2/markets", status="open", limit=200)
+    # ONE CALL PER SERIES. The unfiltered version of this returned an
+    # arbitrary page of 200 open markets out of thousands, never containing
+    # a 15-minute crypto market, and this collector wrote zero rows across
+    # four runs while reporting success. See openmk.py.
+    markets = openmk.open_markets(MAJORS)
     now = time.time()
-    for m in ((d or {}).get("markets") or []):
+    for m in markets:
         tk = str(m.get("ticker") or "")
         if not tk.startswith(MAJORS):
             continue
@@ -147,6 +152,12 @@ def main():
     try:
         have = ws.row_values(1)
         if len(have) < len(HEADERS):
+            # GROW THE GRID FIRST. The tab was created with exactly eleven
+            # columns, so writing L1 fails with "exceeds grid limits" -- and
+            # because the widening is wrapped, that failure was swallowed and
+            # the column never appeared.
+            if ws.col_count < len(HEADERS):
+                ws.add_cols(len(HEADERS) - ws.col_count)
             ws.update(values=[HEADERS[len(have):]],
                       range_name=f"{chr(ord('A') + len(have))}1")
             print(f"  widened the header: added {HEADERS[len(have):]}")
@@ -173,6 +184,17 @@ def main():
                 print(f"  write failed (ignored): {str(e)[:90]}")
         time.sleep(POLL)
     print(f"\n  wrote {wrote} sample(s) to '{SHEET}'")
+    if not wrote:
+        # A ZERO HERE IS A FAILURE, NOT A QUIET MARKET, and it needs to say
+        # so. This collector ran for the better part of an hour and wrote
+        # nothing on four consecutive runs while exiting 0, and the zero was
+        # read upstream as "still accumulating". Markets close every fifteen
+        # minutes around the clock; a session this long that samples nothing
+        # has a broken read, not an empty exchange.
+        print("  *** WROTE NOTHING. Over a session this long the sampling "
+              "window opens dozens of times, so zero means the market list, "
+              "the band filter or the orderbook read is broken -- not that "
+              "the market was quiet. Do not report this as collected data.")
     return 0
 
 
