@@ -64,6 +64,7 @@ import control
 import ladder
 import live
 import abort
+import dedupe
 import shadow
 import t3shadow
 import version
@@ -380,6 +381,29 @@ def cycle(client, r, stake, dry, factor=1.0):
         return []
     sigs = signals_from(live_now, r, now)
     stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+
+    # DO NOT BUY WHAT ANOTHER STRATEGY ALREADY HOLDS. Only engaged when
+    # FAVLIVE_SKIP_HELD=1, which is set for the T-3 session and not for the
+    # frozen T-9 one -- the later strategy yields, the established one is
+    # untouched.
+    #
+    # live._client_order_id namespaces by ORDER_PREFIX on purpose, so the
+    # exchange's duplicate rejection will NOT catch this: two strategies on
+    # one market are two unrelated orders as far as Kalshi is concerned.
+    # See dedupe.py on why that doubles exposure on a single outcome and
+    # splits the settlement so neither record is true.
+    if sigs and dedupe.enabled():
+        held = dedupe.held_tickers(
+            client, exclude_prefix=os.environ.get("ORDER_PREFIX", "").strip())
+        before = len(sigs)
+        sigs = [s for s in sigs if s["ticker"] not in held]
+        if before != len(sigs):
+            print(f"  [favlive] skipped {before - len(sigs)} market(s) "
+                  "already held by another strategy")
+        if not sigs:
+            print("  [favlive] every signal was already held -- "
+                  "nothing to place this window.")
+            return []
     if not sigs:
         # SHOW THE PRICES, not just the absence of signals. "nothing in
         # 90-96c" reads exactly the same whether the market was genuinely
