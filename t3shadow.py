@@ -40,6 +40,7 @@ READ IT AGAINST THE REAL BETS IN THE SAME WINDOWS. The T-9 columns are what
 was actually paid; the T-3 columns are what the book would have offered six
 minutes later. Same markets, same minutes, one difference.
 """
+import collections
 import os
 import time
 
@@ -73,6 +74,21 @@ def enabled():
 # back by sample() a few minutes later. Process-local on purpose: a session
 # that restarts loses the pending windows rather than guessing at them.
 PENDING = {}
+
+# EVERY REJECTION IS COUNTED, for the same reason latecollect counts them:
+# a module that writes nothing looks exactly like a quiet market, and this
+# one cannot be read while the session is running because GitHub does not
+# serve a job's log until the job ends. Without this, a silent failure is
+# only discovered five hours later -- which is how latecollect wasted two
+# days. Printed on every write and at least once an hour by the caller.
+TALLY = collections.Counter()
+
+
+def tally_line():
+    return "  [t3shadow] " + "  ".join(
+        f"{k}={TALLY.get(k, 0)}" for k in
+        ("polls", "in window", "pending hits", "drifted in", "skipped",
+         "written"))
 
 
 def remember(tuples, rows, stake):
@@ -158,6 +174,7 @@ def sample(client):
         # it collects nothing while looking healthy -- see openmk.py.
         markets = openmk.open_markets(openmk.MAJORS)
         now = time.time()
+        TALLY["polls"] += 1
         out = []
         for m in markets:
             tk = str(m.get("ticker") or "")
@@ -178,16 +195,19 @@ def sample(client):
             # T-9 signal is the comparison; one that drifted into the band
             # without being a signal is a bet the T-3 rule would take and
             # the T-9 rule never saw; everything else is skipped.
+            TALLY["in window"] += 1
             if pend is None and not in_band:
+                TALLY["skipped"] += 1
                 continue
             if pend is not None and pend.get("sampled"):
+                TALLY["skipped"] += 1
                 continue
             if pend is None:
+                TALLY["drifted in"] += 1
                 corr = "drifted IN -- never a T-9 signal"
-            elif in_band:
-                corr = "still in band"
             else:
-                corr = "drifted OUT of band"
+                TALLY["pending hits"] += 1
+                corr = "still in band" if in_band else "drifted OUT of band"
 
             want = (pend or {}).get("contracts") or 0
             ob = shadow.orderbook(tk)
@@ -231,6 +251,11 @@ def sample(client):
                 "" if ob is not None else "orderbook unreadable",
             ])
         if not out:
+            # Print the tally even when nothing was written, so a session
+            # that collects nothing says so as it happens rather than five
+            # hours later when the log finally becomes readable.
+            if TALLY["polls"] % 20 == 0:
+                print(tally_line())
             return
         sh = client.open_by_key(P.SPREADSHEET_ID)
         try:
@@ -240,9 +265,11 @@ def sample(client):
             ws.update(values=[HEADERS], range_name="A1")
         ws.append_rows(out, value_input_option="USER_ENTERED",
                        table_range="A1")
+        TALLY["written"] += len(out)
         for r in out:
             print(f"  [t3shadow] {r[3]:<10} {r[8]:>3}s  T-9 {r[4]}c -> "
                   f"T-3 {r[9]}c  size {r[12]}  {r[14]}  ({r[17]})")
+        print(tally_line())
     except Exception as e:
         # A shadow failure is never allowed to matter.
         print(f"  [t3shadow] sample skipped: {str(e)[:100]}")
