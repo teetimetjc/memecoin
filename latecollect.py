@@ -129,6 +129,20 @@ def rows_for_now(seen):
             # the quote came back empty, and those need different responses.
             print(f"  [skip] {tk.split('-')[0]:<10} {off} {int(left):>3}s "
                   f"ask {ask_c:.0f}c outside {BAND[0]:.0f}-{BAND[1]:.0f}c")
+            # THE RAW FIELDS, ONCE. Five coins cannot all have a worthless
+            # YES side at the same moment, repeatedly, so a 0c ask is a
+            # misread rather than a price -- and which field is being
+            # misread cannot be deduced from the derived number. Printed for
+            # the first few skips only, so the log stays readable.
+            if TALLY["raw dumps"] < 6:
+                TALLY["raw dumps"] += 1
+                keys = sorted(k for k in m
+                              if any(w in k for w in
+                                     ("price", "bid", "ask", "last",
+                                      "volume", "interest", "status")))
+                print("    [raw] " + tk)
+                print("    [raw] " + ", ".join(
+                    f"{k}={m.get(k)!r}" for k in keys))
             continue
         TALLY["sampled"] += 1
         ob = shadow.orderbook(tk)
