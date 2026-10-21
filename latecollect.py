@@ -54,6 +54,11 @@ HEADERS = [
     # eleven columns, and inserting a column in the middle would silently
     # shift every historical reading one place over.
     "Offset",
+    # And Side goes after Offset for exactly the same reason: Offset has
+    # already been written to the sheet as column L, so putting Side before
+    # it would move every Offset value one column right and silently
+    # mislabel the readings already there.
+    "Side",
 ]
 BAND = (90.0, 97.0)
 SECONDS = int(sys.argv[1]) if len(sys.argv) > 1 else 3300
@@ -121,14 +126,35 @@ def rows_for_now(seen):
         if not q or q.get("ask") is None:
             TALLY["no readable ask"] += 1
             continue
-        ask_c = 100.0 * q["ask"]
-        if not (BAND[0] <= ask_c <= BAND[1]):
+        # BOTH SIDES, because a favourite at 90-97c can be on either one.
+        #
+        # This file checked the YES ask alone and therefore could not see a
+        # market whose favourite was the NO side -- which is exactly what a
+        # falling price looks like: NO quoted at 95c and YES at 2c. The
+        # instrumented runs are full of 1c and 2c YES asks for that reason,
+        # and every one of them was a 98c NO favourite being thrown away.
+        #
+        # Kalshi runs ONE book, so the NO ask is 100 minus the YES bid. The
+        # live bot has always priced both sides; this collector was written
+        # as though the YES side were the only one.
+        yes_ask_c = 100.0 * q["ask"]
+        yes_bid = q.get("bid")
+        no_ask_c = (100.0 - 100.0 * yes_bid) if yes_bid is not None else None
+        if BAND[0] <= yes_ask_c <= BAND[1]:
+            side, ask_c = "UP", yes_ask_c
+        elif no_ask_c is not None and BAND[0] <= no_ask_c <= BAND[1]:
+            side, ask_c = "DOWN", no_ask_c
+        else:
+            side, ask_c = None, yes_ask_c
+        if side is None:
             TALLY["ask outside the band"] += 1
             # THE PRICE ITSELF, not just the fact of rejection. "nothing in
             # band" reads the same whether the market was quoted at 62c or
             # the quote came back empty, and those need different responses.
             print(f"  [skip] {tk.split('-')[0]:<10} {off} {int(left):>3}s "
-                  f"ask {ask_c:.0f}c outside {BAND[0]:.0f}-{BAND[1]:.0f}c")
+                  f"yes {yes_ask_c:.0f}c / no "
+                  + (f"{no_ask_c:.0f}c" if no_ask_c is not None else "--")
+                  + f"  neither in {BAND[0]:.0f}-{BAND[1]:.0f}c")
             # THE RAW FIELDS, ONCE. Five coins cannot all have a worthless
             # YES side at the same moment, repeatedly, so a 0c ask is a
             # misread rather than a price -- and which field is being
@@ -146,8 +172,8 @@ def rows_for_now(seen):
             continue
         TALLY["sampled"] += 1
         ob = shadow.orderbook(tk)
-        bid_c, book_ask = shadow._best(ob, "UP") if ob else (None, None)
-        levels = shadow._levels(ob, "UP") if ob else []
+        bid_c, book_ask = shadow._best(ob, side) if ob else (None, None)
+        levels = shadow._levels(ob, side) if ob else []
         size = levels[0][1] if levels else None
         need, lv = float(WANT_CONTRACTS), 0
         for _p, sz in levels:
@@ -158,6 +184,7 @@ def rows_for_now(seen):
         enough = "yes" if (need <= 0 and lv == 1) else (
             "sweeps %d levels" % lv if lv else "no book")
         seen.add((tk, off))
+        TALLY[f"sampled {side}"] += 1
         out.append([
             time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
             tk, tk.split("-")[0], int(left),
@@ -169,6 +196,7 @@ def rows_for_now(seen):
             lv, enough,
             "" if ob else "orderbook unreadable",
             off,
+            side,
         ])
     return out
 
@@ -229,7 +257,8 @@ def main():
     for k in ("polls", "markets seen", "not a major series", "no close time",
               "outside every sampling window", "inside a window",
               "already sampled at this offset", "no readable ask",
-              "ask outside the band", "sampled"):
+              "ask outside the band", "sampled",
+              "sampled UP", "sampled DOWN"):
         print(f"    {k:<34} {TALLY.get(k, 0):>7,}")
     if not wrote:
         # A ZERO HERE IS A FAILURE, NOT A QUIET MARKET, and it needs to say
