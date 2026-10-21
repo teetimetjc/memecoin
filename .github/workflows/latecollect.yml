@@ -1,21 +1,33 @@
 name: Late entry collector (read-only, places nothing)
 
-# Samples the real orderbook in the last ~90 seconds before close for any
-# market quoted 90-97c, and records the ask, the size at the ask, and how
-# many levels a 6-contract order would sweep.
+# Samples the real orderbook at T-3, T-2 and T-1 for any market quoted
+# 90-97c, and records the ask, the size at the ask, and how many levels a
+# 6-contract order would sweep.
 #
-# WHY IT IS SEPARATE FROM FAVLIVE. The backtest can say whether a 95c
-# favourite with a minute left is underpriced. It cannot say whether you
-# could buy it -- a quote is not a promise that anyone will sell you six
-# contracts at it. That question needs the live book, and it needs it
-# WITHOUT touching the bot: its own workflow, its own concurrency group,
-# no ordering code imported.
+# WHY IT IS SEPARATE FROM FAVLIVE. The backtest can say whether a late
+# favourite is underpriced. It cannot say whether you could buy it -- a
+# quote is not a promise that anyone will sell you six contracts at it.
+# That question needs the live book, and it needs it WITHOUT touching the
+# bot: its own workflow, its own concurrency group, no ordering code
+# imported.
+#
+# THE `seconds` INPUT EXISTS FOR VERIFICATION. This collector wrote zero
+# rows on four consecutive runs, each time taking 55 minutes to report
+# nothing, because the market list was unfiltered and never contained a
+# 15-minute market. Confirming a fix to a read like that should cost
+# minutes, not an hour -- a market closes every quarter hour, so a few
+# minutes spanning one close is enough to prove the read works.
 #
 # It places nothing. The only credentials it needs are the read-only market
 # endpoints and the sheet.
 
 on:
   workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'how long to sample (300 is enough to prove the read)'
+        required: false
+        default: '3300'
   schedule:
     - cron: '7 * * * *'
 
@@ -44,4 +56,4 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
-        run: python latecollect.py 3300
+        run: python latecollect.py ${{ github.event.inputs.seconds || '3300' }}
