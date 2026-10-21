@@ -1,0 +1,41 @@
+name: Depth check at T-9 (read-only)
+
+# goldoil put WTI at +3.56% in the band, positive in both halves. That is a
+# QUOTE result: it says the price was wrong, not that six contracts could be
+# bought at it. This samples the real book at the entry offset, for the two
+# candidates and for the five live series in the same minutes.
+#
+# Its own concurrency group, so it can never queue behind or displace the
+# live betting session. Places no order, cancels no order.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: depthchk
+  cancel-in-progress: false
+
+jobs:
+  depthchk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Sample the book at T-9
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python depthchk.py 3300
