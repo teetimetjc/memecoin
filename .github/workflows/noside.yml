@@ -1,0 +1,36 @@
+name: The NO side, late (read-only)
+
+# lateentry scored the YES ask only, so its T-3 finding says nothing about
+# NO favourites. The live T-3 session is YES-only and placed nothing in its
+# first 115 market-windows; latecollect found three of seven in-band late
+# favourites sitting on the NO side, so this could be half the opportunity
+# or none of it.
+#
+# Both sides come from the same candle, so they are the same market in the
+# same minute. Reads settled markets and candlesticks; places nothing.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  noside:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Compare the two sides late
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python noside.py
