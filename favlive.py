@@ -83,6 +83,22 @@ MAX_PER_WINDOW = int(os.environ.get("FAVLIVE_MAX_PER_WINDOW") or 5)
 SIDES_OVERRIDE = tuple(
     x.strip().upper() for x in
     (os.environ.get("FAVLIVE_SIDES") or "").split(",") if x.strip())
+# THE BAND CAN BE NARROWED THE SAME WAY, AND ONLY NARROWED.
+#
+# The band lives in score.RULES and had no override at all, so a session
+# that set MIN_ENTRY_CENTS/MAX_ENTRY_CENTS -- which are a separate guard in
+# live.py -- ran the spec's 90-96c while its workflow said 90-94c. The T-3
+# dry run caught exactly that: the banner read "90-96c" with the workflow
+# asking for 90-94c, and nothing in the log said the setting had been
+# ignored.
+#
+# Written as "90-94" in cents. It must be a SUBSET of the spec's band: a
+# narrower slice of a measured rule is still inside what was measured,
+# whereas widening it would bet prices the spec never covered while still
+# calling itself that spec. Anything outside is refused loudly rather than
+# clamped, because a clamp is another silent disagreement between the
+# workflow and what actually ran.
+BAND_OVERRIDE = (os.environ.get("FAVLIVE_BAND") or "").strip()
 # A SEPARATE STAKE PER SIDE, because they are not the same bet. YES has a
 # five-day live record; NO has a 2,052-bet null and one confirmed fill. Equal
 # sizing would assert an equal confidence that does not exist.
@@ -172,6 +188,28 @@ def rule():
         r = dict(r)
         r["sides"] = SIDES_OVERRIDE
         r["name"] = f"{r['name']} [sides={'/'.join(SIDES_OVERRIDE)}]"
+    if BAND_OVERRIDE:
+        try:
+            lo_s, hi_s = BAND_OVERRIDE.split("-")
+            lo, hi = float(lo_s) / 100.0, float(hi_s) / 100.0
+        except ValueError:
+            raise SystemExit(
+                f"FAVLIVE_BAND={BAND_OVERRIDE!r} is not 'LO-HI' in cents, "
+                "e.g. '90-94'")
+        if not (lo < hi):
+            raise SystemExit(f"FAVLIVE_BAND={BAND_OVERRIDE!r} is not an "
+                             "increasing range")
+        slo, shi = r["band"]
+        if lo < slo - 1e-9 or hi > shi + 1e-9:
+            raise SystemExit(
+                f"FAVLIVE_BAND={BAND_OVERRIDE!r} is outside the "
+                f"{r['name']!r} spec's {100*slo:.0f}-{100*shi:.0f}c band. "
+                "The band may be narrowed, never widened: a narrower slice "
+                "is still inside what was measured, a wider one bets prices "
+                "the spec never covered.")
+        r = dict(r)
+        r["band"] = (lo, hi)
+        r["name"] = f"{r['name']} [band={100*lo:.0f}-{100*hi:.0f}c]"
     if "NO" in r["sides"] and not live.ALLOW_DOWN:
         raise SystemExit(
             f"the {name!r} spec bets the NO side, and the YES->ask mapping "
