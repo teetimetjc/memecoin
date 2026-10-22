@@ -1,0 +1,34 @@
+name: The 200-bet gate (read-only)
+
+# Every other reader starts at the whole live record. The measurement run
+# began on 2026-10-14, and it is the only cohort the 200-bet gate was about;
+# counting the whole record against it declares the gate reached days early
+# on bets from the $10 era the run exists to leave behind.
+#
+# Reads the sheet, the fills and the settlements. Places nothing.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Count the measurement run
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python gate.py
