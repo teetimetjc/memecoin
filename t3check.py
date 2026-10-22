@@ -6,9 +6,24 @@ record. Blending a $5 T-9 rule with a $3 T-3 rule into one win rate would
 describe neither, which is the same mistake the stake eras made before
 stake_of existed to separate them.
 
-HOW THE TWO ARE TOLD APART. Nothing stores the strategy name, but the Order
-ID carries the ORDER_PREFIX: the frozen spec writes 'slice-...' and the T-3
-session writes 't3-...'. That is enough and it needed no new column.
+HOW THE TWO ARE TOLD APART, after the first attempt got it wrong. The Order
+ID column stores the EXCHANGE's order id -- a uuid like
+'01a15fe8-...' -- not the client_order_id that carries ORDER_PREFIX. So
+splitting on that prefix grouped the record into one bucket per order and
+reported "the T-3 session placed nothing" for a reason that had nothing to
+do with the T-3 session. That is the same failure as every other one this
+week: a read that returns something plausible instead of failing.
+
+The stake is the discriminator that actually exists in the sheet. The T-9
+spec bets $5 (dropping to $2 on its ladder) and the T-3 session bets $3,
+and tally.stake_of already recovers the intended stake from contracts and
+price. $3 belongs to no other configuration currently running, which is
+exactly why the T-3 session was given a stake nothing else uses.
+
+It is not a perfect key and it says so: if the T-9 ladder is ever set to $3,
+or a third strategy appears at $3, this stops being able to separate them
+and the fix is to record the strategy in its own column rather than to
+infer it.
 
 WHAT IT REPORTS, and the reason each matters:
 
@@ -38,9 +53,17 @@ import live
 import tally as T
 
 
-def prefix_of(oid):
-    s = str(oid or "").strip()
-    return s.split("-", 1)[0] if "-" in s else ""
+def strategy_of(row, c):
+    """Which rule placed this bet, from the stake it was sized on."""
+    st = T.stake_of(dict(contracts=T._f(c(row, "Contracts")),
+                         entry=T._f(c(row, "Entry ¢")),
+                         limit_cost=T._f(c(row, "Cost $"))))
+    s = str(st or "?")
+    if s == "3":
+        return "t3     (T-3 test, $3)"
+    if s in ("5", "2"):
+        return "slice  (frozen T-9 spec, $5 / $2 ladder)"
+    return f"${s} (earlier era)"
 
 
 def main():
@@ -59,25 +82,22 @@ def main():
     for r in rows[1:]:
         if not r or not r[0]:
             continue
-        p = prefix_of(c(r, "Order ID")) or "(none)"
-        by[p].append(r)
+        by[strategy_of(r, c)].append(r)
 
     print("=" * 96)
-    print("WHO BET WHAT -- the Live Bets tab split by strategy, via the "
-          "Order ID prefix")
+    print("WHO BET WHAT -- the Live Bets tab split by the stake each bet "
+          "was sized on")
     print("=" * 96)
     for p in sorted(by, key=lambda k: -len(by[k])):
         g = by[p]
         placed = [r for r in g if str(c(r, "Status")).strip().upper() == "PLACED"]
-        label = {"slice": "slice  (frozen T-9 spec)",
-                 "t3": "t3     (T-3 test, $3)"}.get(p, p)
-        print(f"  {label:<28} {len(g):>4} rows, {len(placed):>4} PLACED")
+        print(f"  {p:<42} {len(g):>4} rows, {len(placed):>4} PLACED")
         if placed:
             last = sorted(placed, key=lambda r: T.norm_ts(r[0]))[-1]
-            print(f"  {'':<28} latest {T.norm_ts(last[0])}  "
+            print(f"  {'':<42} latest {T.norm_ts(last[0])}  "
                   f"{c(last, 'Ticker')}  entry {c(last, 'Entry ¢')}c")
 
-    t3 = [r for r in by.get("t3", [])
+    t3 = [r for r in by.get("t3     (T-3 test, $3)", [])
           if str(c(r, "Status")).strip().upper() == "PLACED"]
     print()
     if not t3:
