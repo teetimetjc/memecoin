@@ -1,0 +1,58 @@
+name: Session health watchdog
+
+# WHAT IT CATCHES. On 2026-10-22 the oil session went live at 15:52, died
+# at 16:46 with its LIVE step still showing "in progress", and stayed down
+# for 2h45m. Its log 404s, because a killed runner takes its buffered log
+# with it, so there was no record anywhere that it had stopped.
+#
+# Each live session now writes a pulse into the Health tab every three
+# minutes. This reads it from OUTSIDE and pushes a notification when a
+# strategy that should be running has not beaten in fifteen minutes.
+#
+# IT RESTARTS NOTHING. Every session already has its own hourly schedule
+# and recovers itself; a watchdog that also restarts can fight that
+# schedule and run two of the same session at once.
+#
+# It runs at :25, away from the :52 restarts, so it never samples the
+# gap between one session ending and the next starting.
+#
+# Reads the sheet. Places no order, changes no configuration.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '25 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Check every session's pulse
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          # The strategies expected to be running, by ORDER_PREFIX. Remove
+          # one here when it is deliberately stopped, or the alert becomes
+          # noise -- and noise is how a real alert gets ignored.
+          HEALTH_EXPECT: 'slice,oil,t3'
+          HEALTH_STALE_MINUTES: '15'
+        run: python health.py
