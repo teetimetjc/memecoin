@@ -14,10 +14,19 @@ name: T-3 live test ($3 bets)
 # nothing for two days; this answers it with real fills instead, which is
 # the only evidence that cannot be argued with.
 #
-# EXPECT IT TO BE QUIET. The backtest found roughly 318 markets in the
-# 90-94c band at T-3 out of 6,000 -- about 5%, or on the order of one an
-# hour across all five coins. A session that places nothing for an hour is
-# normal here and is not evidence of a broken read.
+# WHAT THE FIRST SESSION DID, recorded so the next zero can be read against
+# it: 2026-10-22 00:42-06:27 UTC, about 115 market-windows, and it placed
+# NOTHING. That is low rather than impossible. The backtest put in-band
+# markets at T-3 at roughly 5% of market-windows, so five or six were
+# expected, and two things cut into that: the dedupe skips whatever the
+# frozen session already holds, and this session is YES-only while
+# latecollect found three of its seven in-band late favourites sitting on
+# the NO side.
+#
+# THE LINE THAT MAKES THE NEXT ZERO MEAN SOMETHING: a full day of sessions
+# with no bet at all is a fault to be diagnosed, not a quiet market. Below
+# that it is noise. Stated here so it is not reinvented generously after
+# the fact.
 #
 # WHY IT IS A SEPARATE WORKFLOW RATHER THAN A SETTING. Three reasons, all
 # about being able to stop one without touching the other:
@@ -25,12 +34,12 @@ name: T-3 live test ($3 bets)
 #   Its own concurrency group. The frozen session holds 'favlive'; this
 #   holds 't3live'. Neither can cancel or queue behind the other.
 #
-#   Its own ORDER_PREFIX. Order ids are namespaced by strategy, so the
-#   record can always be split by which rule placed the bet, and the
-#   exchange treats the two as unrelated orders.
+#   Its own ORDER_PREFIX. The exchange treats the two as unrelated orders.
+#   Note the Live Bets sheet records the EXCHANGE's order id, not this
+#   prefix, so the record is split by STAKE -- see t3check.py.
 #
-#   Cancelling this run stops only this. The Control tab remains the fast
-#   stop for both.
+#   Cancelling this run stops only this, and the frozen T-9 session keeps
+#   running untouched. The Control tab remains the fast stop for both.
 #
 # $3, NOT $5, AND ONE BET PER WINDOW. The frozen session can stake $10 in a
 # window (2 x $5). Adding 1 x $3 takes the worst correlated window to about
@@ -39,24 +48,29 @@ name: T-3 live test ($3 bets)
 # $16, not four small ones. The cap is the difference between a test and a
 # second full-size strategy.
 #
+# $3 IS ALSO THE KEY THE RECORD IS SPLIT BY, since nothing else running
+# uses that size. Changing it to a stake the frozen spec or its ladder
+# already uses would make the two strategies indistinguishable in the
+# sheet.
+#
 # THE BAND IS SET WITH FAVLIVE_BAND, NOT MIN/MAX_ENTRY_CENTS. Those two are
 # a separate guard inside live.py; the selector band lives in score.RULES.
 # The first dry run of this workflow set them, printed "90-96c" in its own
 # banner, and scanned the spec's wider band with nothing reporting that the
-# request had been ignored. FAVLIVE_BAND narrows the spec band and refuses
-# anything outside it rather than clamping.
+# request had been ignored.
 #
 # IT YIELDS TO THE FROZEN SPEC. FAVLIVE_SKIP_HELD makes this session skip
-# any market the T-9 session already holds. Order ids are namespaced by
-# strategy, so the exchange would otherwise happily fill both and leave one
-# market held twice at two prices, with the settlement split between them.
-# The established strategy never yields; the new one does.
+# any market the T-9 session already holds, so one market is never held
+# twice at two prices with the settlement split between them. The
+# established strategy never yields; the new one does. The cost is that
+# this session's sample is NOT the cohort the backtest scored -- it is
+# weighted towards markets that drifted into the band late.
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'dry | live  (live SPENDS REAL MONEY)'
+        description: 'dry | live | auto  (live SPENDS REAL MONEY)'
         required: true
         default: 'dry'
       stake:
@@ -67,6 +81,11 @@ on:
         description: 'how long the session runs'
         required: false
         default: '20700'
+  schedule:
+    # The same cadence as the frozen spec, so the two sessions cover the
+    # same hours. The concurrency group means a trigger that lands while a
+    # session is still running simply queues behind it.
+    - cron: '52 * * * *'
 
 permissions:
   contents: read
@@ -80,12 +99,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
-      # ONE BLOCK FOR BOTH STEPS. The first version of this file configured
-      # the dry step with a handful of settings and the live step with all
-      # of them, so the dry run reported a 5/window cap and a $20 day stop
-      # that the live run does not use. A dry run exists to exercise every
-      # line the live run will; one configured differently tests something
-      # else and quietly reassures about a path nobody ran.
+      # WHAT A SCHEDULED RUN DOES. A schedule carries no inputs at all, so
+      # without this the mode would fall back to the dispatch default,
+      # 'dry', and every scheduled session would scan, log and place
+      # nothing -- producing a log almost indistinguishable from a healthy
+      # live one. Flipping this is a one-line commit with a date on it,
+      # which is the property worth keeping.
+      default_mode: 'live'
+      # ONE BLOCK FOR BOTH STEPS. The first version configured the dry step
+      # with a handful of settings and the live step with all of them, so
+      # the dry run reported a 5/window cap and a $20 day stop the live run
+      # does not use. A dry run exists to exercise every line the live run
+      # will; one configured differently tests something else.
       FAVLIVE_RULE: 'narrow slice'
       FAVLIVE_SIDES: 'YES'
       LIVE_ALLOW_DOWN: '0'
@@ -132,13 +157,15 @@ jobs:
         id: mode
         run: |
           M="${{ github.event.inputs.mode }}"
-          if [ -z "$M" ]; then M="dry"; fi
+          # Empty means a schedule event, which carries no inputs.
+          # 'auto' means a dispatch that deliberately declines to choose.
+          if [ -z "$M" ] || [ "$M" = "auto" ]; then M="$default_mode"; fi
           case "$M" in
             dry|live) ;;
             *) echo "unknown mode: $M"; exit 1 ;;
           esac
           echo "mode=$M" >> "$GITHUB_OUTPUT"
-          echo "Running in mode: $M"
+          echo "Running in mode: $M  (requested: ${{ github.event.inputs.mode || 'schedule' }})"
 
       - name: Dry run -- places nothing
         if: steps.mode.outputs.mode == 'dry'
