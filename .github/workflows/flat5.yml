@@ -1,0 +1,34 @@
+name: The same bets at a flat $5 (read-only)
+
+# The run was bet at $4, then $5, then $6, and the $6 era gave back what
+# the other two made. Stake scales an edge and cannot create one, so this
+# reprices every bet at one size using the fill it actually got and the
+# outcome it actually had.
+#
+# Reads the sheet, the fills and the settlements. Places nothing.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flat5:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Rebuild the run at one stake
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python flat5.py
