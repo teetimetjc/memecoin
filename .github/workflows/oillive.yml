@@ -1,0 +1,149 @@
+name: Oil session (KXWTI15M, $5 bets)
+
+# THE SAME RULE, A DIFFERENT UNDERLYING. goldoil ran all seven series
+# through one code path over 1,500 settled markets each, in the 90-96c band
+# at T-9:
+#
+#     SOL   +3.70%   holds in both halves
+#     WTI   +3.56%   holds in both halves   <- this session
+#     GOLD  +0.80%   FLIPS between halves
+#     DOGE  +0.80%   flips
+#     XRP   -0.89%   flips
+#     ETH   -1.60%   negative in both
+#     BTC   -1.92%   negative in both
+#
+# GOLD IS DELIBERATELY NOT HERE. It is the second most liquid fifteen-minute
+# market on the exchange and it would be the obvious thing to add, but its
+# gap flips sign between the two halves: +2.67% in the older, -1.42% in the
+# newer. That is what a mined number looks like, and adding it because the
+# book is deep would be choosing a series on liquidity rather than on edge.
+# Set FAVLIVE_SERIES to include KXGOLD15M if that ever changes.
+#
+# LIQUIDITY IS THE ONE THING CHECKED DIRECTLY. depthchk sampled the real
+# book at T-9 on 2026-10-22: WTI showed 268.72 contracts resting at the ask
+# with a 1c spread, against 149 for XRP and 8 for DOGE in the same hour. One
+# sample is not a distribution, but it is the right direction and it is the
+# question that killed every other candidate.
+#
+# WHAT IS NOT CLAIMED. 81 markets in that band is a thin sample, oil moves
+# on inventory reports and OPEC headlines rather than on anything the crypto
+# record has measured, and the +3.56% is a QUOTE result like every other
+# backtest here. This session exists to find out what it fills at.
+#
+# WHY SEPARATE FROM THE FROZEN SESSION. The crypto run has just reached its
+# 200-bet gate and is still being measured; adding a sixth series to it
+# mid-run would change what that measurement is about. Its own concurrency
+# group and ORDER_PREFIX mean this can be stopped without touching it, and
+# the record stays separable.
+#
+# EXPOSURE. $5 a bet, one bet a window. With the frozen session at 2 x $5
+# and the T-3 test at 1 x $3, the worst correlated window is about $18 on a
+# $106 bankroll. That is the number to watch, and it is the reason this is
+# one bet a window rather than two.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry | live | auto  (live SPENDS REAL MONEY)'
+        required: true
+        default: 'dry'
+      stake:
+        description: 'dollars per bet'
+        required: false
+        default: '5'
+      seconds:
+        description: 'how long the session runs'
+        required: false
+        default: '20700'
+  schedule:
+    - cron: '52 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oillive
+  cancel-in-progress: false
+
+jobs:
+  oillive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      # A schedule carries no inputs, so without this the mode falls back to
+      # the dispatch default, 'dry', and every scheduled session would scan
+      # and place nothing while looking healthy.
+      default_mode: 'live'
+      FAVLIVE_RULE: 'narrow slice'
+      # THE ONLY SERIES. Gold is excluded on the evidence, not by oversight.
+      FAVLIVE_SERIES: 'KXWTI15M'
+      FAVLIVE_SIDES: 'YES'
+      LIVE_ALLOW_DOWN: '0'
+      FAVLIVE_QUIET_UTC: ''
+      # Same entry offset and band as the frozen spec: the thing being
+      # varied is the underlying and nothing else.
+      FAVLIVE_MAX_PER_WINDOW: '1'
+      FAVLIVE_DAY_STOP: 'off'
+      # Nothing to yield to -- the frozen session does not trade WTI -- but
+      # harmless and correct if that ever changes.
+      FAVLIVE_SKIP_HELD: '1'
+      MAX_DROP_CENTS: '5'
+      SLIP_BUFFER_CENTS: '3'
+      MAX_LIMIT_CENTS: '97'
+      # LADDER OFF. ladder.state reads settlements across the whole account
+      # and cannot tell this session's results from the others', so it would
+      # resize this bot on their losses. The drawdown halt stays as a brake.
+      LADDER_DOWN_AFTER: '999'
+      LADDER_UP_AFTER: '999'
+      LADDER_REDUCED: '5'
+      LADDER_HALT_DRAWDOWN: '30'
+      LADDER_START: '2026-10-22T14:00:00Z'
+      T3_SHADOW: '0'
+      ORDER_PREFIX: 'oil'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      - name: Resolve the mode
+        id: mode
+        run: |
+          M="${{ github.event.inputs.mode }}"
+          if [ -z "$M" ] || [ "$M" = "auto" ]; then M="$default_mode"; fi
+          case "$M" in
+            dry|live) ;;
+            *) echo "unknown mode: $M"; exit 1 ;;
+          esac
+          echo "mode=$M" >> "$GITHUB_OUTPUT"
+          echo "Running in mode: $M  (requested: ${{ github.event.inputs.mode || 'schedule' }})"
+
+      - name: Dry run -- places nothing
+        if: steps.mode.outputs.mode == 'dry'
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          BET_ALERTS: '0'
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '5' }}
+        run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
+
+      - name: LIVE -- places real orders
+        if: steps.mode.outputs.mode == 'live'
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          BET_ALERTS: '1'
+          ALLOW_LIVE_TRADING: '1'
+          LIVE_TRADING: '1'
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '5' }}
+        run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
