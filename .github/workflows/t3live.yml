@@ -9,10 +9,15 @@ name: T-3 live test ($3 bets)
 # same markets, not survival alone.
 #
 # IT IS A QUOTE RESULT AND THIS SESSION IS THE TEST OF THAT. Nothing yet
-# measures whether six contracts can be bought at T-3, where the book is
-# thinner than at T-9. latecollect was meant to answer it and collected
+# measures whether contracts can actually be bought at T-3, where the book
+# is thinner than at T-9. latecollect was meant to answer it and collected
 # nothing for two days; this answers it with real fills instead, which is
 # the only evidence that cannot be argued with.
+#
+# EXPECT IT TO BE QUIET. The backtest found roughly 318 markets in the
+# 90-94c band at T-3 out of 6,000 -- about 5%, or on the order of one an
+# hour across all five coins. A session that places nothing for an hour is
+# normal here and is not evidence of a broken read.
 #
 # WHY IT IS A SEPARATE WORKFLOW RATHER THAN A SETTING. Three reasons, all
 # about being able to stop one without touching the other:
@@ -34,8 +39,12 @@ name: T-3 live test ($3 bets)
 # $16, not four small ones. The cap is the difference between a test and a
 # second full-size strategy.
 #
-# BAND IS 90-94c, not the 90-96c the frozen spec uses, because 90-94 is the
-# cell that was measured. 94-96 at T-3 flipped sign across the two halves.
+# THE BAND IS SET WITH FAVLIVE_BAND, NOT MIN/MAX_ENTRY_CENTS. Those two are
+# a separate guard inside live.py; the selector band lives in score.RULES.
+# The first dry run of this workflow set them, printed "90-96c" in its own
+# banner, and scanned the spec's wider band with nothing reporting that the
+# request had been ignored. FAVLIVE_BAND narrows the spec band and refuses
+# anything outside it rather than clamping.
 #
 # IT YIELDS TO THE FROZEN SPEC. FAVLIVE_SKIP_HELD makes this session skip
 # any market the T-9 session already holds. Order ids are namespaced by
@@ -70,6 +79,46 @@ jobs:
   t3live:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    env:
+      # ONE BLOCK FOR BOTH STEPS. The first version of this file configured
+      # the dry step with a handful of settings and the live step with all
+      # of them, so the dry run reported a 5/window cap and a $20 day stop
+      # that the live run does not use. A dry run exists to exercise every
+      # line the live run will; one configured differently tests something
+      # else and quietly reassures about a path nobody ran.
+      FAVLIVE_RULE: 'narrow slice'
+      FAVLIVE_SIDES: 'YES'
+      LIVE_ALLOW_DOWN: '0'
+      FAVLIVE_QUIET_UTC: ''
+      # THE WHOLE POINT: enter at T-3 instead of T-9.
+      FAVLIVE_ENTRY_MIN_S: '135'
+      FAVLIVE_ENTRY_MAX_S: '225'
+      # The measured cell. Narrows the spec's 90-96c; refused if widened.
+      FAVLIVE_BAND: '90-94'
+      FAVLIVE_MAX_PER_WINDOW: '1'
+      FAVLIVE_DAY_STOP: 'off'
+      FAVLIVE_SKIP_HELD: '1'
+      # The guards that are earned, carried over unchanged. The drop guard
+      # matters MORE here, not less: six minutes closer to close is a
+      # thinner book and more room for the ask to fall between the decision
+      # and the order.
+      MAX_DROP_CENTS: '5'
+      SLIP_BUFFER_CENTS: '3'
+      # 94c band plus a 3c buffer is 97c, so the ceiling binds exactly at
+      # the top of the band rather than above it.
+      MAX_LIMIT_CENTS: '97'
+      # LADDER EFFECTIVELY OFF. ladder.state reads settlements across the
+      # whole account, so it cannot tell this strategy's results from the
+      # frozen one's and would resize this bot on the other's losses. The
+      # drawdown halt is kept as a real brake at $30.
+      LADDER_DOWN_AFTER: '999'
+      LADDER_UP_AFTER: '999'
+      LADDER_REDUCED: '3'
+      LADDER_HALT_DRAWDOWN: '30'
+      LADDER_START: '2026-10-21T23:00:00Z'
+      # This session IS the T-3 bet, so there is nothing to shadow.
+      T3_SHADOW: '0'
+      ORDER_PREFIX: 't3'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,14 +148,7 @@ jobs:
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           BET_ALERTS: '0'
-          FAVLIVE_RULE: 'narrow slice'
           FAVLIVE_STAKE: ${{ github.event.inputs.stake || '3' }}
-          FAVLIVE_ENTRY_MIN_S: '135'
-          FAVLIVE_ENTRY_MAX_S: '225'
-          MIN_ENTRY_CENTS: '90'
-          MAX_ENTRY_CENTS: '94'
-          ORDER_PREFIX: 't3'
-          T3_SHADOW: '0'
         run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
 
       - name: LIVE -- places real orders
@@ -119,45 +161,8 @@ jobs:
           PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BET_ALERTS: '1'
+          # The two switches live.py demands, together, deliberately.
           ALLOW_LIVE_TRADING: '1'
           LIVE_TRADING: '1'
-          FAVLIVE_RULE: 'narrow slice'
           FAVLIVE_STAKE: ${{ github.event.inputs.stake || '3' }}
-          # THE WHOLE POINT: enter at T-3 instead of T-9.
-          FAVLIVE_ENTRY_MIN_S: '135'
-          FAVLIVE_ENTRY_MAX_S: '225'
-          # The measured cell, not the frozen spec's wider band.
-          MIN_ENTRY_CENTS: '90'
-          MAX_ENTRY_CENTS: '94'
-          FAVLIVE_SIDES: 'YES'
-          LIVE_ALLOW_DOWN: '0'
-          FAVLIVE_QUIET_UTC: ''
-          # One bet per window. See the header on why this is the line
-          # between a test and a second full-size strategy.
-          FAVLIVE_MAX_PER_WINDOW: '1'
-          FAVLIVE_DAY_STOP: 'off'
-          # Yield to the frozen session's markets.
-          FAVLIVE_SKIP_HELD: '1'
-          # The guards that are earned, carried over unchanged. The drop
-          # guard matters MORE here, not less: six minutes closer to close
-          # is a thinner book and more room for the ask to fall between the
-          # decision and the order.
-          MAX_DROP_CENTS: '5'
-          SLIP_BUFFER_CENTS: '3'
-          # 94c band plus a 3c buffer is 97c, so the ceiling binds exactly
-          # at the top of the band rather than above it.
-          MAX_LIMIT_CENTS: '97'
-          # LADDER EFFECTIVELY OFF for this session. ladder.state reads
-          # settlements across the whole account, so it cannot tell this
-          # strategy's results from the frozen one's and would resize this
-          # bot on the other's losses. The drawdown halt is kept as a real
-          # brake at $30.
-          LADDER_DOWN_AFTER: '999'
-          LADDER_UP_AFTER: '999'
-          LADDER_REDUCED: '3'
-          LADDER_HALT_DRAWDOWN: '30'
-          LADDER_START: '2026-10-21T23:00:00Z'
-          # This session IS the T-3 bet, so there is nothing to shadow.
-          T3_SHADOW: '0'
-          ORDER_PREFIX: 't3'
         run: python favlive.py ${{ github.event.inputs.seconds || '20700' }}
