@@ -65,6 +65,7 @@ import ladder
 import live
 import abort
 import dedupe
+import heartbeat
 import shadow
 import t3shadow
 import version
@@ -557,6 +558,8 @@ def cycle(client, r, stake, dry, factor=1.0):
         except Exception as e:
             print(f"  [favlive] abort check failed (ignored): {str(e)[:80]}")
 
+    heartbeat.count_window(sum(1 for x in rows
+                               if len(x) > 8 and x[8] == "PLACED"))
     placed = [x for x in rows if len(x) > 8 and x[8] == "PLACED"]
     if placed and alert.enabled():
         try:
@@ -721,6 +724,14 @@ def main():
         # cycle() has returned for that window, so the loop has to be the
         # thing looking. It places nothing and swallows its own errors.
         t3shadow.sample(client)
+
+        # THE PULSE. Written to the sheet rather than the log, because a
+        # killed runner takes its log with it -- the oil session died on
+        # 2026-10-22 and GitHub serves 404 for that job to this day. It is
+        # rate limited inside heartbeat.beat and swallows its own errors.
+        heartbeat.beat(client, "live" if not dry else "dry", stake,
+                       MAJORS,
+                       f"{100*r['band'][0]:.0f}-{100*r['band'][1]:.0f}c")
         time.sleep(POLL_S)
     print("  [favlive] session finished")
     return 0
