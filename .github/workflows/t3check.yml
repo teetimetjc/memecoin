@@ -1,0 +1,34 @@
+name: T-3 strategy check (read-only)
+
+# Two strategies write to one Live Bets tab, and every other reader treats
+# it as a single record. This splits it by the ORDER_PREFIX carried in the
+# Order ID -- 'slice' for the frozen T-9 spec, 't3' for the T-3 test -- and
+# reports the fill rate and slip that no quote backtest can produce.
+#
+# Reads the sheet and the fills. Places no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  t3check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Split the record by strategy
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python t3check.py
