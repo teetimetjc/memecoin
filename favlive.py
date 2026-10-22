@@ -71,7 +71,24 @@ import version
 import predictor as P
 import score as S
 
-MAJORS = S.MAJORS
+# THE SERIES THIS SESSION TRADES. Defaults to score.MAJORS, the five coins
+# the frozen spec was measured on, and can be overridden per session the
+# same way the sides and the band can -- by a workflow, visibly, without
+# editing a frozen spec.
+#
+# WHY IT IS AN OVERRIDE AND NOT AN EDIT. score.MAJORS is what the spec was
+# scored against. A session that trades a different set is running a
+# DIFFERENT RULE, and the record has to be able to say so. The series is
+# recoverable from each bet's ticker, so no column is needed; what matters
+# is that the frozen five keep meaning the frozen five.
+#
+# goldoil measured KXWTI15M at +3.79 in the 90-96c band, positive in both
+# chronological halves -- second only to SOL across every series tested --
+# and KXGOLD15M at +1.23 that FLIPS sign between halves, which is noise.
+# Only the first of those earned a session.
+_series_env = (os.environ.get("FAVLIVE_SERIES") or "").strip()
+MAJORS = (tuple(x.strip().upper() for x in _series_env.split(",") if x.strip())
+          if _series_env else S.MAJORS)
 ENTRY_MIN = int(os.environ.get("FAVLIVE_ENTRY_MIN_S") or 9 * 60 - 45)
 ENTRY_MAX = int(os.environ.get("FAVLIVE_ENTRY_MAX_S") or 9 * 60 + 45)
 MAX_PER_WINDOW = int(os.environ.get("FAVLIVE_MAX_PER_WINDOW") or 5)
@@ -565,6 +582,12 @@ def main():
     print(f"FAVLIVE -- {r['name']}  "
           f"({100*r['band'][0]:.0f}-{100*r['band'][1]:.0f}c, "
           f"{'/'.join(r['sides'])}, T-{S.ENTRY})")
+    # THE SERIES, ON SCREEN, EVERY SESSION. The band override was ignored
+    # silently for a whole dry run because the banner never printed what
+    # was actually being scanned; a setting that does not appear in the
+    # log is a setting nobody can check.
+    print(f"  series: {', '.join(MAJORS)}"
+          + ("" if MAJORS == S.MAJORS else "   <- NOT the frozen five"))
     print("=" * 84)
     sides_txt = "/".join(r["sides"])
     stake_txt = f"${stake:.2f}/bet"
