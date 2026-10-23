@@ -3,30 +3,30 @@ name: T-3 live test ($3 bets)
 # THE SAME RULE, SIX MINUTES LATER. lateentry, split chronologically, put
 # the 90-94c band at T-3 at +3.29% net ROI in the older half and +3.13% in
 # the newer one, against +0.05% and +0.26% for the same band at the T-9 the
-# frozen spec enters on. Twelve of twenty cells in that sweep were positive
-# in both halves, so the surface is mildly positive everywhere and what
-# marks this cell out is the SIZE of the gap against the live offset on the
-# same markets, not survival alone.
+# frozen spec enters on. A later re-measurement on a fresh pull put the
+# same cell at +2.60%/+2.27%, so the estimate is drifting down and should
+# be read as "under 2.3%" rather than the first number.
 #
 # IT IS A QUOTE RESULT AND THIS SESSION IS THE TEST OF THAT. Nothing yet
 # measures whether contracts can actually be bought at T-3, where the book
-# is thinner than at T-9. latecollect was meant to answer it and collected
-# nothing for two days; this answers it with real fills instead, which is
-# the only evidence that cannot be argued with.
+# is thinner than at T-9.
 #
-# WHAT THE FIRST SESSION DID, recorded so the next zero can be read against
-# it: 2026-10-22 00:42-06:27 UTC, about 115 market-windows, and it placed
-# NOTHING. That is low rather than impossible. The backtest put in-band
-# markets at T-3 at roughly 5% of market-windows, so five or six were
-# expected, and two things cut into that: the dedupe skips whatever the
-# frozen session already holds, and this session is YES-only while
-# latecollect found three of its seven in-band late favourites sitting on
-# the NO side.
+# WHY IT PLACED NOTHING FOR A DAY, AND WHAT THAT COST. From 2026-10-22 to
+# 2026-10-23 this session found in-band signals and placed none -- fifteen
+# of them in five hours by the heartbeat's count. The cause was not the
+# market: FAVLIVE_BAND was set to 90-94c and MIN/MAX_ENTRY_CENTS were not
+# set at all, so live.py's order guard kept its 20-50c default and threw
+# every signal away inside run_window as "nothing betable", BEFORE a row
+# was written. No row in the sheet, and a log line identical to a quiet
+# market.
+#
+# Both are now set and favlive refuses to start if they disagree with the
+# band. The wrong lesson to draw from that day is that T-3 is rare; the
+# right one is that a band has two places to be configured and only one of
+# them was.
 #
 # THE LINE THAT MAKES THE NEXT ZERO MEAN SOMETHING: a full day of sessions
-# with no bet at all is a fault to be diagnosed, not a quiet market. Below
-# that it is noise. Stated here so it is not reinvented generously after
-# the fact.
+# with no bet at all is a fault to be diagnosed, not a quiet market.
 #
 # WHY IT IS A SEPARATE WORKFLOW RATHER THAN A SETTING. Three reasons, all
 # about being able to stop one without touching the other:
@@ -43,27 +43,16 @@ name: T-3 live test ($3 bets)
 #
 # $3, NOT $5, AND ONE BET PER WINDOW. The frozen session can stake $10 in a
 # window (2 x $5). Adding 1 x $3 takes the worst correlated window to about
-# $13, roughly 12% of a $106 bankroll. At 2 x $3 it would be $16, and since
-# legs in one window resolve together 96% of the time that is one bet at
-# $16, not four small ones. The cap is the difference between a test and a
-# second full-size strategy.
+# $13, roughly 12% of a $106 bankroll. Since legs in one window resolve
+# together 96% of the time, two bets here would be one bet at double size.
 #
 # $3 IS ALSO THE KEY THE RECORD IS SPLIT BY, since nothing else running
-# uses that size. Changing it to a stake the frozen spec or its ladder
-# already uses would make the two strategies indistinguishable in the
-# sheet.
-#
-# THE BAND IS SET WITH FAVLIVE_BAND, NOT MIN/MAX_ENTRY_CENTS. Those two are
-# a separate guard inside live.py; the selector band lives in score.RULES.
-# The first dry run of this workflow set them, printed "90-96c" in its own
-# banner, and scanned the spec's wider band with nothing reporting that the
-# request had been ignored.
+# uses that size.
 #
 # IT YIELDS TO THE FROZEN SPEC. FAVLIVE_SKIP_HELD makes this session skip
 # any market the T-9 session already holds, so one market is never held
-# twice at two prices with the settlement split between them. The
-# established strategy never yields; the new one does. The cost is that
-# this session's sample is NOT the cohort the backtest scored -- it is
+# twice at two prices with the settlement split between them. The cost is
+# that this session's sample is NOT the cohort the backtest scored -- it is
 # weighted towards markets that drifted into the band late.
 
 on:
@@ -103,14 +92,9 @@ jobs:
       # without this the mode would fall back to the dispatch default,
       # 'dry', and every scheduled session would scan, log and place
       # nothing -- producing a log almost indistinguishable from a healthy
-      # live one. Flipping this is a one-line commit with a date on it,
-      # which is the property worth keeping.
+      # live one.
       default_mode: 'live'
-      # ONE BLOCK FOR BOTH STEPS. The first version configured the dry step
-      # with a handful of settings and the live step with all of them, so
-      # the dry run reported a 5/window cap and a $20 day stop the live run
-      # does not use. A dry run exists to exercise every line the live run
-      # will; one configured differently tests something else.
+      # ONE BLOCK FOR BOTH STEPS, so the dry run exercises the live path.
       FAVLIVE_RULE: 'narrow slice'
       FAVLIVE_SIDES: 'YES'
       LIVE_ALLOW_DOWN: '0'
@@ -118,8 +102,19 @@ jobs:
       # THE WHOLE POINT: enter at T-3 instead of T-9.
       FAVLIVE_ENTRY_MIN_S: '135'
       FAVLIVE_ENTRY_MAX_S: '225'
-      # The measured cell. Narrows the spec's 90-96c; refused if widened.
+      # THE BAND IS SET IN TWO PLACES AND BOTH ARE REQUIRED.
+      #
+      # FAVLIVE_BAND narrows the SELECTOR, which decides what counts as a
+      # signal. MIN/MAX_ENTRY_CENTS set the ORDER GUARD inside live.py,
+      # which decides what may actually be bought and defaults to the old
+      # v6 range of 20-50c. Setting only the first is what made this
+      # session discard fifteen in-band signals in silence.
+      #
+      # favlive now refuses to start when the two disagree, so this cannot
+      # fail quietly again -- but they still have to be kept in step here.
       FAVLIVE_BAND: '90-94'
+      MIN_ENTRY_CENTS: '90'
+      MAX_ENTRY_CENTS: '94'
       FAVLIVE_MAX_PER_WINDOW: '1'
       FAVLIVE_DAY_STOP: 'off'
       FAVLIVE_SKIP_HELD: '1'
