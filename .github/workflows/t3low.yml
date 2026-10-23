@@ -1,0 +1,50 @@
+name: 70-90c conversion at T-3 (read-only)
+
+# Everything measured at T-3 so far sits at 90c and above. This looks below
+# it, where the bet is a different shape rather than a cheaper version of
+# the same one.
+#
+# THE COLUMN THAT DECIDES IT is converted-versus-needed. A winning contract
+# pays exactly $1.00, so the bar is the price plus the fee: 76.31% at 75c.
+# A 75c favourite converting 74% wins three times in four and loses money.
+#
+# Variance is the catch and no ROI column shows it: one bet in four loses at
+# 75c against one in fourteen at 92c, so a survivor here would need MORE
+# bets to confirm than the 90c band did, not fewer.
+#
+# Exploratory: 8 cells across two offsets, with the count and the number
+# expected to pass by chance printed beside the results. The live
+# 0.90-0.94 cell at T-3 is the control, checked inside the run.
+#
+# Reads settled markets and candlesticks. Places no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'seconds of API time'
+        required: false
+        default: '16000'
+
+permissions:
+  contents: read
+
+jobs:
+  t3low:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Score each bucket's conversion against its break-even
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python t3low.py ${{ github.event.inputs.budget || '16000' }}
