@@ -83,6 +83,16 @@ jobs:
       FAVLIVE_QUIET_UTC: ''
       # Same entry offset and band as the frozen spec: the thing being
       # varied is the underlying and nothing else.
+      #
+      # THE ORDER GUARD HAS TO BE SET TOO. The selector's band and live.py's
+      # MIN/MAX_ENTRY_CENTS are two different checks, and the second one
+      # defaults to the old v6 range of 20-50c. The T-3 session left it
+      # unset and discarded fifteen in-band signals in silence -- thrown
+      # away inside run_window as "nothing betable", before a row was
+      # written, so neither the sheet nor the log showed anything. This
+      # session had the same omission and had simply not found a signal yet.
+      MIN_ENTRY_CENTS: '90'
+      MAX_ENTRY_CENTS: '96'
       FAVLIVE_MAX_PER_WINDOW: '1'
       FAVLIVE_DAY_STOP: 'off'
       # Nothing to yield to -- the frozen session does not trade WTI -- but
