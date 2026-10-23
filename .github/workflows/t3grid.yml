@@ -1,0 +1,50 @@
+name: Better band at T-3 (read-only)
+
+# Is there a better profit margin at T-3 than the live 0.90-0.94 band?
+#
+# ROI alone cannot answer that. A narrower band almost always shows a higher
+# ROI -- it keeps the best-calibrated slice -- and fires so rarely that it
+# earns less money. So every row carries frequency and expected dollars per
+# day at the live $3 stake, and that last column is the one that answers the
+# question.
+#
+# Bands are printed in PRICE ORDER and never sorted by result. A grid hands
+# back its best cell whether or not anything is there; what it can say
+# honestly is whether the edge has a SHAPE. A cell that spikes while its
+# neighbours sit at zero is a coincidence with a hiding place.
+#
+# The live band doubles as the control, checked inside the run against
+# leftover.py's +3.20% over 6,000 markets.
+#
+# Reads settled markets and candlesticks. Places no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'seconds of API time'
+        required: false
+        default: '16000'
+
+permissions:
+  contents: read
+
+jobs:
+  t3grid:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Rank the bands by dollars per day
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python t3grid.py ${{ github.event.inputs.budget || '16000' }}
