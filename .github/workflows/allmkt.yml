@@ -1,19 +1,22 @@
 name: All 15-minute series sweep (read-only)
 
-# Seven series have ever been measured: the five coins the bot trades plus
+# Seven series had ever been measured: the five coins the bot trades plus
 # GOLD and WTI. That list was never the result of a measurement -- it is the
 # crypto bot's original universe plus the two commodities that looked liquid
-# enough to check. Copper, natural gas and any index or FX series on the
-# same clock have never been tested at all.
+# enough to check. The first run of this sweep discovered the rest: copper,
+# Brent, 2/10/30-year rates, AUDUSD, EURUSD, BNB, a crypto-lead index.
 #
-# This discovers the set from the exchange rather than from a list, and runs
-# everything through one code path. The live five are included as a CONTROL:
-# if they do not reproduce roughly what goldoil found for them, the file is
-# wrong and none of its other rows count.
+# THAT FIRST RUN WAS NOT READABLE AND SAID SO ONLY IN PASSING. It scored
+# each series on about 60 in-band markets, its control series disagreed with
+# goldoil by up to 4 points, and it printed copper at +8.00% on 34 markets
+# as though that were a finding. The control is now a gate: it is compared
+# against goldoil's own figures inside the run, and when it fails the
+# candidate ranking is labelled diagnosis-only.
 #
-# A cell counts only if its net ROI is positive in both chronological halves.
-# Twenty-odd series times four bands means some cells will look good by
-# accident, so the ranking is by the weaker half.
+# A 4,000-market pull per series does not fit twenty series in one job, so
+# SERIES takes a shortlist. The control series are added back automatically
+# whatever the shortlist says -- a run that cannot check itself is not a
+# cheaper run, it is an unreadable one.
 #
 # Reads settled markets and candlesticks. Places no order, cancels no order,
 # writes no sheet.
@@ -24,7 +27,11 @@ on:
       budget:
         description: 'seconds of API time (discovery takes up to a fifth)'
         required: false
-        default: '3000'
+        default: '18000'
+      series:
+        description: 'comma-separated shortlist, or blank for every series'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -32,10 +39,10 @@ permissions:
 jobs:
   allmkt:
     runs-on: ubuntu-latest
-    # Comfortably past the default budget, so the script's own clock is what
-    # ends the run and it still gets to print its summary. A job killed by
-    # the runner prints nothing at all.
-    timeout-minutes: 75
+    # Past the default budget, so the script's own clock ends the run and it
+    # still reaches its summary. A job killed by the runner prints nothing,
+    # which is how the oil session's post-mortem was lost.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,10 +51,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests gspread google-auth cryptography
-      - name: Score every fifteen-minute series against the live baseline
+      - name: Score the series against the live baseline, control gated
         env:
           PYTHONUNBUFFERED: '1'
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
-        run: python allmkt.py ${{ github.event.inputs.budget || '3000' }}
+          ALLMKT_SERIES: ${{ github.event.inputs.series }}
+        run: python allmkt.py ${{ github.event.inputs.budget || '18000' }}
