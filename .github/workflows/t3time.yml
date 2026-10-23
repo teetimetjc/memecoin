@@ -1,0 +1,48 @@
+name: Is the T-3 edge recent (read-only)
+
+# Three runs measured the same cell and disagreed. leftover.py pulled 1,200
+# markets per series and got +3.20% with both halves positive; t3grid and
+# t3low pulled 2,500 and both got +1.17% with the older half negative. The
+# deeper runs agree exactly with each other, and in t3grid all twelve bands
+# came out negative-older/positive-newer, which twelve cells do not do by
+# chance.
+#
+# Either the edge is recent -- in which case every "holds in both halves"
+# verdict in this project is suspect -- or the shallower pull reached back
+# less far and the two runs measured different periods.
+#
+# The second is checkable, so it is checked first. Then the band is scored
+# week by week, because a half-split can only say "earlier" and "later".
+#
+# Reads settled markets and candlesticks. Places no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'seconds of API time'
+        required: false
+        default: '16000'
+
+permissions:
+  contents: read
+
+jobs:
+  t3time:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Check the pull depths, then score the band week by week
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python t3time.py ${{ github.event.inputs.budget || '16000' }}
