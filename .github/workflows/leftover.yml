@@ -1,0 +1,43 @@
+name: Is the T-3 edge in the leftovers (read-only)
+
+# The live T-3 session yields to the frozen T-9 session, which enters six
+# minutes earlier and takes first pick. So T-3 bets only the markets T-9
+# left: ones that were not in the 90-96c band at T-9 and drifted into
+# 90-94c afterwards.
+#
+# The T-3 backtest scored EVERY in-band market at T-3, contested ones
+# included, so the live session is testing a cohort the finding never
+# isolated. This splits the two apart and scores them through one function.
+#
+# Reads settled markets and candlesticks. Places no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'seconds of API time'
+        required: false
+        default: '2700'
+
+permissions:
+  contents: read
+
+jobs:
+  leftover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Score the contested and leftover cohorts
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python leftover.py ${{ github.event.inputs.budget || '2700' }}
