@@ -589,6 +589,34 @@ def main():
     # silently for a whole dry run because the banner never printed what
     # was actually being scanned; a setting that does not appear in the
     # log is a setting nobody can check.
+    # THE SELECTOR BAND AND THE ORDER GUARD MUST AGREE, and nothing used
+    # to check that they did.
+    #
+    # live.py keeps its own MIN_ENTRY/MAX_ENTRY from MIN_ENTRY_CENTS and
+    # MAX_ENTRY_CENTS, defaulting to 20c and 50c -- the v6 range. The
+    # selector band comes from score.RULES. A session that sets one and
+    # not the other selects a signal and then drops it in run_window as
+    # "nothing betable", BEFORE any row is written, so the sheet shows no
+    # trace and the log line is indistinguishable from a quiet market.
+    #
+    # That is exactly what happened to the T-3 session: FAVLIVE_BAND was
+    # 90-94c, MAX_ENTRY_CENTS was unset so the guard stood at 50c, and
+    # fifteen in-band signals were discarded in silence over five hours.
+    # The heartbeat's signal-window counter was the only thing that knew.
+    #
+    # So it is now checked at startup and refused loudly. A band wholly
+    # outside the guard means every signal would be thrown away, which is
+    # never what anyone meant to configure.
+    lo_c, hi_c = 100.0 * r["band"][0], 100.0 * r["band"][1]
+    if lo_c < live.MIN_ENTRY or hi_c > live.MAX_ENTRY:
+        raise SystemExit(
+            f"the {r['name']!r} band is {lo_c:.0f}-{hi_c:.0f}c but the order "
+            f"guard admits only {live.MIN_ENTRY:.0f}-{live.MAX_ENTRY:.0f}c "
+            "(MIN_ENTRY_CENTS / MAX_ENTRY_CENTS). Every signal would be "
+            "discarded in run_window as 'nothing betable', before any row "
+            "was written. Set both to match the band.")
+    print(f"  entry guard: {live.MIN_ENTRY:.0f}-{live.MAX_ENTRY:.0f}c "
+          f"(band {lo_c:.0f}-{hi_c:.0f}c)")
     print(f"  series: {', '.join(MAJORS)}"
           + ("" if MAJORS == S.MAJORS else "   <- NOT the frozen five"))
     print("=" * 84)
