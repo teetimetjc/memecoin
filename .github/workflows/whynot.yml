@@ -1,0 +1,39 @@
+name: Why was a signal not placed (read-only)
+
+# The heartbeat showed the T-3 session with 15 signal-windows and 0 bets.
+# That counter only increments after cycle()'s early returns, so those
+# windows had a signal and reached the order stage -- which contradicts the
+# "nothing was in band" explanation and needs the recorded reasons.
+#
+# Reads the Live Bets sheet. Places no order, writes nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'how far back to look'
+        required: false
+        default: '12'
+
+permissions:
+  contents: read
+
+jobs:
+  whynot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Group every signal by what became of it
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python whynot.py ${{ github.event.inputs.hours || '12' }}
