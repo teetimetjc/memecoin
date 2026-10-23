@@ -1,0 +1,42 @@
+name: The record from every start date (read-only)
+
+# gate.py counts from the 10-14 restart and reports ~200 settled bets. The
+# record starts a week earlier, and the sample needs ~1,250 bets before a
+# 1.4-point gap separates from break-even, so discarding a week needs a
+# better reason than habit.
+#
+# The reason given was a configuration change -- DOWN bets and a larger
+# stake, both switched off. That is real, but the switches were thrown after
+# seeing the results, so a start date just after them was chosen with
+# knowledge of the outcome.
+#
+# This chooses nothing. It prints every window with the sides and stakes
+# each contains, so pooling can be judged rather than assumed.
+#
+# Reads the sheet and the settlements. Places no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  window:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Compare the windows
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python window.py
