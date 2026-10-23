@@ -1,0 +1,42 @@
+name: Fill quality -- paid vs quoted (read-only)
+
+# Two questions, one measurement.
+#
+# Was $6 cut too early? Its era ran 67 bets at a -4.32 gap while $4 and $5
+# ran +4.37 and +4.10, and those eras are calendar periods as much as stake
+# levels. The one mechanism that would make a bigger stake genuinely worse is
+# a bigger order filling deeper in the book. If slippage is flat across the
+# eras, size did not cause it.
+#
+# And where is the unused profit? One cent of fill price is worth about 1.08
+# points of ROI at a 92.3c break-even -- comparable to the entire measured
+# edge of ~1.4 points. Execution is the same order of magnitude as sizing,
+# and observable on every order rather than needing hundreds more bets.
+#
+# Reads the sheet and Kalshi's fills. Places no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Compare fills against quotes
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python fills.py
