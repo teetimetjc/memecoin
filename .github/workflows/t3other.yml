@@ -1,0 +1,50 @@
+name: T-3 rule on the non-crypto series (read-only, pre-registered)
+
+# The T-3 rule measures +3.20% on the five coins over 6,000 markets, holding
+# in both chronological halves. WTI is the only non-crypto series ever to
+# clear the bar, at T-9. The two have never been tested together: everything
+# non-crypto was measured at T-9, everything at T-3 was measured on crypto.
+#
+# PRE-REGISTERED ON PURPOSE. The sweeping version of this test is 160 cells,
+# and at that width several pass a both-halves test by chance -- which is how
+# gold's +2.67%/-1.42% was found and briefly believed. The hypothesis is
+# fixed in the source: one offset, one band, four series. Four cells. The
+# exploratory grid is printed under its own heading with the cell count, so
+# it cannot later be quoted as the hypothesis.
+#
+# The crypto pool is the control, checked inside the run against the figure
+# leftover.py already produced for the same cell. A failed control labels
+# every candidate row diagnosis-only.
+#
+# Reads settled markets and candlesticks. Places no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'seconds of API time'
+        required: false
+        default: '16000'
+
+permissions:
+  contents: read
+
+jobs:
+  t3other:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Score the four pre-registered cells against the crypto control
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python t3other.py ${{ github.event.inputs.budget || '16000' }}
