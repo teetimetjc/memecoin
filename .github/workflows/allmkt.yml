@@ -1,0 +1,53 @@
+name: All 15-minute series sweep (read-only)
+
+# Seven series have ever been measured: the five coins the bot trades plus
+# GOLD and WTI. That list was never the result of a measurement -- it is the
+# crypto bot's original universe plus the two commodities that looked liquid
+# enough to check. Copper, natural gas and any index or FX series on the
+# same clock have never been tested at all.
+#
+# This discovers the set from the exchange rather than from a list, and runs
+# everything through one code path. The live five are included as a CONTROL:
+# if they do not reproduce roughly what goldoil found for them, the file is
+# wrong and none of its other rows count.
+#
+# A cell counts only if its net ROI is positive in both chronological halves.
+# Twenty-odd series times four bands means some cells will look good by
+# accident, so the ranking is by the weaker half.
+#
+# Reads settled markets and candlesticks. Places no order, cancels no order,
+# writes no sheet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'seconds of API time (discovery takes up to a fifth)'
+        required: false
+        default: '3000'
+
+permissions:
+  contents: read
+
+jobs:
+  allmkt:
+    runs-on: ubuntu-latest
+    # Comfortably past the default budget, so the script's own clock is what
+    # ends the run and it still gets to print its summary. A job killed by
+    # the runner prints nothing at all.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Score every fifteen-minute series against the live baseline
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python allmkt.py ${{ github.event.inputs.budget || '3000' }}
