@@ -160,6 +160,15 @@ def main():
             ts, symbol, side, ticker, round(entry, 1),
             min(99, int(entry + live.SLIP_BUFFER_CENTS)), n, cost,
             status, oid, (detail + " [manual]").strip(),
+            # The four execution-instrumentation columns are genuinely not
+            # measured here -- a hand-placed bet has no scan to be stale
+            # against -- so they are left empty rather than filled with
+            # something that looks like a measurement. Strategy still has to
+            # be written, and it has to sit in the LAST column, so the blanks
+            # are explicit padding: a short row would put the prefix in
+            # whichever column it happened to reach.
+            "", "", "", "",
+            live.strategy(),
         ]])
         print("  logged to Live Bets.")
     except Exception as e:

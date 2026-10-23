@@ -242,7 +242,35 @@ LIVE_HEADERS = [
     # moment the order was sent; without it, "was the quote stale?" is
     # unanswerable, which is exactly where the 12 Oct reconstruction died.
     "Presubmit ¢", "Quote age s", "Submit UTC", "Ack ms",
+    # WHICH STRATEGY PLACED IT, added 2026-10-23. Recording only.
+    #
+    # Until now the record had no way to say. Order ID holds the EXCHANGE's
+    # uuid, not the ORDER_PREFIX, so every tool that wanted to split the
+    # sessions apart inferred it instead: WTI tickers are oil, $3 is the T-3
+    # test, $5 on a coin is the frozen spec. That works only while the stakes
+    # happen to be distinct, and it has already produced one wrong answer --
+    # t3check split on the Order ID prefix, found none, and reported that T-3
+    # had placed nothing for a reason that had nothing to do with T-3.
+    #
+    # Stake is a configuration choice that will change again; the prefix is
+    # the actual identity. So the identity goes in the record.
+    #
+    # LAST COLUMN DELIBERATELY. Every other writer and reader addresses these
+    # rows by position -- run_window checks r[8] for the status and r[10] for
+    # the detail -- so a column inserted anywhere but the end would shift
+    # them and silently rewrite the meaning of rows already on disk.
+    #
+    # Rows written before today stay blank. They could be filled in by the
+    # same stake inference the tools use, but a guess written into the record
+    # is indistinguishable from a measurement afterwards, so they are left
+    # empty and honest.
+    "Strategy",
 ]
+
+
+def strategy():
+    """The ORDER_PREFIX this session trades under: slice, t3, oil, v6."""
+    return os.environ.get("ORDER_PREFIX", "").strip() or "v6"
 
 
 # WHAT THE LAST ORDER ACTUALLY DID, filled by place() and read by run_window
@@ -633,7 +661,7 @@ def run_window(client, signals, stake=None):
             return [ts, symbol, side, ticker,
                     round(entry, 1) if entry else "", "", "", "",
                     "SKIPPED", "", f"held back by LIVE_MAX_BETS={cap}",
-                    "", "", "", ""]
+                    "", "", "", "", strategy()]
         status, detail, n, cost, oid = place(ts, symbol, side, ticker, entry, stake)
         # Read straight after the call, before anything else can place an
         # order. Single-threaded by construction: run_window bets one signal
@@ -644,7 +672,8 @@ def run_window(client, signals, stake=None):
                 limit_for(entry) if entry else "",
                 n, cost, status, oid, detail,
                 meta.get("presubmit_c", ""), meta.get("quote_age_s", ""),
-                meta.get("submit_utc", ""), meta.get("ack_ms", "")]
+                meta.get("submit_utc", ""), meta.get("ack_ms", ""),
+                strategy()]
 
     rows = [attempt(s_) for s_ in signals]
 
@@ -767,6 +796,15 @@ def append(client, rows):
     try:
         have = ws.row_values(1)
         if len(have) < len(LIVE_HEADERS) and have[:4] == LIVE_HEADERS[:4]:
+            # GROW THE GRID FIRST. A tab created with exactly as many columns
+            # as the header of the day has no room for a new one, and the
+            # update then fails with "exceeds grid limits" -- caught by the
+            # except below, printed once, and lost. latecollect wrote zero
+            # rows for two days behind that exact swallowed error while
+            # reporting success, so this widens the sheet before the write
+            # rather than discovering it cannot.
+            if ws.col_count < len(LIVE_HEADERS):
+                ws.add_cols(len(LIVE_HEADERS) - ws.col_count)
             ws.update(values=[LIVE_HEADERS], range_name="A1")
     except Exception as e:
         print(f"  [live] could not widen the header: {str(e)[:80]}")
