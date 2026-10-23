@@ -24,9 +24,26 @@ two order ids. Two consequences, both bad:
 
 So the later strategy asks what the earlier one is already holding and
 leaves those markets alone. It reads the sheet rather than the exchange
-because the sheet is where strategy identity lives: the Order ID carries
-the ORDER_PREFIX, so "held by someone else" is answerable without any new
-column.
+because the sheet is where strategy identity lives.
+
+HOW IT KNOWS WHOSE BET A ROW IS, AND HOW IT USED TO GET THAT WRONG. This
+file originally claimed the Order ID column carried the ORDER_PREFIX and
+excluded a strategy's own rows with oid.startswith("t3-"). It does not. The
+column holds the EXCHANGE's order id, and the client id sent to Kalshi is a
+uuid5 HASH of the prefixed string, so the prefix is not even present to be
+matched. That test could never fire.
+
+It failed safe rather than dangerous -- a strategy also skipped markets it
+held itself, so the protection over-blocked instead of under-blocking -- but
+it was dead code resting on a false statement about the record, which is the
+same mistake that made t3check report "T-3 placed nothing" for a reason
+unrelated to T-3.
+
+The Strategy column, added 2026-10-23, records the ORDER_PREFIX directly, so
+the question is now answerable from the record instead of inferred from it.
+Rows written before that column existed have it blank; a blank is treated as
+SOMEONE ELSE'S, because the conservative reading of "I cannot tell whose
+this is" is to leave the market alone.
 
 Read-only. Fails OPEN on purpose -- if the sheet cannot be read this returns
 an empty set, which means the T-3 bot bets normally rather than halting. A
@@ -53,9 +70,17 @@ def held_tickers(client, exclude_prefix=None, lookback_rows=400):
         if len(rows) < 2:
             return set()
         h = {k: i for i, k in enumerate(rows[0])}
-        ti, si, oi = h.get("Ticker"), h.get("Status"), h.get("Order ID")
+        ti, si = h.get("Ticker"), h.get("Status")
+        gi = h.get("Strategy")
         if ti is None or si is None:
             return set()
+        if gi is None and exclude_prefix:
+            # The column is not there yet, so no row can be attributed. Say
+            # so: every holding then counts as another strategy's, which is
+            # the safe direction, but it is over-blocking and the log should
+            # not let that pass as normal operation.
+            print("  [dedupe] no Strategy column yet; treating every "
+                  "holding as another strategy's")
         out = set()
         # Only the tail matters: markets close every fifteen minutes, so a
         # ticker far enough back cannot still be open.
@@ -64,8 +89,12 @@ def held_tickers(client, exclude_prefix=None, lookback_rows=400):
                 continue
             if str(r[si]).strip().upper() != "PLACED":
                 continue
-            oid = str(r[oi]).strip() if (oi is not None and oi < len(r)) else ""
-            if exclude_prefix and oid.startswith(f"{exclude_prefix}-"):
+            who = (str(r[gi]).strip()
+                   if (gi is not None and gi < len(r)) else "")
+            # A blank is NOT treated as ours. Pre-column rows and short rows
+            # both read blank, and claiming an unattributable bet would turn
+            # a gap in the record into permission to double a market.
+            if exclude_prefix and who == exclude_prefix:
                 continue
             tk = str(r[ti]).strip()
             if tk:
