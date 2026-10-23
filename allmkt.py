@@ -59,6 +59,7 @@ found" into "never looked".
 
 Read-only. Places nothing.
 """
+import os
 import statistics as st
 import sys
 import time
@@ -78,11 +79,70 @@ MIN_SETTLED = 120
 ENTRY_OFFSET = 9                 # minutes before close, matching the live bot
 BANDS = ((0.90, 0.92), (0.92, 0.94), (0.94, 0.96), (0.90, 0.96))
 LIVE_BAND = (0.90, 0.96)
-PER_SERIES = 900
+
+# THE FIRST RUN OF THIS FILE FAILED ITS OWN CONTROL, and the cause was here.
+# PER_SERIES was 900, roughly 7% of markets land in the band, so each series
+# was scored on about 60 in-band markets and split into halves of 30. At that
+# size the live five came out BTC +0.23% flips, ETH -3.60% flips, DOGE +2.64%
+# holds -- against goldoil's -1.92%, -1.60% and +0.80%. Same rule, same code,
+# different answers, because 30-market halves measure noise.
+#
+# So the sample goes up and the floor goes up with it. 4,000 markets is about
+# 280 in band and halves of 140, which is the size goldoil's numbers came
+# from.
+PER_SERIES = 4000
+
+# A cell needs this many to get a verdict at all, and each half needs
+# MIN_HALF. The old 30/15 let a 34-market cell print "+8.00%" -- which is
+# what copper did, and it was the most tempting number on the board and the
+# least supported.
+MIN_CELL = 150
+MIN_HALF = 60
+
 BUDGET = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
 
 LIVE = ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M")
 TESTED = LIVE + ("KXGOLD15M", "KXWTI15M")
+
+# WHICH SERIES TO SCORE, when the whole set will not fit in one run's clock.
+# A deep pull costs roughly ten times a shallow one, so sweeping twenty
+# series at this depth does not fit in a single job. Passing a list here runs
+# a shortlist instead, and the control series are added automatically --
+# there is no way to ask for a run that cannot check itself.
+ONLY = tuple(x.strip().upper() for x in
+             (os.environ.get("ALLMKT_SERIES") or "").split(",") if x.strip())
+
+# WHAT THE CONTROL IS COMPARED AGAINST: goldoil's net ROI for the live band
+# at T-9, per series, from a run with a sample this size. These are not a
+# target to be matched exactly -- a different period will move them -- but a
+# series landing far from its own earlier figure means the measurement is
+# unstable, and an unstable measurement cannot judge a new series either.
+GOLDOIL_REF = {
+    "KXSOL15M": +3.70, "KXWTI15M": +3.56, "KXGOLD15M": +0.80,
+    "KXDOGE15M": +0.80, "KXXRP15M": -0.89, "KXETH15M": -1.60,
+    "KXBTC15M": -1.92,
+}
+
+# How far a control series may land from its reference before the run is
+# called unreliable.
+#
+# THIS NUMBER WAS WRONG THE FIRST TIME I WROTE IT, and the failure is worth
+# recording because it is the same shape as the bug the file exists to catch.
+# Set to 2.5 points, the broken first run would have PASSED: its BTC drifted
+# +2.15, ETH -2.00, DOGE +1.84, all inside the tolerance. A gate that admits
+# the run that motivated it is not a gate.
+#
+# The drifts were small because the ROI numbers are small. What was wrong
+# was not their size but their DIRECTION: BTC went from -1.92% to +0.23%,
+# crossing zero, which is the difference between "do not trade this" and
+# "this might pay". So sign agreement is checked separately from distance.
+CONTROL_TOLERANCE = 2.0
+
+# Sign is only meaningful once a reference is clear of zero. DOGE at +0.80%
+# can legitimately land either side of break-even on a different period, and
+# failing a run for that would be noise; BTC at -1.92% crossing into
+# positive is a real disagreement.
+SIGN_FLOOR = 1.5
 
 
 def discover(budget_end):
@@ -188,7 +248,7 @@ def collect(series, budget_end):
     return out
 
 
-def cell(rows, lo, hi, minimum=30):
+def cell(rows, lo, hi, minimum=MIN_CELL):
     """(n, won%, priced%, gap, net ROI%) or None when too thin to speak."""
     g = [(p, won) for p, won, _t in rows if lo <= p < hi]
     if len(g) < minimum:
@@ -205,8 +265,8 @@ def verdict_for(rows, lo, hi):
     """The both-halves verdict for one cell, and the two half ROIs."""
     rows = sorted(rows, key=lambda r: r[2])
     mid = len(rows) // 2
-    o = cell(rows[:mid], lo, hi, minimum=15)
-    nw = cell(rows[mid:], lo, hi, minimum=15)
+    o = cell(rows[:mid], lo, hi, minimum=MIN_HALF)
+    nw = cell(rows[mid:], lo, hi, minimum=MIN_HALF)
     if o is None or nw is None:
         return None, None, "too thin to split"
     if o[4] > 0 and nw[4] > 0:
@@ -274,6 +334,19 @@ def main():
         print("  The lifetime filter or the markets read is wrong, so treat "
               "everything below as unverified.\n")
 
+    # A SHORTLIST, IF ONE WAS ASKED FOR. The control series are forced back
+    # in whatever the request said: a run that cannot check itself is not a
+    # cheaper run, it is an unreadable one.
+    if ONLY:
+        keep = [s for s in found if s in ONLY or s in GOLDOIL_REF]
+        dropped = [s for s in ONLY if s not in found]
+        print(f"  SHORTLIST: scoring {len(keep)} of {len(found)} series "
+              f"(ALLMKT_SERIES), control series included automatically")
+        if dropped:
+            print(f"  asked for but not found on a 15-minute clock: "
+                  f"{', '.join(dropped)}")
+        found = keep
+
     fresh = [s for s in found if s not in TESTED]
     print(f"  {len(found)} fifteen-minute series: {len(fresh)} never measured "
           f"before, {len(found) - len(fresh)} already known")
@@ -281,9 +354,13 @@ def main():
         print(f"  NEW: {', '.join(fresh)}")
     print()
 
-    # NEVER-MEASURED FIRST, and an equal slice of the clock each, so the
-    # answer to the question actually asked survives a budget overrun.
-    order = fresh + [s for s in found if s in TESTED]
+    # CONTROL SERIES FIRST THIS TIME, which is a reversal. The first run put
+    # the never-measured ones first so a budget overrun would not cost the
+    # question being asked -- and then the control came out broken, which
+    # made every candidate row unreadable anyway. A truncated control is
+    # worse than a truncated candidate list, so the check goes first.
+    order = ([s for s in found if s in GOLDOIL_REF]
+             + [s for s in found if s not in GOLDOIL_REF])
     data = {}
     print("-" * 112)
     print("COLLECTING")
@@ -299,9 +376,10 @@ def main():
     print()
 
     summary = []
-    for title, group in (("NEVER MEASURED BEFORE", fresh),
-                         ("ALREADY KNOWN -- the same code, as a control",
-                          [s for s in order if s in TESTED])):
+    for title, group in (("THE CONTROL -- series goldoil already measured",
+                          [s for s in order if s in GOLDOIL_REF]),
+                         ("THE CANDIDATES", [s for s in order
+                                             if s not in GOLDOIL_REF])):
         got = [s for s in group if data.get(s)]
         if not got:
             continue
@@ -313,9 +391,70 @@ def main():
             if r:
                 summary.append((s, s in TESTED) + r)
 
+    # ---- THE CONTROL GATE -----------------------------------------------
+    #
+    # The first run of this file printed its control block and a line asking
+    # the reader to compare it against goldoil by eye. Nobody does that, and
+    # a report whose own validity depends on an unperformed comparison is a
+    # report that will be believed when it is wrong. So the comparison runs
+    # here, and its verdict is stated before the candidate ranking rather
+    # than left as advice underneath it.
+    print("=" * 112)
+    print("CONTROL CHECK -- does this run reproduce what goldoil measured?")
+    print("=" * 112)
+    checked = [(s, roi) for s, _k, _n, roi, _a, _b, _v in summary
+               if s in GOLDOIL_REF]
+    if not checked:
+        print("  NO CONTROL SERIES SCORED. Nothing below can be trusted: with")
+        print("  no series of known value in the run, there is no way to tell")
+        print("  a real candidate from a broken measurement.")
+        trustworthy = False
+    else:
+        print(f"  {'series':<16} {'this run':>10} {'goldoil':>10} "
+              f"{'drift':>8}   verdict")
+        bad = []
+        for s, roi in sorted(checked):
+            ref = GOLDOIL_REF[s]
+            drift = roi - ref
+            why = []
+            if abs(drift) > CONTROL_TOLERANCE:
+                why.append(f"drifted more than {CONTROL_TOLERANCE:.1f}")
+            # Sign disagreement, checked only where the reference is clear
+            # enough of zero for a sign to mean anything.
+            if abs(ref) >= SIGN_FLOOR and (roi > 0) != (ref > 0):
+                why.append("CROSSED ZERO")
+            if why:
+                bad.append(s)
+            print(f"  {s:<16} {roi:>+9.2f}% {ref:>+9.2f}% {drift:>+7.2f}   "
+                  f"{'ok' if not why else ', '.join(why)}")
+        n_missing = len([s for s in GOLDOIL_REF if s in order]) - len(checked)
+        if n_missing > 0:
+            print(f"  ({n_missing} control series in the run did not reach "
+                  f"{MIN_CELL} in-band markets and could not be checked)")
+        trustworthy = not bad and len(checked) >= 3
+        print()
+        if trustworthy:
+            print(f"  PASSED. {len(checked)} control series reproduced within "
+                  f"{CONTROL_TOLERANCE:.1f} points. The candidate rows below "
+                  "are readable.")
+        elif bad:
+            print(f"  FAILED on {', '.join(bad)}. The same rule and the same")
+            print("  code give a materially different answer than before, so")
+            print("  the measurement is unstable at this sample size and the")
+            print("  CANDIDATE ROWS BELOW MEAN NOTHING. Raise PER_SERIES or")
+            print("  shorten the shortlist until the control reproduces.")
+        else:
+            print(f"  FAILED: only {len(checked)} control series scored, and "
+                  "three is the minimum.")
+            print("  One series agreeing could be luck. Nothing below counts.")
+    print()
+
     print("=" * 112)
     print("THE LIVE BAND (0.90-0.96) ON EVERY SERIES, ranked by its WEAKER "
           "half")
+    if not trustworthy:
+        print("  *** THE CONTROL FAILED. Every row below is printed for "
+              "diagnosis only. ***")
     print("=" * 112)
     if not summary:
         print("  No series had enough in-band markets to score.")
@@ -335,10 +474,12 @@ def main():
     print()
     print("  HOW TO READ IT, AND WHAT IT CANNOT TELL YOU.")
     print()
-    print("  Compare any candidate against the known series in the control")
-    print("  block, not against zero. Same rule, same code, same period. If")
-    print("  the live five do not reproduce roughly what goldoil found for")
-    print("  them, this file is wrong and nothing else here counts.")
+    print("  The control check above decides whether any of this is")
+    print("  readable, and it is performed rather than recommended. The")
+    print("  first run of this file left that comparison to the reader and")
+    print("  printed candidate verdicts regardless; its control turned out")
+    print("  to disagree with goldoil by up to 4 points, which made copper's")
+    print("  +8.00% on 34 markets look like a finding.")
     print()
     print("  A 'HOLDS IN BOTH' row is a candidate and nothing more. Every")
     print("  number above is a QUOTE: the ask at T-9 from candles. It says")
