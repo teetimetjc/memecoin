@@ -328,15 +328,60 @@ def signals_from(markets, r, now):
 
 
 def open_markets():
-    """Every open 15-minute major market, one list call per series."""
+    """Every open 15-minute major market, one list call per series.
+
+    DO NOT TRUST status="open" AS THE ONLY WAY TO ASK.
+    
+    On 2026-10-24 this returned an EMPTY LIST on every call for hours. The
+    request itself succeeded -- no error line was printed, the balance and
+    settlements endpoints answered normally on the same credentials -- so
+    the call was fine and the filter simply matched nothing. The exchange
+    had stopped describing these markets as "open".
+
+    The bot placed nothing from 15:5x onward and said nothing about it,
+    because cycle() returned on an empty market list without printing. Four
+    and a half hours, three strategies, one silent filter.
+
+    So the status filter is now a PREFERENCE, not a requirement: ask for
+    open markets, and if that comes back empty, ask again without the filter
+    and decide locally from close_time, which is the field the entry window
+    is computed from anyway. A market whose close has passed is dropped
+    here; everything else is handed on and cycle() picks the window.
+
+    The fallback announces itself. A silent fallback would fix tonight and
+    hide the next change exactly the way the status filter hid this one.
+    """
     out = []
+    used_fallback = False
     for s in MAJORS:
         d, err = C.get("/trade-api/v2/markets", series_ticker=s,
                        status="open", limit=200)
         if not d:
             print(f"  [favlive] {s}: {err}")
             continue
-        out.extend(d.get("markets") or [])
+        got = d.get("markets") or []
+
+        if not got:
+            # Same series, no status filter. Anything already closed is
+            # discarded below, so this cannot widen what gets bet -- it only
+            # stops a vocabulary change from emptying the list.
+            d2, err2 = C.get("/trade-api/v2/markets",
+                             series_ticker=s, limit=200)
+            if d2:
+                now = time.time()
+                for m in (d2.get("markets") or []):
+                    t = C.close_ts(m)
+                    if t is not None and t > now:
+                        got.append(m)
+                if got and not used_fallback:
+                    used_fallback = True
+                    print(f"  [favlive] status='open' returned nothing for "
+                          f"{s}; falling back to an unfiltered list and "
+                          f"selecting on close_time ({len(got)} still open).")
+            elif err2:
+                print(f"  [favlive] {s} (unfiltered retry): {err2}")
+
+        out.extend(got)
         time.sleep(0.05)
     return out
 
