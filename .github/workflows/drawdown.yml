@@ -1,0 +1,41 @@
+name: Flat-stake replay -- most won and lost (read-only)
+
+# What would have been won and lost at one stake throughout. flat5.py gave
+# the total at a flat $5; the total is the least useful number here, because
+# a run ending +$30 after being -$40 along the way needed a bankroll that
+# could absorb -$40.
+#
+# So this reports the PATH: final, peak, trough, max drawdown, worst single
+# window, longest run of losing windows, at $3 through $15.
+#
+# Nothing is simulated -- real fill prices, real settlements, only the stake
+# changes, with live.py's integer contract sizing kept.
+#
+# Reads the sheet, the fills and the settlements. Places no order, writes no
+# sheet.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drawdown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Replay the record at each flat stake
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python drawdown.py
