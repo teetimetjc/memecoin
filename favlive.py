@@ -421,6 +421,9 @@ def _money(d, keys):
     return None
 
 
+_QUIET_SAID_AT = 0.0
+
+
 def cycle(client, r, stake, dry, factor=1.0):
     mk = open_markets()
     now = time.time()
@@ -434,6 +437,40 @@ def cycle(client, r, stake, dry, factor=1.0):
         if ENTRY_MIN <= dt <= ENTRY_MAX:
             live_now.append(m)
     if not live_now:
+        # THE ONLY SILENT EXIT IN THIS FUNCTION, AND IT COST A DAY.
+        #
+        # On 2026-10-24 the session printed 485 day-stop lines over 90
+        # minutes and nothing else: no scan, no signals, no error. The loop
+        # was healthy, the heartbeat was writing, the job was green, and the
+        # bot placed nothing for four and a half hours. Every other branch
+        # below reports what it saw; this one returned an empty list and left
+        # no trace, so "no market is near its entry window" was
+        # indistinguishable from "the markets read came back empty".
+        #
+        # Those need opposite responses -- the first is normal between
+        # windows, the second is a broken read -- so the line below says
+        # which. Rate limited to once a minute because this branch is hit on
+        # every poll between windows, which is most of them.
+        global _QUIET_SAID_AT
+        if now - _QUIET_SAID_AT > 60:
+            _QUIET_SAID_AT = now
+            if not mk:
+                print(f"  [favlive] {time.strftime('%H:%M:%S', time.gmtime())}"
+                      ": open_markets() returned NOTHING -- this is a broken "
+                      "read, not a quiet market.")
+            else:
+                nxt = None
+                for m in mk:
+                    t = C.close_ts(m)
+                    if t is None or t < now:
+                        continue
+                    if nxt is None or t < nxt:
+                        nxt = t
+                near = (f"{nxt - now:.0f}s" if nxt else "none upcoming")
+                print(f"  [favlive] {time.strftime('%H:%M:%S', time.gmtime())}"
+                      f": {len(mk)} market(s) open, none in the entry window "
+                      f"({ENTRY_MIN:.0f}-{ENTRY_MAX:.0f}s before close); "
+                      f"nearest close is {near} away.")
         return []
     sigs = signals_from(live_now, r, now)
     stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
