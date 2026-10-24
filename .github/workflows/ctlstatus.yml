@@ -1,0 +1,48 @@
+name: Control tab status (read-only)
+
+# THE KILL SWITCH HAD NO READOUT. control.get_state returns HALTED when the
+# tab says so AND when the tab cannot be read at all, and run_window returns
+# immediately on either -- writing no row. So a halted switch looks exactly
+# like a quiet market from the outside: sessions beat, the job stays green,
+# the sheet stays empty.
+#
+# That matters more now than it did. A funding shortfall calls control.halt(),
+# which sets the tab to HALTED for EVERY strategy at once, not just the one
+# that ran short. Raising the frozen session to $7 raises the funding needed
+# per window, so a shortfall is likelier than it was at $5.
+#
+# control.py --status is read-only by construction: it reports the switch
+# without touching it, so checking cannot itself halt anything or fire a
+# notification.
+#
+# Places no order, writes no sheet, changes no state.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Hourly, a few minutes before the sessions restart at :52, so a halt is
+    # visible in the Actions list rather than only when somebody asks.
+    - cron: '47 * * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  ctlstatus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Read the switch
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python control.py --status
