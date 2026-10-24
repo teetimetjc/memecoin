@@ -53,7 +53,13 @@ import statistics as st
 
 import tally as T
 
-RESTART = "2026-10-14 00:00"
+# THE WHOLE RECORD, NOT THE RESTART. The first version of this file started
+# at the 2026-10-14 restart and therefore skipped 07-13 -- which contains the
+# worst crash in the record, the fall from +$24.63 on the 11th to -$3.96 on
+# the 12th. A drawdown study that omits the deepest drawdown is worse than
+# useless: it is reassuring and wrong. Every max-DD figure this file reported
+# from the restart window was understated for that reason.
+START = "2026-10-07 15:49"
 STAKES = (3.0, 5.0, 6.0, 7.0, 10.0, 15.0)
 SLIP_BUFFER_CENTS = 3
 BANKROLL = 106.0          # what the account started this run with
@@ -64,7 +70,7 @@ def fee(n, px):
 
 
 def main():
-    bets = T.rows_since(RESTART)
+    bets = T.rows_since(START)
     setts = {}
     cur, pages = None, 0
     while pages < 60:
