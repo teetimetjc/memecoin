@@ -77,10 +77,36 @@ def main():
             continue
         beats[str(r[0]).strip()] = r
 
+    # ---- IS BETTING EVEN ENABLED? ---------------------------------------
+    #
+    # A pulse says the process is alive. It does NOT say the bot is allowed
+    # to bet. control.get_state returns HALTED when the Control tab says so
+    # and when the tab cannot be read, and run_window returns on either
+    # before writing a row -- so a halted account looks exactly like a quiet
+    # market: sessions beat, jobs stay green, the sheet stays empty.
+    #
+    # That is not hypothetical. On 2026-10-24 a single duplicate-order
+    # rejection on one ticker halted all three strategies for about seven
+    # hours. Every check this file performed came back "ok" throughout,
+    # because every session really was alive. It was watching the wrong
+    # thing.
+    halted_reason = None
+    try:
+        import control
+        st, why = control.get_state(P._get_client())
+        if st != control.RUNNING:
+            halted_reason = why or "no reason recorded"
+    except Exception as e:
+        halted_reason = f"could not read the Control tab: {str(e)[:80]}"
+
     now = time.time()
     print("=" * 88)
     print("SESSION HEALTH -- who is alive, and since when")
     print("=" * 88)
+    if halted_reason:
+        print(f"  *** BETTING IS HALTED: {halted_reason}")
+        print("  *** Every session below may be alive and placing NOTHING.")
+        print()
     stale, missing = [], []
     for tag in EXPECT:
         name = LABEL.get(tag, tag)
@@ -112,10 +138,23 @@ def main():
             stale.append((tag, name, mins))
 
     print()
-    if not stale and not missing:
-        print(f"  All {len(EXPECT)} expected session(s) are beating. "
-              "No alert sent.")
+    if not stale and not missing and not halted_reason:
+        print(f"  All {len(EXPECT)} expected session(s) are beating and "
+              "betting is enabled. No alert sent.")
         return 0
+
+    # A halt alerts even when every session is beating, because "alive" and
+    # "working" came apart and this file exists to notice that.
+    if halted_reason and not stale and not missing:
+        print(f"  ALERTING: betting is halted -- {halted_reason}")
+        try:
+            P.send_pushover("Bot HALTED -- placing no bets",
+                            f"All sessions are alive but the Control tab is "
+                            f"not RUNNING.\n{halted_reason}")
+            print("  pushover sent")
+        except Exception as e:
+            print(f"  pushover failed: {str(e)[:100]}")
+        return 2
 
     lines = []
     for tag, name, mins in stale:
@@ -123,6 +162,8 @@ def main():
     for tag in missing:
         lines.append(f"{tag}: no pulse ever recorded "
                      f"({LABEL.get(tag, tag)})")
+    if halted_reason:
+        lines.append(f"AND betting is halted: {halted_reason}")
     body = "\n".join(lines)
     print("  ALERTING:")
     for l in lines:

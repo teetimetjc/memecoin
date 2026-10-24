@@ -608,6 +608,30 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
     if r.status_code == 404 and "market_not_found" in body_txt:
         return "NOTYET", "market not listed yet", contracts, cost, ""
 
+    # order_already_exists IS THE IDEMPOTENCY GUARD WORKING, NOT A FAILURE.
+    #
+    # _client_order_id is deliberately stable per market and side, so that two
+    # processes scanning the same market cannot both buy it -- the exchange
+    # sees the same id twice and refuses the second. That refusal is the
+    # protection succeeding. It is the designed outcome of the design.
+    #
+    # It was classified FAILED, and run_window halts the bot on any FAILED.
+    # control.halt() writes HALTED to the Control tab, which every strategy
+    # reads, so one duplicate rejection on one ticker stopped the frozen
+    # session, the oil session and the T-3 test together -- and stopped them
+    # SILENTLY, because a halted run_window returns before writing a row. On
+    # 2026-10-24 that cost about seven hours: the sessions beat, the jobs
+    # stayed green, the sheet stayed empty, and nothing anywhere said why.
+    #
+    # The correct response is to skip this one signal. The order it collides
+    # with either already filled, in which case the position is held and
+    # buying again would double it, or it did not, in which case the market
+    # is simply not available to us this window. Neither is a reason to stop
+    # trading everything else.
+    if r.status_code == 409 and "order_already_exists" in body_txt:
+        return ("SKIPPED", "duplicate order id -- this market is already "
+                "held or ordered", 0, 0.0, "")
+
     # Anything else IS unexpected, and the rule for unexpected things
     # involving money is to stop and ask a human.
     return "FAILED", f"HTTP {r.status_code} {body_txt}", contracts, cost, ""
