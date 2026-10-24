@@ -142,6 +142,77 @@ def main():
         import statistics as st
         print(f"  mean slip vs the quote {st.mean(slips):+.2f}c")
     print()
+    # ---- WHAT THEY SETTLED FOR -------------------------------------------
+    #
+    # The fill rate and the slippage are the execution half. This is the
+    # other half, and the file was reporting a T-3 record with no outcomes
+    # in it -- which made "13 bets" readable as a result when it was only a
+    # count. Outcomes come from Kalshi's settlements, never from a price.
+    setts = {}
+    cur, pages = None, 0
+    while pages < 60:
+        q = dict(limit=200)
+        if cur:
+            q["cursor"] = cur
+        d = T.get("/portfolio/settlements", **q)
+        srows = (d or {}).get("settlements") or []
+        T._ingest_settlements(srows, setts)
+        cur = (d or {}).get("cursor")
+        pages += 1
+        if not cur or not srows:
+            break
+
+    print("-" * 96)
+    print("T-3 OUTCOMES -- settled only")
+    print("-" * 96)
+    won = lost = pending = 0
+    staked = revenue = 0.0
+    contracts = 0
+    for r in sorted(t3, key=lambda r: T.norm_ts(r[0])):
+        tk = str(c(r, "Ticker")).strip()
+        oid = str(c(r, "Order ID")).strip()
+        sres = setts.get(tk)
+        if sres is None:
+            pending += 1
+            continue
+        f = fills.get(oid)
+        cost = (f["cost"] if (f and f.get("cost"))
+                else (T._f(c(r, "Cost $")) or 0.0))
+        nc = int(T._f(c(r, "Contracts")) or 0)
+        rev = sres["rev"] or 0.0
+        staked += cost
+        revenue += rev
+        contracts += nc
+        if rev > 0:
+            won += 1
+        else:
+            lost += 1
+            print(f"    LOST  {T.norm_ts(r[0])}  {tk[:30]:<30} "
+                  f"entry {T._f(c(r, 'Entry ¢'))}c  cost ${cost:.2f}")
+    settled = won + lost
+    print()
+    if not settled:
+        print("  nothing settled yet")
+    else:
+        net = revenue - staked
+        be = (100.0 * staked / contracts) if contracts else float("nan")
+        wr = 100.0 * won / settled
+        lo, hi = T.wilson(won, settled)
+        print(f"  {settled} settled: {won} won, {lost} lost"
+              + (f", {pending} still open" if pending else ""))
+        print(f"  won {wr:.2f}%   needs {be:.2f}%   gap {wr - be:+.2f}")
+        print(f"  staked ${staked:.2f}   returned ${revenue:.2f}   "
+              f"net ${net:+.2f}   ROI {100 * net / staked if staked else 0:+.2f}%")
+        print(f"  95% interval {100*lo:.1f}% to {100*hi:.1f}%  -- "
+              + ("EXCLUDES break-even" if 100 * lo > be or 100 * hi < be
+                 else "contains break-even: far too few bets to tell"))
+        print()
+        print("  AT THIS SAMPLE SIZE THE WIN COUNT IS NOT EVIDENCE either")
+        print("  way. A 92c favourite loses about one time in thirteen, so a")
+        print("  single loss is the expected result of a dozen bets and two")
+        print("  is unremarkable. What IS readable this early is the")
+        print("  slippage above, because every order reports its own fill.")
+    print()
     print("  COMPARE THE FILL RATE AGAINST 78.7%, which is what the T-9 bot")
     print("  manages. A markedly worse rate here is the finding, and it would")
     print("  mean the T-3 mispricing is real but unreachable -- the orders")
