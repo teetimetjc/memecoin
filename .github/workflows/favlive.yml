@@ -1,4 +1,4 @@
-name: Favlive (frozen spec, $5 bets)
+name: Favlive (frozen spec, $7 bets)
 
 # Runs the frozen narrow-slice spec against the real exchange: read the book at
 # T-9, buy the 90-96c YES side at $10, hold to settlement.
@@ -120,7 +120,7 @@ on:
       stake:
         description: 'dollars per bet'
         required: false
-        default: '5'
+        default: '7'
       seconds:
         description: 'how long the session runs'
         required: false
@@ -142,6 +142,39 @@ jobs:
     timeout-minutes: 350
     env:
       # The mode scheduled runs use. 'dry' until deliberately changed.
+      #
+      # RAISED TO $7 ON 2026-10-24, at the operator's decision, and this
+      # DELIBERATELY BREACHES the 5%-of-bankroll rule recorded below. At a
+      # ~$117.92 bankroll, 5% is $5.90; $7 is 5.94%. Recorded as an override
+      # rather than edited quietly, because a sizing rule that gets silently
+      # relaxed whenever it binds is not a rule.
+      #
+      # WHAT CHANGED THE CASE. A flat-stake replay of the whole 393-bet
+      # record -- real fills, real settlements, only the size varied --
+      # showed the account's TROUGH, not just its drawdown:
+      #
+      #     $5   final +$29.07   trough -$3.29   worst window -$13.57
+      #     $7   final +$38.78   trough -$6.17   worst window -$19.39
+      #     $10  final +$55.32   trough -$8.71   worst window -$28.40
+      #
+      # At $7 the balance never went more than $6.17 below where it started.
+      # The earlier argument against stepping up rested on drawdown from
+      # PEAK, which is profit given back rather than capital at risk, and
+      # the bankroll was never actually threatened. The 5% rule was written
+      # against the wrong quantity.
+      #
+      # WHAT IS STILL NOT CLAIMED. The edge remains undemonstrated: 393 bets
+      # at a +1.59 point gap with the interval still containing break-even.
+      # This scales a hypothesis, exactly as every previous step did. The
+      # difference is that the downside is now measured rather than feared.
+      #
+      # AND THE $10 ERA IS NOT A COUNTEREXAMPLE TO SIZE, but it is also not
+      # merely bad luck: that cohort needed only 88.8% to break even against
+      # small-YES's 91.5%, meaning it bought CHEAPER entries -- fills well
+      # below the quote, which won 54% against 94% for clean ones. It was
+      # buying collapses. MAX_DROP_CENTS refuses those now, which is the
+      # reason that era is not expected to repeat.
+      #
       #
       # LOWERED TO $5 ON 2026-10-21, at the operator's decision, after
       # asking about $7 and being shown the case against it.
@@ -302,7 +335,7 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BET_ALERTS: '0'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '5' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '7' }}
           MIN_ENTRY_CENTS: '90'
           MAX_ENTRY_CENTS: '96'
           ORDER_PREFIX: 'slice'
@@ -334,7 +367,7 @@ jobs:
           ALLOW_LIVE_TRADING: '1'
           LIVE_TRADING: '1'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '5' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '7' }}
           # BOTH SIDES, FROM 2026-10-12. The narrow slice spec is YES-only and
           # stays that way in score.RULES; this overrides the sides for the
           # live bot only, so the frozen spec still measures what it was
@@ -440,10 +473,12 @@ jobs:
           # after a bad week.
           LADDER_DOWN_AFTER: '3'
           LADDER_UP_AFTER: '3'
-          # HALF THE BASE STAKE. At a $4 base a $4 reduced rung is not a
-          # ladder at all -- it would fire and change nothing. $2 keeps the
-          # direction the measurement supported while the base is small.
-          LADDER_REDUCED: '2'
+          # ROUGHLY HALF THE BASE STAKE. Raised 2 -> 3 on 2026-10-24
+          # alongside the move to a $7 base: a $2 rung under $7 is a 71%
+          # cut, far more severe than the measurement that justified the
+          # ladder, which compared a half-size rung against no rule at all.
+          # $3 keeps the ratio the evidence actually covered.
+          LADDER_REDUCED: '3'
           # The replacement for the day stop that was switched off: a much
           # looser brake, but a brake. Measured from LADDER_START below, not
           # from the account's all-time peak.
