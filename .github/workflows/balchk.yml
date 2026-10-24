@@ -1,0 +1,43 @@
+name: Balance check -- does the net add up (read-only)
+
+# The net is RECONSTRUCTED from three sources -- sheet rows, the fills
+# endpoint, the settlements endpoint -- joined on order id and ticker, and
+# every join can double-count or miss. It has gone wrong twice already, both
+# times upward: a fills page boundary once turned a $3.76 cost into $0.94,
+# and the first tally read the sheet's LIMIT column instead of the fill.
+#
+# The balance is the one number that cannot drift. This runs the arithmetic
+# in reverse -- balance plus open position cost minus net -- and reports the
+# starting cash that implies, which is either near the ~$106 this run has
+# been described as, or the net is wrong and should not be quoted.
+#
+# NOT the same as reconcile.yml, which asks whether any bet is MISSING from
+# the record. A record can pass either check and fail the other.
+#
+# Signed GETs only. Places no order, writes no sheet.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  balchk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Check the net against the account
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python balchk.py
