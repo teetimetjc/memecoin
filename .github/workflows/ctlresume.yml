@@ -1,0 +1,84 @@
+name: Resume betting (sets stake, then clears the halt)
+
+# THIS TURNS REAL MONEY BACK ON. Manual dispatch only, never scheduled.
+#
+# WHY A WORKFLOW RATHER THAN EDITING THE SHEET BY HAND. The Control tab holds
+# two things the bot reads every window: the switch and the stake. Setting
+# them in the wrong order means betting resumes at whatever stake was left
+# behind -- which on 2026-10-24 was $4, three dollars below what the workflow
+# was configured for, because the tab carries its own override and
+# run_window prefers it. So the stake is written FIRST and the switch is
+# released second, and the final status is printed so the result is read
+# rather than assumed.
+#
+# WHAT HALTED IT, for the next person who needs this: one order came back
+# HTTP 409 order_already_exists, which is the idempotency guard succeeding --
+# the client order id is stable per market and side precisely so a duplicate
+# is refused. It was classified FAILED, and any FAILED halts the account, so
+# a collision on one T-3 signal stopped all three strategies for seven hours,
+# silently, because a halted run_window writes no row. live.py now returns
+# SKIPPED for that specific rejection and health.py alerts when the switch is
+# not RUNNING.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stake:
+        description: 'dollars per bet to write to the Control tab'
+        required: true
+        default: '7'
+      confirm:
+        description: "type RESUME to turn betting back on"
+        required: true
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Refuse unless deliberately confirmed
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "RESUME" ]; then
+            echo "confirm was '${{ github.event.inputs.confirm }}', not RESUME -- doing nothing."
+            exit 1
+          fi
+          echo "confirmed; will set stake to \$${{ github.event.inputs.stake }} and resume."
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      # STAKE FIRST, SWITCH SECOND. While the account is halted nothing can
+      # bet, so writing the stake now cannot be acted on at the old value.
+      - name: Set the stake
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python control.py --stake ${{ github.event.inputs.stake }}
+
+      - name: Clear the halt
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: python control.py --run
+
+      - name: Read it back
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python control.py --status
