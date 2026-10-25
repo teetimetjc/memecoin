@@ -1,0 +1,38 @@
+name: Each strategy, split by stake (read-only)
+
+# The dashboard splits by stake or by market, never by STRATEGY, so the
+# three live bots were only visible pooled. They are not the same bet: the
+# frozen spec enters at T-9 on five coins, the T-3 test six minutes later in
+# a narrower band, the oil session runs the frozen rule on WTI.
+#
+# Break-even is each group's own mean cost per contract, because a winning
+# contract pays exactly $1.00 and the groups sit at different prices. Cost
+# comes from the fills rather than the sheet's limit-priced Cost column.
+#
+# Reads the sheet, the fills and the settlements. Places no order.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  strat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Split the record by strategy and stake
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python strat.py
