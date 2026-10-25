@@ -154,7 +154,12 @@ def rows_since(start):
                         oid=str(c(r, "Order ID")).strip(),
                         # The sheet's Cost column is contracts times the LIMIT
                         # price, kept only as a fallback. See actual_costs.
-                        limit_cost=_f(c(r, "Cost $"))))
+                        limit_cost=_f(c(r, "Cost $")),
+                        # WHICH BOT PLACED IT, written by live.py since
+                        # 2026-10-23. Blank on older rows, and a reader that
+                        # needs it for those must say it is inferring rather
+                        # than let a guess pass as the record.
+                        strategy=str(c(r, "Strategy")).strip()))
     return out
 
 
