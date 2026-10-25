@@ -93,7 +93,32 @@ jobs:
       # 'dry', and every scheduled session would scan, log and place
       # nothing -- producing a log almost indistinguishable from a healthy
       # live one.
-      default_mode: 'live'
+      # PAUSED 2026-10-25, at the operator's decision, after 31 settled
+      # bets at 87.10% won against a 93.03% break-even -- a gap of -5.93
+      # and -$5.52, which is -6.38% ROI.
+      #
+      # IT IS 'dry' RATHER THAN A DELETED SCHEDULE, for the same reason the
+      # frozen session was paused this way on 2026-10-13: the research value
+      # is in the record, and the record only grows while the scan keeps
+      # running. A dry session reads the same markets, finds the same
+      # signals and writes the same rows; it just places nothing. Deleting
+      # the cron would stop the one useful thing the test still does.
+      #
+      # WHAT THE 31 BETS ACTUALLY SHOWED, so this is not read later as a
+      # verdict on the rule: the quote-based backtest put the T-3 band at
+      # +2.3% to +3.2%, and the live fills came in at +1.61c worse than the
+      # quote on average. One cent is about 1.09 points of ROI at these
+      # prices, so slippage alone accounts for roughly 1.75 points -- most
+      # or all of the theoretical edge. The rule may be right about the
+      # prices and still unprofitable to trade, which is a different
+      # finding from "the rule is wrong" and needs a different fix.
+      #
+      # 31 bets decides nothing either way. This stops the bleed while the
+      # paper record keeps accumulating.
+      #
+      # To resume: set this back to 'live' and dispatch a fresh run, because
+      # a queued run carries the workflow file as of its creation.
+      default_mode: 'dry'
       # ONE BLOCK FOR BOTH STEPS, so the dry run exercises the live path.
       FAVLIVE_RULE: 'narrow slice'
       FAVLIVE_SIDES: 'YES'
