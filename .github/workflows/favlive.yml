@@ -1,4 +1,4 @@
-name: Favlive (frozen spec, $7 bets)
+name: Favlive (frozen spec, $5 bets)
 
 # Runs the frozen narrow-slice spec against the real exchange: read the book at
 # T-9, buy the 90-96c YES side at $10, hold to settlement.
@@ -120,7 +120,7 @@ on:
       stake:
         description: 'dollars per bet'
         required: false
-        default: '7'
+        default: '5'
       seconds:
         description: 'how long the session runs'
         required: false
@@ -142,6 +142,27 @@ jobs:
     timeout-minutes: 350
     env:
       # The mode scheduled runs use. 'dry' until deliberately changed.
+      # BACK TO $5 ON 2026-10-25, at the operator's decision, after the $7
+      # era ran 12 bets at 66.67% for -$21.10 and the measurement run's gap
+      # fell from +1.85 to +0.68 with the net going negative.
+      #
+      # THE REASON GIVEN WAS A PATTERN IN THE RECORD, and it deserves to be
+      # written down rather than waved at: split by stake, $4 and $5 are
+      # +$44.72 over 251 bets at 96.02% won against 91.92% needed, while $6,
+      # $7 and $10 are -$49.44 over 146 bets at 86.99% against 91.39%.
+      #
+      # THE STANDING OBJECTION IS THAT STAKE ERAS ARE CALENDAR PERIODS, so
+      # that split could be reading "when" and calling it "how big". What
+      # makes it less comfortable than it was: 18 and 21 October carry BOTH
+      # small and large stakes, and on both days the small bets won and the
+      # large ones lost. That is two days and a small sample, and the bets
+      # are different markets rather than the same bet at two sizes, so it
+      # is not proof -- but it is no longer purely a calendar artefact
+      # either, and it is the operator's money.
+      #
+      # WHAT IS STILL NOT CLAIMED: that $5 has an edge. At 254 settled bets
+      # the gap is +0.68 with a 89.1-95.5% interval that contains
+      # break-even, and the account is about $36 below where it started.
       #
       # RAISED TO $7 ON 2026-10-24, at the operator's decision, and this
       # DELIBERATELY BREACHES the 5%-of-bankroll rule recorded below. At a
@@ -335,7 +356,7 @@ jobs:
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           BET_ALERTS: '0'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '7' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '5' }}
           MIN_ENTRY_CENTS: '90'
           MAX_ENTRY_CENTS: '96'
           ORDER_PREFIX: 'slice'
@@ -367,7 +388,7 @@ jobs:
           ALLOW_LIVE_TRADING: '1'
           LIVE_TRADING: '1'
           FAVLIVE_RULE: 'narrow slice'
-          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '7' }}
+          FAVLIVE_STAKE: ${{ github.event.inputs.stake || '5' }}
           # BOTH SIDES, FROM 2026-10-12. The narrow slice spec is YES-only and
           # stays that way in score.RULES; this overrides the sides for the
           # live bot only, so the frozen spec still measures what it was
