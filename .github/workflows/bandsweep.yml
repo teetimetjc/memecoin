@@ -1,0 +1,42 @@
+name: Band edges -- should 90-96c reach wider? (read-only)
+
+# The live record cannot answer this. The bot has never bet outside
+# 90-96c at T-9, so there are zero live bets at 88c and zero at 97c, and
+# further bets inside the band never add one. The historical quote record
+# is the only place those prices exist.
+#
+# 90-96c runs as a CONTROL through the same code on the same markets. If
+# the control does not reproduce the known live band the read is broken,
+# every other row is broken identically, and the run prints nothing.
+#
+# Reads markets and candles. Places no order.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'Seconds to spend pulling candles'
+        required: false
+        default: '3000'
+
+permissions:
+  contents: read
+
+jobs:
+  bandsweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Sweep the band edges against the live band
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python bandsweep.py ${{ github.event.inputs.budget || '3000' }}
