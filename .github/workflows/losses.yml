@@ -1,0 +1,40 @@
+name: What the $4/$5 losses share (read-only)
+
+# The $4 and $5 eras are the profitable part of the record and still hold
+# ten losses. At 90-96c a loss costs about twenty times what a win pays, so
+# those ten carry most of the variance in the run.
+#
+# Every property is printed for the losses AND the winners, because a
+# feature common to ten losses means nothing unless it is absent from the
+# bets that won.
+#
+# Timestamps in UTC and CDT, so they can be lined up against what the market
+# was doing at the time.
+#
+# Reads the sheet, the fills and the settlements. Places no order.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  losses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Compare the losses against the winners
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python losses.py
