@@ -23,6 +23,14 @@ were too.
   exists because of it, so the question here is whether the guard is tight
   enough at 5c.
 
+  AND THE DOLLARS IN THAT BUCKET, which is the question a loss rate cannot
+  answer. A fill 6c under the quote loses more often, but it also pays far
+  more when it wins: bought at 84c it returns 19%, where the 94c fill beside
+  it returns 6%. "These lose more often" and "these lose money" are
+  different claims and only the second one justifies tightening the guard,
+  so the slippage table below reports staked, net and ROI per bucket and
+  then prices the actual counterfactual at four different cuts.
+
   HOUR OF DAY, in UTC and in the operator's Chicago time, because thin
   overnight books were a live hypothesis once and were later withdrawn on a
   recut of the data. Worth re-asking on this cohort.
@@ -145,29 +153,73 @@ def main():
     print("-" * 104)
     print("ENTRY QUOTE, BUCKETED -- is the bottom of the band the problem?")
     print("-" * 104)
-    print(f"  {'bucket':<12} {'bets':>5} {'lost':>5} {'loss rate':>10}")
+    print(f"  {'bucket':<12} {'bets':>5} {'lost':>5} {'loss rate':>10} "
+          f"{'net $':>10} {'ROI':>9}")
     for lo in (90, 91, 92, 93, 94, 95):
         hi = lo + 1
         g = [r for r in rows if r["entry"] is not None and lo <= r["entry"] < hi]
         if not g:
             continue
         nl = sum(1 for r in g if not r["won"])
+        cost = sum(r["cost"] for r in g)
+        net = sum(r["rev"] - r["cost"] for r in g)
         print(f"  {lo}-{hi}c{'':<6} {len(g):>5} {nl:>5} "
-              f"{100.0 * nl / len(g):>9.1f}%")
+              f"{100.0 * nl / len(g):>9.1f}% {net:>+10.2f} "
+              f"{(100.0 * net / cost if cost else 0):>+8.2f}%")
     print()
 
     print("-" * 104)
-    print("SLIPPAGE BUCKETS -- is the drop guard at 5c tight enough?")
+    print("SLIPPAGE BUCKETS -- IN DOLLARS, not just loss rate")
+    print("  a cheap fill loses more often AND pays more when it wins, so the")
+    print("  loss rate alone cannot say whether a tighter guard would help")
     print("-" * 104)
-    print(f"  {'bucket':<16} {'bets':>5} {'lost':>5} {'loss rate':>10}")
-    for lab, lo, hi in (("fill <= -4c", -99, -4), ("-4c..-2c", -4, -2),
-                        ("-2c..0c", -2, 0), ("0c..+2c", 0, 2),
-                        ("above +2c", 2, 99)):
+    print(f"  {'bucket':<16} {'bets':>5} {'lost':>5} {'loss rate':>10} "
+          f"{'staked':>10} {'net $':>10} {'ROI':>9} {'$/bet':>8}")
+    buckets = (("fill <= -4c", -99, -4), ("-4c..-2c", -4, -2),
+               ("-2c..0c", -2, 0), ("0c..+2c", 0, 2),
+               ("above +2c", 2, 99))
+    for lab, lo, hi in buckets:
         g = [r for r in rows if r["slip"] is not None and lo <= r["slip"] < hi]
         if not g:
             continue
         nl = sum(1 for r in g if not r["won"])
-        print(f"  {lab:<16} {len(g):>5} {nl:>5} {100.0 * nl / len(g):>9.1f}%")
+        cost = sum(r["cost"] for r in g)
+        net = sum(r["rev"] - r["cost"] for r in g)
+        print(f"  {lab:<16} {len(g):>5} {nl:>5} {100.0 * nl / len(g):>9.1f}% "
+              f"{cost:>10.2f} {net:>+10.2f} "
+              f"{(100.0 * net / cost if cost else 0):>+8.2f}% "
+              f"{net / len(g):>+8.2f}")
+    print()
+
+    print("-" * 104)
+    print("THE COUNTERFACTUAL -- what a tighter drop guard would have COST")
+    print("-" * 104)
+    scored = [r for r in rows if r["slip"] is not None]
+    allnet = sum(r["rev"] - r["cost"] for r in scored)
+    print(f"  every ${'/$'.join(STAKES)} bet with a verified fill: "
+          f"{len(scored)} bets, net {allnet:+.2f}")
+    for cut in (-4.0, -3.0, -2.0, -1.0):
+        kept = [r for r in scored if r["slip"] >= cut]
+        gone = [r for r in scored if r["slip"] < cut]
+        if not gone:
+            continue
+        knet = sum(r["rev"] - r["cost"] for r in kept)
+        gnet = sum(r["rev"] - r["cost"] for r in gone)
+        gl = sum(1 for r in gone if not r["won"])
+        verdict = ("WOULD HAVE HELPED" if gnet < 0
+                   else "WOULD HAVE COST MONEY")
+        print(f"  skip fills below {cut:+.0f}c: drops {len(gone):>3} bets "
+              f"({gl} of them losses) worth {gnet:+8.2f} -> "
+              f"remaining net {knet:+8.2f}   {verdict}")
+    print()
+    print("  AND THE HONEST CAVEAT ON ALL OF IT. MAX_DROP_CENTS does not")
+    print("  measure this number. The guard compares a FRESH quote against")
+    print("  the scan quote BEFORE sending the order; the slippage above is")
+    print("  the realised fill after it. They correlate but are not the same")
+    print("  thing, so these rows bound the size of the prize -- they do not")
+    print("  simulate the guard. A bet the guard skipped would also never")
+    print("  have produced a fill to measure, which is survivorship the")
+    print("  record cannot undo.")
     print()
 
     print("-" * 104)
