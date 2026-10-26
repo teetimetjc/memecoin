@@ -188,12 +188,55 @@ PNL_MAX_AGE_S = 2700
 # twice costs $3.69 of real exposure and corrupts the sample.
 ORDERED = set()
 
+# SHADOW RULES: NAMED BANDS THAT ARE NOT FROZEN SPECS, AND MUST NOT BE
+# MISTAKEN FOR THEM.
+#
+# score.RULES is the pre-registered text, and score.py ITERATES IT: adding an
+# entry there does not merely make a band available, it makes the frozen
+# forward test start reporting a third rule. The one property that test has
+# is that nobody can adjust what it measures, so a band invented today does
+# not belong in it. This registry exists so a new band can be shadowed
+# without touching that file at all.
+#
+# EVERY ENTRY HERE IS PAPER UNTIL A WORKFLOW GIVES IT A LIVE STEP, and
+# nothing in this file grants one. need_n is the pre-registered sample at
+# which the band gets judged, kept in the same shape as score.RULES so a
+# rule that ever earns promotion can be moved across unchanged.
+#
+# low slice -- 88-90c YES at T-9. bandsweep measured 88-89c at +2.04% net
+# ROI over 201 markets, positive in both chronological halves, against a
+# 90-96c control that reproduced the live band at +1.36%. It is shadowed
+# rather than bet because 89-90c, the cent BETWEEN it and the live band,
+# FLIPPED sign between halves (+2.92% / -0.49%). No market misprices 88-89c,
+# prices 89-90c correctly, then misprices 90-96c again; prices do not work
+# in stripes. So one of those rows is noise, and the candidate is the one
+# whose older half is +0.40% -- positive by a rounding error.
+#
+# THE PASS CONDITION, recorded here and not only in the workflow: ~100
+# settled paper bets, net ROI positive against this cohort's OWN mean cost
+# per contract, AND 88-89c and 89-90c both positive. Failing the adjacency
+# half is a stop, not a reason to pool the cents until the sign returns.
+SHADOW_RULES = (
+    dict(name="low slice", spec="specs/low_slice.md",
+         band=(0.88, 0.90), sides=("YES",), need_n=100, shadow=True),
+)
+
+# The frozen specs first, then the shadows. Written in this order
+# deliberately: a shadow rule can never shadow a frozen spec's name, because
+# a name collision would silently rebind what "narrow slice" means.
 RULE_BY_NAME = {r["name"]: r for r in S.RULES}
+for _sr in SHADOW_RULES:
+    if _sr["name"] in RULE_BY_NAME:
+        raise SystemExit(
+            f"shadow rule {_sr['name']!r} collides with a frozen spec of the "
+            "same name. Rename the shadow: a collision here would rebind what "
+            "the frozen spec means while still calling itself that spec.")
+    RULE_BY_NAME[_sr["name"]] = _sr
 DEFAULT_RULE = "narrow slice"
 
 
 def rule():
-    """The spec being bet, straight out of score.RULES."""
+    """The spec being bet, from score.RULES or the shadow registry."""
     name = (os.environ.get("FAVLIVE_RULE") or DEFAULT_RULE).strip()
     r = RULE_BY_NAME.get(name)
     if r is None:
@@ -228,6 +271,26 @@ def rule():
         r = dict(r)
         r["band"] = (lo, hi)
         r["name"] = f"{r['name']} [band={100*lo:.0f}-{100*hi:.0f}c]"
+    # A SHADOW RULE REFUSES TO RUN WITH MONEY, IN CODE, NOT BY CONFIGURATION.
+    #
+    # lowshadow.yml has no live step and passes no live switches, which is the
+    # first line of defence. This is the second, and it is the one that holds
+    # when someone later copies that workflow, adds a live step to it and
+    # forgets what the band was: the band and the prohibition travel together
+    # in the registry above, so the guard cannot be left behind by an edit to
+    # a different file.
+    #
+    # It fails LOUDLY rather than quietly dropping to paper, because a session
+    # that was asked to bet and silently did not is the exact failure this
+    # project keeps rediscovering.
+    if r.get("shadow") and live.enabled():
+        raise SystemExit(
+            f"{r['name']!r} is a SHADOW rule and live trading is enabled. "
+            "Shadow bands are measured on paper and have not passed their "
+            "pre-registered condition; betting one would spend money on "
+            "prices no frozen spec covers. Promote it into score.RULES with "
+            "its spec written first, or unset LIVE_TRADING/"
+            "ALLOW_LIVE_TRADING.")
     if "NO" in r["sides"] and not live.ALLOW_DOWN:
         raise SystemExit(
             f"the {name!r} spec bets the NO side, and the YES->ask mapping "
