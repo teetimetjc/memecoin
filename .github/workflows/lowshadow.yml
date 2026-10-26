@@ -151,7 +151,14 @@ jobs:
           # No Pushover secrets are passed at all. A paper session has
           # nothing to alert about, and a token not present cannot leak.
           BET_ALERTS: '0'
-          FAVLIVE_RULE: 'narrow slice'
+          # 'low slice', NOT the narrow slice. The frozen spec's band may be
+          # narrowed and never widened, so 88-90c is unreachable from it by
+          # design -- the first attempt at this workflow failed on exactly
+          # that guard, which is the guard working. 'low slice' is a separate
+          # entry in favlive.SHADOW_RULES, carries shadow=True, and
+          # favlive.rule() refuses to start it at all if live trading is on.
+          # score.RULES is untouched and still scores exactly two specs.
+          FAVLIVE_RULE: 'low slice'
           FAVLIVE_SIDES: 'YES'
           LIVE_ALLOW_DOWN: '0'
           FAVLIVE_QUIET_UTC: ''
