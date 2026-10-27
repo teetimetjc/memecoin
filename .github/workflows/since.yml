@@ -1,0 +1,43 @@
+name: What happened since X (read-only)
+
+# The reporting tools split the record by strategy and by stake, and the
+# stake eras are calendar periods, so a bad night arrives smeared across a
+# row that also contains the good days before it.
+#
+# This cuts by TIME instead, and prints beside the result what the same
+# number of bets does on average across the whole record -- because a
+# twelve-hour window holds about a dozen bets and cannot, on its own,
+# separate variance from a broken rule.
+#
+# Reads the sheet, the fills and the settlements. Places no order.
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "UTC start, 'YYYY-MM-DD HH:MM'. Blank = last 12 hours."
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  since:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Cut the record by time
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python since.py "${{ github.event.inputs.since }}"
