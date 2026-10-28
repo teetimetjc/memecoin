@@ -74,7 +74,44 @@ jobs:
       # A schedule carries no inputs, so without this the mode falls back to
       # the dispatch default, 'dry', and every scheduled session would scan
       # and place nothing while looking healthy.
-      default_mode: 'live'
+      #
+      # PAUSED 2026-10-28, at the operator's instruction, after another WTI
+      # loss. Oil alone is stopped; the frozen T-9 session is untouched and
+      # stays live at $5.
+      #
+      # THE RECORD AT THE TIME. Oil ran 10-23 to 10-28 and its one good day
+      # did not survive the week:
+      #
+      #     2026-10-26   4 bets, 0 lost, +$1.47   (+7.93% ROI)
+      #     2026-10-27   3 bets, 2 lost, -$9.14   (-64.64% ROI)
+      #
+      # Two of the four losses on the 27th were oil -- 67% of that day's
+      # damage from 17% of its bets -- and today added another. Roughly 8
+      # bets, net negative, winning well under the ~95% a 94-96c entry
+      # needs to break even.
+      #
+      # IT IS THE SAME SHAPE AS T-3, which is why this is not argued with.
+      # The +3.56% above is a QUOTE result. T-3's quote result was +2.3% to
+      # +3.2% and its live fills came in 1.61c worse, about 1.75 ROI points
+      # at these prices -- most or all of the edge -- and it was paused
+      # after 31 bets at -6.38%. Oil enters HIGHER, at 94-96c, where
+      # break-even needs ~95% and one bad cent erases the margin. It had
+      # less room than T-3, not more.
+      #
+      # WHAT IS NOT CLAIMED: that 8 bets condemn oil, any more than the
+      # first 4 vindicated it. The asymmetry decides it. Oil had no live
+      # evidence either way, so stopping costs nothing; the T-9 session has
+      # ~500 bets and is a separate decision for a separate day.
+      #
+      # DRY RATHER THAN A DELETED SCHEDULE, as t3live was paused on the 25th
+      # and the frozen session on the 13th: a dry session reads the same
+      # book, finds the same signals and writes the same rows, placing
+      # nothing. The paper record keeps accumulating for free, and deleting
+      # the cron would stop the one useful thing the test still does.
+      #
+      # To resume: set this back to 'live' and dispatch a fresh run, because
+      # a queued run carries the workflow file as of its creation.
+      default_mode: 'dry'
       FAVLIVE_RULE: 'narrow slice'
       # THE ONLY SERIES. Gold is excluded on the evidence, not by oversight.
       FAVLIVE_SERIES: 'KXWTI15M'
