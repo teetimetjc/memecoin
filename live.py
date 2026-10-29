@@ -804,6 +804,75 @@ def verify_positions():
     return pos
 
 
+# --- the paper record ----------------------------------------------------
+#
+# WHY THIS TAB EXISTS, AND WHY IT IS NOT 'Live Bets'. Until 2026-10-29 a dry
+# session wrote NOTHING. favlive.cycle returns before run_window when dry,
+# and run_window is the only caller of append() -- so every workflow comment
+# claiming "a dry session writes the same rows, it just places nothing" was
+# false, and the T-3 pause, the oil pause and the whole 88-90c shadow
+# accumulated no record at all while beating the heartbeat and looking
+# healthy. The failure was invisible because a dry run has no fills to be
+# missing and no money to come up short.
+#
+# IT IS A SEPARATE TAB ON PURPOSE. Every money report here gates on
+# Status == 'PLACED', so a 'PAPER' status in Live Bets would be ignored by
+# them correctly. The operator's dashboard is the reason that is not good
+# enough: it reads the sheet directly, and a paper row that it does not
+# filter would quietly enter the P&L they steer by. A different tab cannot
+# be mixed in by a reader that forgot to filter.
+#
+# WHAT A PAPER ROW IS WORTH, stated here so no report has to guess: the
+# price is the QUOTE the selector saw, never a fill, because nothing was
+# sent and there is no fill to read. Paper results are therefore
+# systematically BETTER than trading would have been, by however much the
+# book moves between decision and order -- the live record puts that at
+# about -0.75c on the frozen session and +1.61c against T-3, which was most
+# of T-3's measured edge. Read these rows as "did the favourite hold", never
+# as "we would have made this".
+PAPER_SHEET = "Paper Bets"
+PAPER_HEADERS = [
+    "Timestamp", "Symbol", "Side", "Ticker", "Quote ¢", "Limit ¢",
+    "Contracts", "Would cost $", "Stake $", "Strategy", "Band", "Entry offset s",
+]
+
+
+def paper_row(ts, symbol, side, ticker, entry, stake, band="", offset=""):
+    """One row of the paper record. No order id and no status: nothing was
+    sent, so there is no outcome to report here -- the outcome comes from
+    Kalshi's settlement for the ticker when the row is scored."""
+    n = int(stake / (entry / 100.0)) if entry else 0
+    return [ts, symbol, side, ticker,
+            round(entry, 1) if entry else "",
+            limit_for(entry) if entry else "",
+            n, round(n * (entry / 100.0), 2) if entry else "",
+            round(float(stake), 2), strategy(), band, offset]
+
+
+def append_paper(client, rows):
+    """Write paper rows to their own tab, creating it if absent."""
+    if not rows:
+        return
+    import predictor as P
+    sh = client.open_by_key(P.SPREADSHEET_ID)
+    try:
+        ws = sh.worksheet(PAPER_SHEET)
+    except Exception:
+        ws = sh.add_worksheet(title=PAPER_SHEET, rows=4000,
+                              cols=len(PAPER_HEADERS))
+        ws.update(values=[PAPER_HEADERS], range_name="A1")
+    try:
+        have = ws.row_values(1)
+        if len(have) < len(PAPER_HEADERS) and have[:4] == PAPER_HEADERS[:4]:
+            if ws.col_count < len(PAPER_HEADERS):
+                ws.add_cols(len(PAPER_HEADERS) - ws.col_count)
+            ws.update(values=[PAPER_HEADERS], range_name="A1")
+    except Exception as e:
+        print(f"  [live] could not widen the paper header: {str(e)[:80]}")
+    ws.append_rows(rows, value_input_option="USER_ENTERED", table_range="A1")
+    print(f"  [live] {len(rows)} paper row(s) written to '{PAPER_SHEET}'.")
+
+
 def append(client, rows):
     import predictor as P
     sh = client.open_by_key(P.SPREADSHEET_ID)

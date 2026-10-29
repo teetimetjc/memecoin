@@ -654,6 +654,30 @@ def cycle(client, r, stake, dry, factor=1.0):
               f"${stake:.2f} each would buy "
               + ", ".join(f"{int(stake/s['price'])}x {s['series']}"
                           for s in sigs))
+        # AND WRITE THEM DOWN, which until 2026-10-29 this did not do.
+        #
+        # This path returned here having printed to a job log and nothing
+        # else, so every dry session recorded zero rows while beating the
+        # heartbeat: the T-3 pause, the oil pause and the entire 88-90c
+        # shadow produced no record, and the workflow files said they did.
+        # A log is not a record -- it expires, it is not addressable, and it
+        # cannot be scored against settlements.
+        #
+        # Paper rows go to live.PAPER_SHEET, never to 'Live Bets', so no
+        # money report and no dashboard can mistake them for real bets. See
+        # the comment on PAPER_SHEET for what a quote-priced row is worth.
+        #
+        # Wrapped, because a sheet write that raises must not take the
+        # session down: this is observation, and the scan matters more than
+        # the bookkeeping. It prints the failure rather than swallowing it.
+        try:
+            band = f"{100*r['band'][0]:.0f}-{100*r['band'][1]:.0f}c"
+            live.append_paper(client, [
+                live.paper_row(t[0], t[1], t[2], t[3], t[4], stake,
+                               band=band, offset=f"{ENTRY_MIN}-{ENTRY_MAX}")
+                for t in tuples])
+        except Exception as e:
+            print(f"  [favlive] PAPER ROWS NOT WRITTEN: {str(e)[:120]}")
         return tuples
 
     # ONE CAP ACROSS BOTH SIDES, THEN ONE CALL PER SIDE. signals_from has
