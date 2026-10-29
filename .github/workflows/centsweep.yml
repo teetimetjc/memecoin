@@ -1,0 +1,43 @@
+name: Cent by cent, 85-97c (read-only)
+
+# bandsweep left the 88-90c question unresolvable by any further "is this
+# band positive" test: 88-89c cleared all four pre-registered tests while
+# 89-90c, the cent between it and the live band, flipped sign.
+#
+# This asks the structural question instead. A real mispricing is a
+# gradient; noise alternates. The live 90-96c band's own cents are swept
+# alongside as the control -- if those alternate too while the aggregate is
+# reliably positive, then single cents are sampling error here and neither
+# 88-89c's pass nor 89-90c's flip carries a verdict.
+#
+# Reads markets and candles. Places no order.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'Seconds to spend pulling candles'
+        required: false
+        default: '3000'
+
+permissions:
+  contents: read
+
+jobs:
+  centsweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Sweep the band one cent at a time
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python centsweep.py ${{ github.event.inputs.budget || '3000' }}
