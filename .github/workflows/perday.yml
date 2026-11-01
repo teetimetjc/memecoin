@@ -1,0 +1,41 @@
+name: Bets per day, by stake (read-only)
+
+# How many bets a day at $4 against how many at $5.
+#
+# The table is worth having and its obvious reading is wrong, so the script
+# prints both. Stake does not decide how many bets fire: the selector picks
+# on price band and entry timing and caps per window, and stake only sets
+# contracts = int(stake / price). A difference in the daily rate is a
+# difference between PERIODS -- different markets, different config,
+# different outages -- not between sizes.
+#
+# Every daily count is printed for that reason: a day at 2 bets is a
+# session that was down, and it drags an average it has no business in.
+#
+# Counts only real PLACED bets. Places no order.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  perday:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Count bets per day by stake
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python perday.py
