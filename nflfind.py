@@ -49,6 +49,21 @@ TEAMS = [
     "Jets", "Eagles", "Steelers", "49ers", "Seahawks", "Buccaneers",
     "Titans", "Commanders",
 ]
+# CITY NAMES TOO, BECAUSE THE SECOND RUN STILL CONFIRMED NOTHING. It probed
+# KXNFLGAME -- 60 open markets, exactly the series wanted -- and scored it
+# "0 naming a team". Nicknames were the whole test, and a Kalshi game market
+# may well read "Will Detroit win?" rather than "Will the Lions win?". A test
+# that can only see nicknames reports a clean zero on the right series, which
+# is the same failure as the first run in a new place: the read returned
+# something plausible instead of failing.
+CITIES = [
+    "Arizona", "Atlanta", "Baltimore", "Buffalo", "Carolina", "Chicago",
+    "Cincinnati", "Cleveland", "Dallas", "Denver", "Detroit", "Green Bay",
+    "Houston", "Indianapolis", "Jacksonville", "Kansas City", "Las Vegas",
+    "Los Angeles", "Miami", "Minnesota", "New England", "New Orleans",
+    "New York", "Philadelphia", "Pittsburgh", "San Francisco", "Seattle",
+    "Tampa Bay", "Tennessee", "Washington",
+]
 TITLE_HINTS = ("NFL", "FOOTBALL")
 MAX_SERIES_PROBE = int(os.environ.get("NFLFIND_PROBE") or 200)
 
@@ -80,8 +95,8 @@ def score(ticker, title):
 
 
 def teams_in(text):
-    t = (text or "")
-    return sorted({n for n in TEAMS if n.lower() in t.lower()})
+    t = (text or "").lower()
+    return sorted({n for n in (TEAMS + CITIES) if n.lower() in t})
 
 
 def main():
@@ -160,6 +175,13 @@ def main():
         if hits or len(mks):
             print(f"  {tk:<28} {len(mks):>3} markets, {hits:>3} naming a "
                   f"team, {len(events):>3} event(s){flag}")
+            # A SAMPLE TITLE ON EVERY SERIES, hits or not. The last run
+            # reported "0 naming a team" on KXNFLGAME, the series actually
+            # wanted, and gave nothing to tell a wrong series from a wrong
+            # test. One real title makes that difference visible.
+            if mks:
+                print(f"       e.g. {str(mks[0].get('title'))[:62]!r}  "
+                      f"yes={str(mks[0].get('yes_sub_title'))[:24]!r}")
         if hits:
             confirmed.append((tk, ti, hits, example))
 
@@ -182,7 +204,10 @@ def main():
         for m in ((md or {}).get("markets") or []):
             names = teams_in(f"{m.get('title', '')} {m.get('subtitle', '')} "
                              f"{m.get('yes_sub_title', '')}")
-            if len(names) < 2 or shown >= 6:
+            # ONE NAME IS ENOUGH HERE TOO. Pass 3 still demanded two, so even
+            # the series pass 2 flagged printed no markets at all -- the
+            # detail that the whole run exists to produce.
+            if not names or shown >= 6:
                 continue
             shown += 1
             bid, ask = m.get("yes_bid"), m.get("yes_ask")
