@@ -50,7 +50,33 @@ TEAMS = [
     "Titans", "Commanders",
 ]
 TITLE_HINTS = ("NFL", "FOOTBALL")
-MAX_SERIES_PROBE = int(os.environ.get("NFLFIND_PROBE") or 25)
+MAX_SERIES_PROBE = int(os.environ.get("NFLFIND_PROBE") or 200)
+
+# RANKING, BECAUSE 629 SERIES MATCHED THE WORD FILTER AND THE FIRST RUN
+# PROBED 25 OF THEM IN ARBITRARY ORDER -- so it sampled props and futures
+# (next touchdown scorer, season receptions, exact wins Miami) and never
+# reached a game-winner market at all. Ordering by plausibility is not a
+# shortcut round the evidence: every candidate still has to prove itself on
+# its markets. It only decides what gets asked first.
+GOOD = ("winner", "game", "to win", "moneyline")
+BAD = ("quarter", "1q", "2h", "half", "draft", "award", "mvp", "rookie",
+       "player of", "season", "exact wins", "rank", "specials", "pack",
+       "location", "next td", "conversion", "reception", "rushing",
+       "passing", "yards", "churn", "qualifier", "playoff", "inflation",
+       "gas price", "earnings", "alcohol", "redzone", "ads", "college",
+       "ncaa")
+
+
+def score(ticker, title):
+    t = f"{ticker} {title}".lower()
+    s = 0
+    for g in GOOD:
+        if g in t:
+            s += 3
+    for b in BAD:
+        if b in t:
+            s -= 4
+    return s
 
 
 def teams_in(text):
@@ -82,12 +108,15 @@ def main():
         blob = f"{tk} {ti}".upper()
         if any(h in blob for h in TITLE_HINTS):
             cands.append((tk, ti))
+    # Most promising first. 629 matched the word filter and only a couple of
+    # hundred get probed, so the order decides what is reached at all.
+    cands.sort(key=lambda c: (-score(c[0], c[1]), c[0]))
     print(f"\n{'-' * 100}")
-    print(f"PASS 1 -- {len(cands)} series mention NFL or football in ticker "
-          "or title")
+    print(f"PASS 1 -- {len(cands)} series mention NFL or football, ranked by "
+          "how much the title sounds like a game winner")
     print("-" * 100)
-    for tk, ti in cands[:40]:
-        print(f"  {tk:<28} {ti[:64]}")
+    for tk, ti in cands[:25]:
+        print(f"  {score(tk, ti):>3}  {tk:<28} {ti[:58]}")
     if not cands:
         print("  none -- the titles do not use those words, so pass 2 has to")
         print("  do the work on its own.")
@@ -110,17 +139,27 @@ def main():
             print(f"  field names on a market object: "
                   f"{sorted(mks[0].keys())}\n")
             shape_shown = True
+        # ONE TEAM NAME IS THE TEST, NOT TWO. The first version demanded
+        # two and confirmed nothing, because a Kalshi game market reads
+        # "Will the Lions win?" with yes_sub_title "Lions" -- one name per
+        # market, with both teams carried at the EVENT level. Requiring two
+        # rejected every real game market while accepting nothing, which is
+        # the quietest kind of wrong answer: a clean empty result.
         hits = 0
         example = None
+        events = set()
         for m in mks:
-            names = teams_in(f"{m.get('title', '')} {m.get('subtitle', '')} "
-                             f"{m.get('yes_sub_title', '')}")
-            if len(names) >= 2:
+            names = teams_in(f"{m.get('title', '')} "
+                             f"{m.get('yes_sub_title', '')} "
+                             f"{m.get('no_sub_title', '')}")
+            if names:
                 hits += 1
+                events.add(m.get("event_ticker"))
                 example = example or (m, names)
-        flag = "  <- NFL GAMES" if hits else ""
-        print(f"  {tk:<28} {len(mks):>3} markets, {hits:>3} naming two "
-              f"teams{flag}")
+        flag = "  <- NAMES NFL TEAMS" if hits else ""
+        if hits or len(mks):
+            print(f"  {tk:<28} {len(mks):>3} markets, {hits:>3} naming a "
+                  f"team, {len(events):>3} event(s){flag}")
         if hits:
             confirmed.append((tk, ti, hits, example))
 
@@ -149,11 +188,30 @@ def main():
             bid, ask = m.get("yes_bid"), m.get("yes_ask")
             print(f"      {str(m.get('ticker'))[:46]:<46} "
                   f"close {str(m.get('close_time'))[:16]}")
+            print(f"        event   {m.get('event_ticker')}")
             print(f"        title   {str(m.get('title'))[:76]}")
             if m.get("yes_sub_title"):
                 print(f"        yes is  {str(m.get('yes_sub_title'))[:70]}")
-            print(f"        teams   {', '.join(names)}"
-                  f"      yes bid {bid}  ask {ask}  status {m.get('status')}")
+            # DEPTH AT THE TOP OF BOOK, which is the question that killed
+            # T-3 and oil. A gap with two contracts behind it is not
+            # tradeable however wide it looks.
+            print(f"        teams   {', '.join(names)}      status "
+                  f"{m.get('status')}")
+            print(f"        book    bid {m.get('yes_bid_dollars')} "
+                  f"(size {m.get('yes_bid_size_fp')})   "
+                  f"ask {m.get('yes_ask_dollars')} "
+                  f"(size {m.get('yes_ask_size_fp')})")
+            if shown == 1 and m.get("rules_primary"):
+                # THE SETTLEMENT RULES, printed once in full. Matching the
+                # teams and getting the rules wrong is the single most
+                # likely way to log gaps that look real and are not --
+                # overtime, postponement, and what counts as a result.
+                print(f"\n        RULES (read these against the "
+                      f"sportsbook's):")
+                print(f"        {str(m.get('rules_primary'))[:600]}")
+                if m.get("rules_secondary"):
+                    print(f"        {str(m.get('rules_secondary'))[:300]}")
+                print()
 
     print("\n" + "=" * 100)
     print("  HOW TO USE THIS. Read the tickers and close times above against")
