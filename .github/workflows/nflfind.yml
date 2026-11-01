@@ -1,0 +1,43 @@
+name: Find the NFL series on Kalshi (read-only, no odds quota)
+
+# The line-gap probe listed 15,581 series. Keyword-matching "GAME" against
+# them returned GAMEAWARDS, KXAPPSTOREIPADGAME, KXALBUMRELEASENBAYB and
+# KXAFLGAME -- the last being Australian football, which a matcher built on
+# name similarity would have accepted without complaint.
+#
+# So this confirms the series by its MARKETS: open markets naming two NFL
+# teams. Thirty-two specific names make a false positive unlikely, and a
+# series about app-store rankings cannot fake it.
+#
+# Spends no Odds API credits. Reads Kalshi only. Places no order.
+
+on:
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: 'How many title-matched series to read markets for'
+        required: false
+        default: '25'
+
+permissions:
+  contents: read
+
+jobs:
+  nflfind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Find it by its markets
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          NFLFIND_PROBE: ${{ github.event.inputs.probe || '25' }}
+        run: python nflfind.py
