@@ -1,0 +1,78 @@
+name: Line gap probe (read-only, one API call)
+
+# PHASE 1. Looks at both sides and matches nothing.
+#
+# The matcher is what decides whether every later number is real -- same
+# game, same side, same settlement rules -- and writing it against an
+# imagined response shape is how a log fills with confident wrong rows. So
+# this prints the real shapes first and stops.
+#
+# QUOTA. The Odds API free tier is 500 credits a month, metered per market
+# per region per call. This workflow makes exactly ONE call per run, and
+# prints what it cost and what is left. us,eu is two credits a call,
+# because Pinnacle -- the sharp reference the premise rests on -- is not in
+# the us region, and comparing Kalshi to a retail book measures that book's
+# margin rather than a Kalshi mispricing.
+#
+# The maths tests run FIRST and the job stops if they fail, so no quota is
+# ever spent on top of broken arithmetic.
+#
+# Reads two APIs. Places no order, writes no row.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sport:
+        description: 'Odds API sport key'
+        required: false
+        default: 'americanfootball_nfl'
+      regions:
+        description: 'Regions (each one costs a credit per market per call)'
+        required: false
+        default: 'us,eu'
+      sharp:
+        description: 'Sharp reference book(s), comma separated'
+        required: false
+        default: 'pinnacle'
+      max_events:
+        description: 'How many events to print in full'
+        required: false
+        default: '8'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linegap
+  cancel-in-progress: false
+
+jobs:
+  linegap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+
+      # FIRST, AND IT GATES THE REST. No API key, no network, no quota --
+      # just arithmetic against values worked out by hand. If this fails the
+      # job stops here and nothing is spent.
+      - name: Check the odds arithmetic
+        run: python oddstest.py
+
+      - name: Probe both sides
+        env:
+          PYTHONUNBUFFERED: '1'
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          ODDS_SPORT: ${{ github.event.inputs.sport || 'americanfootball_nfl' }}
+          ODDS_REGIONS: ${{ github.event.inputs.regions || 'us,eu' }}
+          ODDS_SHARP: ${{ github.event.inputs.sharp || 'pinnacle' }}
+          LINEGAP_MAX_EVENTS: ${{ github.event.inputs.max_events || '8' }}
+        run: python linegap.py
