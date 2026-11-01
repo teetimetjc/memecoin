@@ -1,0 +1,49 @@
+name: Read one Kalshi series in full (read-only, no odds quota)
+
+# nflfind.py ranks 629 title-matched series and probes the top N. Three runs
+# never printed KXNFLGAME -- 60 open markets, the obvious candidate -- because
+# the ranking put it outside the slice and the team-name filter decided which
+# markets were worth showing. Every run came back clean and said nothing.
+#
+# A heuristic deciding what gets looked at is fine for discovery and useless
+# for verification: when the heuristic is what is wrong, it cannot report
+# itself. So this one takes a ticker and prints what the API returns, with no
+# ranking and no filtering, including nothing.
+#
+# Reads Kalshi only. Spends no Odds API credits. Places no order.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: 'Series ticker to read in full'
+        required: false
+        default: 'KXNFLGAME'
+      full:
+        description: 'How many markets to print in full detail'
+        required: false
+        default: '4'
+
+permissions:
+  contents: read
+
+jobs:
+  nflmarket:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Read the series
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          NFLMARKET_TICKER: ${{ inputs.ticker }}
+          NFLMARKET_FULL: ${{ inputs.full }}
+        run: python nflmarket.py
