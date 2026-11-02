@@ -1,0 +1,39 @@
+name: Drift at entry (read-only, pre-registered)
+
+# Does a 90-96c favourite whose ask was ALREADY FALLING at T-9 settle worse
+# than a flat one? Thresholds and the pass bar are fixed in trendcut.py
+# before any number is read, because a subgroup search with a free threshold
+# will always hand back a loser.
+#
+# Quotes from candle history. Reads only. Places no order, writes no row,
+# changes no setting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'Seconds to spend fetching candles'
+        required: false
+        default: '3000'
+
+permissions:
+  contents: read
+
+jobs:
+  trendcut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Cut the record by drift at entry
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python trendcut.py ${{ inputs.budget }}
