@@ -70,7 +70,15 @@ MIN_N = 150
 # The inference only EXCLUDES what is positively known to be something else.
 # It does not guess which of the remainder was T-9, because a guess written
 # into a result is indistinguishable from a measurement afterwards.
-LIVE_STRATEGY = "v6"
+# 'slice', NOT 'v6'. The first filtered run used v6 -- live.py's module
+# DEFAULT, which the live workflow never uses -- and so threw away 199 bets
+# placed by the live strategy itself while keeping 383 older rows inferred
+# to be the same thing. It printed a confident table about the strategy
+# while excluding most of that strategy's own record.
+#
+# favlive.yml sets ORDER_PREFIX: 'slice' at both call sites. That is the
+# live T-9 session's identity, read from the workflow rather than assumed.
+LIVE_STRATEGY = "slice"
 T3_STAKE = 3.0
 CRYPTO = ("BTC", "ETH", "SOL", "XRP", "DOGE")
 
