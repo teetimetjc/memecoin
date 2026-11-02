@@ -132,24 +132,43 @@ def main():
         return 1
 
     # 2. The universe: every settled market, with its T-9 quote and result.
+    #
+    # ROUND-ROBIN ACROSS THE SERIES, NOT ONE AT A TIME. The first run walked
+    # BTC, then ETH, then SOL, then XRP, and hit its budget partway through
+    # the fourth -- so DOGE, 152 of the bot's bets, was absent from the
+    # universe entirely and the comparison silently ran on four coins. The
+    # run did not fail; it reported a confident table built on a population
+    # that was missing a fifth of itself.
+    #
+    # Taking one market from each series in turn means the budget degrades
+    # every coin together instead of deleting the last one. A partial run is
+    # then a thinner sample of the same thing, rather than a different thing.
     end = time.time() + BUDGET
     uni = []
+    pending = {}
     for s in SERIES:
-        if time.time() > end:
-            print(f"  [budget reached before {s}]")
-            break
         try:
             mk = B.settled_markets(s, PER_SERIES)
         except Exception as e:
             print(f"  {s}: could not list ({str(e)[:60]})")
             continue
-        print(f"  {s}: {len(mk)} settled markets", flush=True)
-        for m in mk:
+        graded = [m for m in mk
+                  if str(m.get("result") or "").lower() in ("yes", "no")]
+        pending[s] = graded
+        print(f"  {s}: {len(graded)} graded of {len(mk)} settled", flush=True)
+
+    seen = {s: 0 for s in pending}
+    idx = 0
+    stopped = False
+    while pending and not stopped:
+        for s in list(pending):
             if time.time() > end:
-                print(f"  {s}: budget reached", flush=True)
+                stopped = True
                 break
-            if str(m.get("result") or "").lower() not in ("yes", "no"):
+            if idx >= len(pending[s]):
                 continue
+            m = pending[s][idx]
+            seen[s] += 1
             close = B.ts(m.get("close_time"))
             if close is None:
                 continue
@@ -160,6 +179,18 @@ def main():
                 continue
             uni.append(dict(tk=m.get("ticker"), close=close, px=a,
                             won=str(m.get("result")).lower() == "yes"))
+        idx += 1
+        if all(idx >= len(pending[s]) for s in pending):
+            break
+
+    print()
+    for s in sorted(seen):
+        tot = len(pending.get(s, []))
+        print(f"  {s}: read {seen[s]} of {tot} graded "
+              f"({100.0*seen[s]/max(tot,1):.0f}%)")
+    if stopped:
+        print("  BUDGET REACHED -- every series was read to the same depth,")
+        print("  so what is missing is depth of history, not a whole coin.")
 
     print(f"\n  {len(uni)} markets qualified at T-9 in 90-96c across the "
           "whole history")
