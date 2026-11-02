@@ -128,9 +128,14 @@ def report(label, g):
     med = st.median(slips)
     worse = sum(1 for s in slips if s > 0.001)
     net_real = ret - paid
-    # The fee is inside `paid` (actual_costs returns price AND fee), so the
-    # counterfactual keeps it and moves only the price.
-    net_quote = net_real - slip_d
+    # SIGN, worked through rather than guessed -- the first version had it
+    # backwards and printed a saving as a cost.
+    #   slip_d = contracts * (fill - quote).  Negative means we paid LESS
+    #   than quoted, so paid = paid_at_quote + slip_d, and therefore
+    #   net_quote = ret - (paid - slip_d) = net_real + slip_d.
+    # Execution's effect on the result is net_real - net_quote = -slip_d:
+    # a negative slip_d is money the fills SAVED.
+    net_quote = net_real + slip_d
     print(f"  {label:<10} n {n:>4}   slip mean {st.mean(slips):+5.2f}c  "
           f"med {med:+5.2f}c   paid over quote on {100.0*worse/n:4.1f}%   "
           f"slip ${slip_d:+7.2f}   real ${net_real:+7.2f}   "
@@ -185,12 +190,14 @@ def main():
           f"({100.0*pooled['real']/st_:+.2f}% of stake)")
     print(f"  net at quoted prices ${pooled['quote']:+.2f}   "
           f"({100.0*pooled['quote']/st_:+.2f}% of stake)")
-    print(f"  cost of execution    ${pooled['slip_d']:+.2f}   "
-          f"({100.0*pooled['slip_d']/st_:+.2f} points of stake)")
+    eff = -pooled['slip_d']
+    verb = "SAVED by" if eff > 0 else "COST by"
+    print(f"  {verb} execution     ${eff:+.2f}   "
+          f"({100.0*eff/st_:+.2f} points of stake)")
     print()
-    print("  THE SCORED FIGURE WAS +2.84% ON QUOTES. If the line above is")
-    print("  much smaller than the distance from there to the realised")
-    print("  number, execution is NOT the explanation and the live bot is")
+    print("  THE SCORED FIGURE WAS +2.84% ON QUOTES. If execution did not")
+    print("  cost that distance -- or, worse, HELPED -- then execution is")
+    print("  not the explanation at all, and the live bot is")
     print("  selecting a worse set of bets than the scorer did -- different")
     print("  window, per-window cap, funding halts, outages. That would be")
     print("  the next thing to measure, and it is not measured here.")
