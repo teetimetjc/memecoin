@@ -16,7 +16,7 @@ on:
       budget:
         description: 'Seconds to spend fetching candles'
         required: false
-        default: '3000'
+        default: '6000'
 
 permissions:
   contents: read
@@ -24,7 +24,7 @@ permissions:
 jobs:
   selgap:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
