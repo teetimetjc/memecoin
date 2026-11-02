@@ -1,0 +1,42 @@
+name: The selection gap (read-only)
+
+# Priced at the T-9 quote, the bot's own bets come to -1.48% of stake while
+# the same rule scored over all qualifying markets came to +2.84%. Fills are
+# not the difference -- they measured +0.80 points in our favour. So the
+# difference is which bets got taken, and this measures it.
+#
+# Everything is priced at the T-9 quote, taken and skipped alike, so fills
+# cannot enter the comparison. Reads Kalshi candles and the sheet.
+#
+# Places no order, writes no row, changes no setting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'Seconds to spend fetching candles'
+        required: false
+        default: '3000'
+
+permissions:
+  contents: read
+
+jobs:
+  selgap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Compare taken against skipped
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python selgap.py ${{ inputs.budget }}
