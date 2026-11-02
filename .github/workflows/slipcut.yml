@@ -1,0 +1,38 @@
+name: Slippage, quote to fill (read-only)
+
+# The scored figure for the live rule is +2.84% on QUOTES. The live record
+# over 582 real bets is -0.47%. This measures how much of that gap is
+# execution, in dollars, by re-pricing each bet's entry at its quote and
+# leaving the known outcome alone.
+#
+# It also cuts by coin, because XRP is -$36.24 of a -$13.33 record, which
+# means every other coin is collectively positive.
+#
+# Reads the sheet and the portfolio endpoints only. Places no order, writes
+# no row, changes no setting.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  slipcut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Measure the quote-to-fill gap
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python slipcut.py
