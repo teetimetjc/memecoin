@@ -49,6 +49,31 @@ import tally as T
 START = T.START
 MIN_N = 150
 
+# ONLY THE LIVE STRATEGY, AND ONLY THE CRYPTO SERIES.
+#
+# The first run of this file pooled everything placed since 7 October: five
+# stake sizes, the retired T-3 experiment and the retired oil session. That
+# answers a question nobody asked. The live strategy is T-9 on the coins, so
+# that is what gets measured.
+#
+# THE RECORD CAN ONLY PARTLY SAY, and the two cases are counted separately
+# rather than blended. live.py has written a Strategy column since
+# 2026-10-23; every row before that is blank because the column did not
+# exist yet.
+#
+#   rows WITH a strategy  -- filtered on the record. Exact.
+#   rows WITHOUT one      -- filtered by inference, and the inference is
+#                            narrow and stated: oil is identifiable by its
+#                            ticker, since WTI is not a coin, and T-3 by its
+#                            $3 stake, which no other session used.
+#
+# The inference only EXCLUDES what is positively known to be something else.
+# It does not guess which of the remainder was T-9, because a guess written
+# into a result is indistinguishable from a measurement afterwards.
+LIVE_STRATEGY = "v6"
+T3_STAKE = 3.0
+CRYPTO = ("BTC", "ETH", "SOL", "XRP", "DOGE")
+
 
 def coin_of(ticker):
     """KXSOL15M-26NOV01... -> SOL. The series prefix IS the underlying."""
@@ -57,6 +82,31 @@ def coin_of(ticker):
         return "?"
     head = tk.split("-")[0][2:]
     return head[:-3] if head.endswith("15M") else head
+
+
+def keep(bets):
+    """T-9 on the coins only. Returns (kept, reasons) and explains itself."""
+    out = []
+    why = collections.Counter()
+    for b in bets:
+        coin = coin_of(b["ticker"])
+        if coin not in CRYPTO:
+            why[f"not a coin ({coin})"] += 1
+            continue
+        strat = (b.get("strategy") or "").strip().lower()
+        if strat:
+            if strat != LIVE_STRATEGY:
+                why[f"strategy={strat} on the record"] += 1
+                continue
+            why["kept: strategy on the record"] += 1
+        else:
+            # Blank strategy: exclude only what is positively identifiable.
+            if T.stake_of(b) == T3_STAKE:
+                why["blank strategy, $3 stake -> T-3"] += 1
+                continue
+            why["kept: blank strategy, inferred T-9"] += 1
+        out.append(b)
+    return out, why
 
 
 def load():
@@ -124,12 +174,16 @@ def cell(group):
     returned = sum(b["rev"] or 0 for b in group)
     net = returned - staked
     roi = 100.0 * net / staked if staked else 0.0
-    px = [100.0 * (b["entry"] or 0) / 100.0 for b in group if b["entry"]]
+    # Entry is ALREADY IN CENTS on the sheet. The first version multiplied
+    # by 100 again and printed "9192.95c" for a 91.93c entry. Cosmetic --
+    # nothing below is computed from it -- but a wrong number in a report is
+    # a wrong number, so it is fixed rather than explained in a footnote.
+    px = [float(b["entry"]) for b in group if b["entry"]]
     mean_px = st.mean(px) if px else 0.0
     w = wins / n
     # Standard error on the win rate, as percentage points.
     se = 100.0 * math.sqrt(max(w * (1 - w), 0.0) / n)
-    return n, 100.0 * w, 100.0 * mean_px, net, roi, 1.96 * se
+    return n, 100.0 * w, mean_px, net, roi, 1.96 * se
 
 
 def show(label, c, flag=""):
@@ -145,7 +199,9 @@ def show(label, c, flag=""):
 
 def main():
     print("=" * 104)
-    print(f"THE LIVE RECORD BY COIN, since {START} UTC")
+    print(f"THE T-9 RECORD BY COIN, since {START} UTC")
+    print("  T-9 on the five coins only. Oil and T-3 are excluded, and the")
+    print("  filtering is itemised below so the exclusions are auditable.")
     print("  Real fills and real settlements. The sample is small and the")
     print("  intervals below are the point, not the decoration.")
     print("=" * 104)
@@ -153,6 +209,16 @@ def main():
     bets, setts = load()
     if not bets:
         print("  no placed bets in the record")
+        return 1
+
+    before = len(bets)
+    bets, why = keep(bets)
+    print(f"\n  {before} placed bets in the record; "
+          f"{len(bets)} are T-9 on a coin")
+    for k, v in sorted(why.items(), key=lambda kv: -kv[1]):
+        print(f"      {v:>4}  {k}")
+    if not bets:
+        print("  nothing left after filtering")
         return 1
 
     settled = [b for b in bets if b["rev"] is not None]
