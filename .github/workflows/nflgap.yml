@@ -1,0 +1,66 @@
+name: NFL line gap, phase 2 -- matched (read-only, paper only)
+
+# Phase 1 (linegap.yml) looked at both sides and matched nothing on purpose.
+# The response shapes have since been read for real by nflmarket.py, so this
+# one matches: Kalshi KXNFLGAME sides against the sharp book's de-vigged
+# line, joined on the ticker's team token and the kickoff, with the tie
+# subtracted and the fee applied.
+#
+# MANUAL ONLY, and that is deliberate. The Odds API free tier is 500 credits
+# a month and this run costs 2 (us + eu). On a schedule it would quietly
+# drain the quota; dispatched by hand, the remaining-credits header is read
+# every time.
+#
+# Places no order, writes no row to any sheet, changes no setting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      edge_pts:
+        description: 'Edge threshold in points (pre-registered at 3)'
+        required: false
+        default: '3'
+      tie_rate:
+        description: 'NFL tie rate (0.002-0.004 historically)'
+        required: false
+        default: '0.003'
+      contracts:
+        description: 'Reference order size for the fee (it rounds per order)'
+        required: false
+        default: '25'
+      regions:
+        description: 'Odds API regions -- each one costs a credit'
+        required: false
+        default: 'us,eu'
+
+permissions:
+  contents: read
+
+jobs:
+  nflgap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      # The arithmetic every row depends on, checked before any of it is
+      # used. It needs no key and spends no quota, so there is no reason to
+      # skip it -- and a de-vig bias would be a bias in every printed edge.
+      - name: Check the odds arithmetic first
+        run: python oddstest.py
+      - name: Match Kalshi against the sharp line
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          ODDS_REGIONS: ${{ inputs.regions }}
+          NFLGAP_EDGE_PTS: ${{ inputs.edge_pts }}
+          NFLGAP_TIE_RATE: ${{ inputs.tie_rate }}
+          NFLGAP_CONTRACTS: ${{ inputs.contracts }}
+        run: python nflgap.py
