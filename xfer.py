@@ -26,6 +26,7 @@ small and the balances are read back immediately.
 Places no order and changes no strategy setting.
 """
 import json
+import re
 import sys
 
 import requests
@@ -35,10 +36,9 @@ import predictor as P
 TO_SHARD = int(__import__("os").environ.get("XFER_TO") or 2)
 AMOUNT = float(__import__("os").environ.get("XFER_AMOUNT") or 30.0)
 
-CANDIDATES = [
-    "/trade-api/v2/portfolio/intra_account_transfer",
-    "/trade-api/v2/portfolio/transfer",
-]
+# THE CORRECT PATH, supplied by the account holder. The two I tried before
+# (intra_account_transfer, transfer) both 404'd.
+PATH = "/trade-api/v2/portfolio/intra_exchange_instance_transfer"
 
 
 def balances(label):
@@ -85,31 +85,84 @@ def main():
         print("=" * 84)
         return 0
 
-    body = {"source_exchange_index": src,
-            "destination_exchange_index": TO_SHARD,
-            "amount_dollars": f"{AMOUNT:.4f}"}
-    for path in CANDIDATES:
-        print(f"\n  POST {path}")
-        print(f"    {json.dumps(body)}")
-        h = P._kalshi_headers("POST", path)
+    url = P.KALSHI_BASE + PATH.replace("/trade-api/v2", "")
+
+    def post(body):
+        h = P._kalshi_headers("POST", PATH)
         if not h:
-            print("    could not sign")
-            continue
+            return None
         h["Content-Type"] = "application/json"
-        r = requests.post(P.KALSHI_BASE + path.replace("/trade-api/v2", ""),
-                          headers=h, json=body, timeout=20)
-        print(f"    HTTP {r.status_code} {r.text[:400]}")
-        if r.ok:
-            print("\n  accepted.")
-            break
-        if r.status_code in (400, 422):
-            print("\n  REJECTED WITH DETAIL. That error names what is wrong;")
-            print("  read it rather than trying another guessed field.")
-            break
-        if r.status_code == 404:
-            print("    not this path; trying the next candidate")
-            continue
-        break
+        return requests.post(url, headers=h, json=body, timeout=20)
+
+    # STEP 1: ASK THE API WHAT IT WANTS. The docs are not reachable from
+    # this session, and guessing a field name on a money endpoint is not
+    # acceptable -- the allocation endpoint already proved the point, where
+    # 'percentage' was refused and Kalshi's own 400 named 'percent'. An
+    # empty body cannot move money; it can only be rejected, and the
+    # rejection lists the required fields by name.
+    print(f"\n  STEP 1 -- probe {PATH} with an empty body, to be told the")
+    print("  required fields rather than guess them. This cannot transfer.")
+    r = post({})
+    if r is None:
+        print("    could not sign the request")
+        return 1
+    print(f"    HTTP {r.status_code} {r.text[:600]}")
+    if r.status_code == 404:
+        print("\n  404 -- this path does not exist on this account's API.")
+        return 1
+    if r.ok:
+        print("\n  AN EMPTY BODY WAS ACCEPTED. That is unexpected and this")
+        print("  stops rather than sending anything else. Check the account.")
+        return 1
+
+    names = set(re.findall(r"\.([A-Za-z_]+)' Error:Field validation",
+                           r.text or ""))
+    if not names:
+        print("\n  THE ERROR DOES NOT NAME ANY FIELDS, so there is nothing")
+        print("  to build a request from. Stopping rather than guessing.")
+        print("  Paste the error above to Kalshi support, or allow")
+        print("  docs.kalshi.com in this session's network settings and")
+        print("  I will read the schema directly.")
+        return 1
+    print(f"\n    required fields named by Kalshi: {sorted(names)}")
+
+    if not send:
+        print("\n  PROBE ONLY. Nothing was moved. Re-run with 'send'.")
+        print("=" * 84)
+        return 0
+
+    # STEP 2: build the body from the names the API gave, mapping each to
+    # the value it can only sensibly take. Anything unrecognised stops this.
+    body = {}
+    unmapped = []
+    for n in names:
+        low = n.lower()
+        if "source" in low and ("index" in low or "instance" in low):
+            body[n] = src
+        elif ("destination" in low or "target" in low or "dest" in low) and \
+                ("index" in low or "instance" in low):
+            body[n] = TO_SHARD
+        elif "cent" in low:                       # amount in cents
+            body[n] = int(round(AMOUNT * 100))
+        elif "amount" in low or "dollar" in low:
+            body[n] = f"{AMOUNT:.4f}"
+        else:
+            unmapped.append(n)
+    if unmapped:
+        print(f"\n  UNRECOGNISED REQUIRED FIELD(S): {unmapped}")
+        print("  Stopping. A money transfer is not the place to invent a")
+        print("  value for a field whose meaning is unknown.")
+        return 1
+
+    print(f"\n  STEP 2 -- POST {PATH}")
+    print(f"    {json.dumps(body)}")
+    r = post(body)
+    print(f"    HTTP {r.status_code} {r.text[:600]}")
+    if r.ok:
+        print("\n  accepted.")
+    else:
+        print("\n  REJECTED. The error names what is still wrong; read it")
+        print("  rather than retrying with a different guess.")
 
     print()
     balances("balances after")
