@@ -1,0 +1,45 @@
+name: Target balance allocation (read, or apply 85/15)
+
+# All five crypto series trade on exchange shard 2, which holds $0.00, while
+# the account's $99.29 sits on shard 0. Kalshi authorises an order against
+# its market's own shard, so T-9 cannot bet until cash is on 2.
+#
+# mode=read   prints the current allocation and the per-shard balance.
+#             Changes nothing.
+# mode=apply  sends 85% shard 2 / 15% shard 0, then reads it back.
+#
+# The POST body is built from the shape the GET returns, not from a
+# remembered field name: guessing on an endpoint that moves money is not
+# acceptable, and the script stops rather than invent one.
+#
+# Default is read. Applying requires choosing it explicitly.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'read (changes nothing) or apply (moves money)'
+        required: false
+        default: 'read'
+
+permissions:
+  contents: read
+
+jobs:
+  shardalloc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Read or set the allocation
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python shardalloc.py ${{ inputs.mode == 'apply' && 'apply' || '' }}
