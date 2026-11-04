@@ -1,0 +1,48 @@
+name: Move funds onto an exchange shard (dry by default)
+
+# Crypto trades on shard 2, which holds $0.34; shard 0 holds $94.29. The
+# 85/15 target allocation is stored and inert, so automatic rebalancing is
+# not active. A manual app bet moves only what it needs and then spends it.
+# An explicit transfer is what is left.
+#
+# Dry by default. 'send' moves real money.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry (prints only) or send (moves money)'
+        required: false
+        default: 'dry'
+      amount:
+        description: 'Dollars to move'
+        required: false
+        default: '30'
+      to_shard:
+        description: 'Destination exchange shard'
+        required: false
+        default: '2'
+
+permissions:
+  contents: read
+
+jobs:
+  xfer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Transfer
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          XFER_AMOUNT: ${{ inputs.amount }}
+          XFER_TO: ${{ inputs.to_shard }}
+        run: python xfer.py ${{ inputs.mode == 'send' && 'send' || '' }}
