@@ -21,9 +21,10 @@ on:
         required: false
         default: '3'
       tie_rate:
-        description: 'NFL tie rate (0.002-0.004 historically)'
+        description: 'Tie rate; leave EMPTY to use the league default
+          (NFL 0.003, NBA 0.0 -- basketball has no ties)'
         required: false
-        default: '0.003'
+        default: ''
       contracts:
         description: 'Reference order size for the fee (it rounds per order)'
         required: false
