@@ -1,0 +1,57 @@
+name: NFL CLV -- snapshot and score (paper only)
+
+# Phase 3. Phase 2 proved the matching works and printed one photograph of
+# the board. A photograph cannot say whether a gap means the price is wrong
+# or our number is -- only whether Kalshi drifts TOWARD our fair value by
+# kickoff can, and that needs the same markets read over weeks.
+#
+# snap  : append one row per matched side to the NFLCLV tab (2 Odds credits)
+# score : read the tab back and test whether edge predicted the move
+#         (no Odds credits at all -- it touches only the sheet)
+#
+# Scheduled twice on game days: a first reading with the week ahead of it,
+# and a last one near kickoff. At 2 credits a snapshot that is about 24 a
+# month against the 500 free tier.
+#
+# Writes ONE tab, appending only. Places no order, touches no live setting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'snap (costs 2 Odds credits) or score (costs none)'
+        required: false
+        default: 'snap'
+  schedule:
+    # Thu/Sun/Mon, well before and then close to the usual kickoffs.
+    # UTC: 15:00 is 10am ET, 17:30 is 12:30pm ET.
+    - cron: '0 15 * * 0,1,4'
+    - cron: '30 17 * * 0,1,4'
+
+permissions:
+  contents: read
+
+jobs:
+  nflclv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      # The arithmetic every stored row depends on. No key, no quota, and a
+      # de-vig bias would be baked into the whole history rather than one run.
+      - name: Check the odds arithmetic first
+        run: python oddstest.py
+      - name: Snapshot or score
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python nflclv.py ${{ inputs.mode || 'snap' }}

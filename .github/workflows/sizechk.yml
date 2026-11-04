@@ -1,0 +1,45 @@
+name: Size units -- market object vs orderbook (read-only)
+
+# nflgap printed resting NFL ask sizes of 759,373 and 321,747 contracts.
+# At 60c that is $455,000 on one side of one book, and the field carries the
+# `_fp` fixed-point suffix. The number is probably scaled -- and guessing a
+# divisor from the magnitudes is exactly how this project has produced
+# plausible wrong numbers before, so this asks the exchange instead.
+#
+# Kalshi only. Spends no Odds API quota. Places no order, writes no row.
+
+on:
+  workflow_dispatch:
+    inputs:
+      series:
+        description: 'Series to check'
+        required: false
+        default: 'KXNFLGAME'
+      n:
+        description: 'How many markets to compare'
+        required: false
+        default: '6'
+
+permissions:
+  contents: read
+
+jobs:
+  sizechk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Compare the size fields against the book
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          SIZECHK_SERIES: ${{ inputs.series }}
+          SIZECHK_N: ${{ inputs.n }}
+        run: python sizechk.py
