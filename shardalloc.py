@@ -113,9 +113,15 @@ def main():
                       if "percent" in f.lower() or "pct" in f.lower()
                       or "allocation" in f.lower()), None)
     if not idx_f or not pct_f:
-        idx_f, pct_f = "exchange_index", "percentage"
-        print(f"  no existing element to copy; using the documented names "
-              f"{idx_f!r}/{pct_f!r}")
+        # NAMED BY KALSHI ITSELF. The first attempt sent 'percentage' and
+        # was refused 400 missing_parameters with
+        #   Allocations[0].Percent  Error:Field validation ... 'required'
+        # which names the field and confirms 'exchange_index' was accepted,
+        # since it drew no complaint. This is read off the rejection, not
+        # guessed a second time.
+        idx_f, pct_f = "exchange_index", "percent"
+        print(f"  no existing element to copy; using {idx_f!r}/{pct_f!r}, "
+              f"the names Kalshi's own 400 named")
 
     body = {key: [{idx_f: i, pct_f: p} for i, p in SPLIT.items()]}
     if isinstance(cur, dict) and "resting_margin_reservation" in cur:
