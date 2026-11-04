@@ -1,38 +1,50 @@
-name: NFL CLV -- snapshot and score (paper only)
+name: CLV -- snapshot and score (paper only)
 
-# Phase 3. Phase 2 proved the matching works and printed one photograph of
-# the board. A photograph cannot say whether a gap means the price is wrong
-# or our number is -- only whether Kalshi drifts TOWARD our fair value by
-# kickoff can, and that needs the same markets read over weeks.
+# Phase 3, for NFL and NBA. Phase 2 was a photograph and could not say
+# whether a gap means the price is wrong or our number is. Only whether the
+# Kalshi price drifts TOWARD our fair value by tip-off can, and that needs
+# the same markets read over weeks.
 #
-# snap  : append one row per matched side to the NFLCLV tab (2 Odds credits)
-# score : read the tab back and test whether edge predicted the move
-#         (no Odds credits at all -- it touches only the sheet)
+# snap  : append one row per matched side to the <LEAGUE>CLV tab (2 credits)
+# score : read the tab back and test whether edge predicted the move (free)
 #
-# Scheduled twice on game days: a first reading with the week ahead of it,
-# and a last one near kickoff. At 2 credits a snapshot that is about 24 a
-# month against the 500 free tier.
+# THE NBA SCHEDULE IS LATE ON PURPOSE. Reading KXNBAGAME found games three
+# days out whose two Yes asks summed to 1.86 -- placeholder quotes on
+# markets created minutes earlier with zero volume. Games two days out
+# summed 1.04-1.10. Snapshotting NBA a week ahead would store noise that
+# looks like enormous edges, so both readings sit close to tip-off and the
+# matcher drops any game whose asks sum above 1.15 regardless.
 #
-# Writes ONE tab, appending only. Places no order, touches no live setting.
+# Budget: NFL 3 days x 2 = ~24 credits a month, NBA daily x 2 = ~120. About
+# 145 of the 500 free tier. Score mode costs nothing.
+#
+# Writes one tab per league, appending only. Places no order.
 
 on:
   workflow_dispatch:
     inputs:
+      league:
+        description: 'NFL or NBA'
+        required: false
+        default: 'NFL'
       mode:
-        description: 'snap (costs 2 Odds credits) or score (costs none)'
+        description: 'snap (2 Odds credits) or score (none)'
         required: false
         default: 'snap'
   schedule:
-    # Thu/Sun/Mon, well before and then close to the usual kickoffs.
-    # UTC: 15:00 is 10am ET, 17:30 is 12:30pm ET.
+    # NFL: Thu/Sun/Mon, one reading ahead of the slate and one near kickoff.
     - cron: '0 15 * * 0,1,4'
     - cron: '30 17 * * 0,1,4'
+    # NBA: daily, both close to the first tip-offs (23:00 and 00:30 UTC is
+    # 6:00pm and 7:30pm ET). Earlier than this and the books are empty.
+    - cron: '0 23 * * *'
+    - cron: '30 0 * * *'
 
 permissions:
   contents: read
 
 jobs:
-  nflclv:
+  clv:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -43,10 +55,23 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests gspread google-auth cryptography
-      # The arithmetic every stored row depends on. No key, no quota, and a
-      # de-vig bias would be baked into the whole history rather than one run.
       - name: Check the odds arithmetic first
         run: python oddstest.py
+      # A scheduled run has no inputs, so the league comes from which cron
+      # fired. The NBA crons are the two at 23:00 and 00:30 UTC.
+      - name: Pick the league for this run
+        id: pick
+        env:
+          IN_LEAGUE: ${{ inputs.league }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ -n "$IN_LEAGUE" ]; then
+            echo "league=$IN_LEAGUE" >> "$GITHUB_OUTPUT"
+          elif [ "$CRON" = "0 23 * * *" ] || [ "$CRON" = "30 0 * * *" ]; then
+            echo "league=NBA" >> "$GITHUB_OUTPUT"
+          else
+            echo "league=NFL" >> "$GITHUB_OUTPUT"
+          fi
       - name: Snapshot or score
         env:
           PYTHONUNBUFFERED: '1'
@@ -54,4 +79,5 @@ jobs:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          GAP_LEAGUE: ${{ steps.pick.outputs.league }}
         run: python nflclv.py ${{ inputs.mode || 'snap' }}

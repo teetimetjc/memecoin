@@ -28,6 +28,10 @@ on:
         description: 'Reference order size for the fee (it rounds per order)'
         required: false
         default: '25'
+      league:
+        description: 'NFL or NBA'
+        required: false
+        default: 'NFL'
       regions:
         description: 'Odds API regions -- each one costs a credit'
         required: false
@@ -60,6 +64,7 @@ jobs:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           ODDS_REGIONS: ${{ inputs.regions }}
+          GAP_LEAGUE: ${{ inputs.league }}
           NFLGAP_EDGE_PTS: ${{ inputs.edge_pts }}
           NFLGAP_TIE_RATE: ${{ inputs.tie_rate }}
           NFLGAP_CONTRACTS: ${{ inputs.contracts }}
