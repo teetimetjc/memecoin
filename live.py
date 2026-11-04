@@ -671,7 +671,14 @@ def run_window(client, signals, stake=None):
               f"skipped.")
         betable = [s for s in betable if (s[0], s[1]) in keep]
 
-    ok, needed, bal, reason = control.check_window(client, len(betable), stake=stake)
+    # THE TICKERS, so the funding check can test each EXCHANGE SHARD rather
+    # than the account total. Kalshi authorises an order against the shard
+    # its market trades on; the total is not a number it uses. Passing these
+    # is what turns the check from an approval that Kalshi then refuses into
+    # a refusal we make ourselves, with the shard named.
+    ok, needed, bal, reason = control.check_window(
+        client, len(betable), stake=stake,
+        tickers=[s[3] for s in betable])
     control.record_balance(client, bal)
     if not ok:
         control.halt(client, f"Funding short -- {reason}. No orders were placed.")

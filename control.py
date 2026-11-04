@@ -146,17 +146,132 @@ def record_balance(client, bal):
         pass
 
 
-def check_window(client, n_signals, stake=None, balance=None):
+def shard_balances():
+    """{exchange_index: dollars}, or None if the breakdown cannot be read.
+
+    KALSHI SHARDED THE EXCHANGE. Each shard is a separate exchange instance
+    with SEPARATE COLLATERAL, and an order is authorised against the balance
+    on its own shard -- the account total has nothing to do with it.
+
+    This is not theory. On 2026-11-04 at 03:20 UTC a ~$5 XRP order was
+    refused for insufficient balance while this module's own check had just
+    approved the window on a $99.29 total. All $99.29 sat on shard 0; every
+    crypto series trades on shard 2, which held $0.00. Both numbers were
+    right and they were measuring different things.
+    """
+    import predictor as P
+    hdrs = P._kalshi_headers("GET", "/trade-api/v2/portfolio/balance")
+    if not hdrs:
+        return None
+    try:
+        r = requests.get(f"{P.KALSHI_BASE}/portfolio/balance",
+                         headers=hdrs, timeout=10)
+        if not r.ok:
+            print(f"  [balance] breakdown HTTP {r.status_code}")
+            return None
+        rows = r.json().get("balance_breakdown")
+        if not rows:
+            return None
+        out = {}
+        for row in rows:
+            try:
+                out[int(row.get("exchange_index"))] = float(row.get("balance"))
+            except (TypeError, ValueError):
+                continue
+        return out or None
+    except Exception as e:
+        print(f"  [balance] breakdown {e}")
+        return None
+
+
+_SHARD_CACHE = {}
+
+
+def shard_of(ticker):
+    """The exchange_index a ticker trades on, or None. Cached per process.
+
+    Cached because a window asks about the same handful of series every
+    cycle and a market's shard does not move mid-session. None is NOT
+    cached: an unreadable answer should be retried, not frozen in.
+    """
+    if not ticker:
+        return None
+    key = str(ticker).split("-")[0]           # the series prefix
+    if key in _SHARD_CACHE:
+        return _SHARD_CACHE[key]
+    import predictor as P
+    hdrs = P._kalshi_headers("GET", f"/trade-api/v2/markets/{ticker}")
+    if not hdrs:
+        return None
+    try:
+        r = requests.get(f"{P.KALSHI_BASE}/markets/{ticker}",
+                         headers=hdrs, timeout=10)
+        if not r.ok:
+            return None
+        idx = ((r.json() or {}).get("market") or {}).get("exchange_index")
+        idx = int(idx) if idx is not None else None
+    except Exception:
+        return None
+    if idx is not None:
+        _SHARD_CACHE[key] = idx
+    return idx
+
+
+def check_window(client, n_signals, stake=None, balance=None, tickers=None):
     """Can this whole window be funded? Returns (ok, needed, balance, why).
 
     Does NOT halt on its own -- the caller decides, so this stays usable as an
     observation in dry-run mode where halting would be pointless noise.
+
+    WITH `tickers`, THE CHECK IS PER SHARD, which is the only check that
+    means anything: signals are grouped by the shard their market trades on
+    and each group is tested against that shard's own collateral. A window
+    spanning two shards must be funded on both, and the first shard that
+    cannot cover its share fails the whole window -- partial funding is
+    refused here for the same reason it always has been, because funding
+    some signals and not others silently drops whichever the loop reaches
+    last and biases the record in a way nothing can reconstruct later.
+
+    WITHOUT `tickers`, OR IF THE BREAKDOWN CANNOT BE READ, it falls back to
+    the old total-balance behaviour and says so. A fallback that blocked
+    would stop all betting the first time one API call failed, which is a
+    worse failure than the one being fixed; a fallback that is silent is how
+    this bug survived in the first place.
     """
     stake = stake if stake is not None else get_stake(client)
     needed = round(n_signals * stake, 2)
     bal = balance if balance is not None else fetch_balance()
     if bal is None:
         return False, needed, None, "could not read the account balance"
+
+    if tickers:
+        shards = shard_balances()
+        if shards is None:
+            print("  [balance] no shard breakdown -- falling back to the "
+                  "account total, which Kalshi does NOT authorise against")
+        else:
+            by_shard = {}
+            unknown = 0
+            for t in tickers:
+                idx = shard_of(t)
+                if idx is None:
+                    unknown += 1
+                    continue
+                by_shard[idx] = by_shard.get(idx, 0) + 1
+            if unknown:
+                print(f"  [balance] {unknown} signal(s) whose shard could not "
+                      f"be read -- counted against the total, not a shard")
+            for idx in sorted(by_shard):
+                want = round(by_shard[idx] * stake, 2)
+                have = shards.get(idx, 0.0)
+                if have + 1e-9 < want:
+                    return (False, needed, bal,
+                            f"{by_shard[idx]} signal(s) on exchange shard "
+                            f"{idx} need ${want:.2f} but that shard holds "
+                            f"${have:.2f} (account total ${bal:.2f} is on "
+                            f"other shards and Kalshi will not use it)")
+            return True, needed, bal, ""
+
     if bal + 1e-9 < needed:
         return (False, needed, bal,
                 f"{n_signals} signal(s) need ${needed:.2f} but the balance is "
