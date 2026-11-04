@@ -258,9 +258,26 @@ def check_window(client, n_signals, stake=None, balance=None, tickers=None):
                     unknown += 1
                     continue
                 by_shard[idx] = by_shard.get(idx, 0) + 1
+            # AN UNRESOLVED SHARD IS NOT A PASS. The first version counted
+            # these and carried on, so if EVERY lookup failed -- one rate
+            # limit from Kalshi does it, and 429s were coming back the night
+            # this was written -- by_shard was empty, the loop below never
+            # ran, and the function returned True having checked nothing.
+            # That is a fail-open in the brakes, and the same shape as the
+            # bug it was written to fix: a check that returns a plausible
+            # pass instead of refusing. A signal whose shard cannot be read
+            # cannot be funded-checked, so it is refused.
             if unknown:
-                print(f"  [balance] {unknown} signal(s) whose shard could not "
-                      f"be read -- counted against the total, not a shard")
+                return (False, needed, bal,
+                        f"{unknown} of {len(tickers)} signal(s) have an "
+                        f"unreadable exchange shard, so their funding cannot "
+                        f"be checked. Refusing rather than guessing -- a "
+                        f"rejected order halts the bot, and an unchecked "
+                        f"approval is how this went wrong before.")
+            if not by_shard:
+                return (False, needed, bal,
+                        "no signal resolved to an exchange shard; nothing "
+                        "could be checked")
             for idx in sorted(by_shard):
                 want = round(by_shard[idx] * stake, 2)
                 have = shards.get(idx, 0.0)
@@ -270,7 +287,9 @@ def check_window(client, n_signals, stake=None, balance=None, tickers=None):
                             f"{idx} need ${want:.2f} but that shard holds "
                             f"${have:.2f} (account total ${bal:.2f} is on "
                             f"other shards and Kalshi will not use it)")
-            return True, needed, bal, ""
+            # The per-shard test passed. The total still has to as well:
+            # both are necessary, neither is sufficient, and falling through
+            # rather than returning early is what makes that true.
 
     if bal + 1e-9 < needed:
         return (False, needed, bal,
