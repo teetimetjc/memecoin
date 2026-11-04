@@ -289,7 +289,8 @@ def match_rows(events, mks):
     what a row IS lives here.
     """
     diag = dict(odds_unmapped=[], books_seen=set(), k_events=0, k_bad=[],
-                usable_pairs=0, amb=[], no_odds=[], no_sharp_mk=[],
+                usable_pairs=0, amb=[], no_odds=[], no_kalshi=[],
+                no_sharp_mk=[],
                 empty_book=[])
 
     odds_by_pair = {}
@@ -319,93 +320,126 @@ def match_rows(events, mks):
     diag["usable_pairs"] = len(k_by_pair)
 
     rows = []
-    for pair, entries in sorted(k_by_pair.items(),
-                                key=lambda kv: sorted(kv[0])):
+    diag["no_odds"] = [" vs ".join(sorted(p)) for p in k_by_pair
+                       if p not in odds_by_pair]
+    # DRIVEN BY THE ODDS EVENT, NOT THE KALSHI EVENT. The first version
+    # walked Kalshi pairs and dropped any pair with more than one event --
+    # which is fine for football, where two teams meet once, and useless for
+    # basketball, where they meet two to four times. It threw away most of
+    # the NBA slate while reporting a clean run.
+    #
+    # An odds event is one dated game with one line, so it is the right unit:
+    # for each, find the Kalshi event whose tip-off is nearest and inside the
+    # tolerance. Exactly one match is required, and a Kalshi event is claimed
+    # only once -- if two odds events want the same one, both are dropped
+    # rather than one silently winning.
+    claimed = {}
+    for pair, cands in sorted(odds_by_pair.items(),
+                              key=lambda kv: sorted(kv[0])):
         label = " vs ".join(sorted(pair))
-        if len(entries) > 1:
-            diag["amb"].append((label, f"{len(entries)} Kalshi events"))
+        entries = k_by_pair.get(pair) or []
+        if not entries:
+            diag["no_kalshi"].append(label)
             continue
-        cands = odds_by_pair.get(pair) or []
-        if not cands:
-            diag["no_odds"].append(label)
-            continue
-        ev_t, ms = entries[0]
-        kick_k = parse_iso(ms[0].get("occurrence_datetime"))
-        if len(cands) > 1 and kick_k is not None:
-            cands = [c for c in cands
-                     if (parse_iso(c.get("commence_time")) is not None
-                         and abs((parse_iso(c["commence_time"]) - kick_k)
-                                 .total_seconds()) <= KICK_TOL_H * 3600)]
-        if len(cands) != 1:
-            diag["amb"].append((label, f"{len(cands)} odds events after the "
-                                       f"kickoff filter"))
-            continue
-        oev = cands[0]
-        kick_o = parse_iso(oev.get("commence_time"))
-        if kick_k is not None and kick_o is not None:
-            dh = abs((kick_o - kick_k).total_seconds()) / 3600.0
-            if dh > KICK_TOL_H:
-                diag["amb"].append((label, f"kickoffs {dh:.1f}h apart -- "
-                                           f"not the same game"))
+        for oev in cands:
+            kick_o = parse_iso(oev.get("commence_time"))
+            near = []
+            for ev_t, ms in entries:
+                kick_k = parse_iso(ms[0].get("occurrence_datetime"))
+                if kick_o is None or kick_k is None:
+                    # Without both clocks a repeated pairing cannot be told
+                    # apart. One candidate is still usable; several are not.
+                    near.append((None, ev_t, ms))
+                    continue
+                dh = abs((kick_k - kick_o).total_seconds()) / 3600.0
+                if dh <= KICK_TOL_H:
+                    near.append((dh, ev_t, ms))
+            if not near:
+                diag["amb"].append((label, f"no Kalshi event within "
+                                           f"{KICK_TOL_H:.0f}h of the line's "
+                                           f"tip-off"))
+                continue
+            dated = [n for n in near if n[0] is not None]
+            if dated:
+                dated.sort(key=lambda n: n[0])
+                # Two Kalshi events equally close is a real ambiguity.
+                if len(dated) > 1 and abs(dated[1][0] - dated[0][0]) < 1.0:
+                    diag["amb"].append((label, f"{len(dated)} Kalshi events "
+                                               f"within an hour of each "
+                                               f"other"))
+                    continue
+                _, ev_t, ms = dated[0]
+            elif len(near) == 1:
+                _, ev_t, ms = near[0]
+            else:
+                diag["amb"].append((label, f"{len(near)} Kalshi events and no "
+                                           f"tip-off time to separate them"))
                 continue
 
-        books = {b.get("key"): b for b in (oev.get("bookmakers") or [])}
-        ref = next((books[s] for s in SHARP if s in books), None)
-        sharp_used = ref is not None
-        if ref is None:
-            ref = next(iter(books.values()), None)
+            if ev_t in claimed:
+                diag["amb"].append((label, f"two lines both matched Kalshi "
+                                           f"event {ev_t}"))
+                continue
+            claimed[ev_t] = label
+
+            kick_k = parse_iso(ms[0].get("occurrence_datetime"))
+            books = {b.get("key"): b for b in (oev.get("bookmakers") or [])}
+            ref = next((books[s] for s in SHARP if s in books), None)
+            sharp_used = ref is not None
             if ref is None:
+                ref = next(iter(books.values()), None)
+                if ref is None:
+                    diag["no_sharp_mk"].append(label)
+                    continue
+            mk = next((x for x in (ref.get("markets") or [])
+                       if x.get("key") == "h2h"), None)
+            if not mk or len(mk.get("outcomes") or []) != 2:
                 diag["no_sharp_mk"].append(label)
                 continue
-        mk = next((x for x in (ref.get("markets") or [])
-                   if x.get("key") == "h2h"), None)
-        if not mk or len(mk.get("outcomes") or []) != 2:
-            diag["no_sharp_mk"].append(label)
-            continue
-        outs = mk["outcomes"]
-        try:
-            raws = [M.american_to_prob(o["price"]) for o in outs]
-        except Exception as e:
-            diag["no_sharp_mk"].append(f"{label} (unreadable price: {e})")
-            continue
-
-        age = None
-        lu = parse_iso(mk.get("last_update") or ref.get("last_update"))
-        if lu is not None:
-            age = (datetime.now(timezone.utc) - lu).total_seconds()
-
-        # AN EMPTY BOOK IS NOT A PRICE. Both sides, before any edge exists,
-        # so this cannot select on the answer: it drops the game or keeps it.
-        asks = [ask_price(m) for m in ms]
-        if all(a is not None for a in asks):
-            tot = sum(asks)
-            if tot > MAX_ASK_SUM:
-                diag["empty_book"].append((label, tot))
+            outs = mk["outcomes"]
+            try:
+                raws = [M.american_to_prob(o["price"]) for o in outs]
+            except Exception as e:
+                diag["no_sharp_mk"].append(f"{label} (unreadable price: {e})")
                 continue
 
-        for m in ms:
-            ab = side_abbr(m.get("ticker"))
-            full = ABBR[ab]
-            idx = next((i for i, o in enumerate(outs)
-                        if o.get("name") == full), None)
-            if idx is None:
-                diag["amb"].append((label, f"{ab} -> {full!r} is not an "
-                                           f"outcome name on the book"))
-                continue
-            lo, hi, spread = M.fair_consensus(raws, idx)
-            fair = lo * (1.0 - TIE_RATE) + 0.5 * TIE_RATE
-            px = ask_price(m)
-            sz = ask_size(m)
-            n = 0 if px is None else (
-                REF_CONTRACTS if sz is None
-                else int(min(REF_CONTRACTS, max(sz, 0))))
-            edge = None if (px is None or n <= 0) else M.net_edge(fair, px, n)
-            rows.append(dict(pair=label, team=ab, px=px, sz=sz, fair=fair,
-                             spread=spread, edge=edge, n=n,
-                             book=ref.get("key"), sharp=sharp_used, age=age,
-                             ticker=m.get("ticker"), event=ev_t,
-                             kickoff=kick_o or kick_k,
-                             book_odds=outs[idx].get("price")))
+            age = None
+            lu = parse_iso(mk.get("last_update") or ref.get("last_update"))
+            if lu is not None:
+                age = (datetime.now(timezone.utc) - lu).total_seconds()
+
+            # AN EMPTY BOOK IS NOT A PRICE. Both sides, before any edge exists,
+            # so this cannot select on the answer: it drops the game or keeps it.
+            asks = [ask_price(m) for m in ms]
+            if all(a is not None for a in asks):
+                tot = sum(asks)
+                if tot > MAX_ASK_SUM:
+                    diag["empty_book"].append((label, tot))
+                    continue
+
+            for m in ms:
+                ab = side_abbr(m.get("ticker"))
+                full = ABBR[ab]
+                idx = next((i for i, o in enumerate(outs)
+                            if o.get("name") == full), None)
+                if idx is None:
+                    diag["amb"].append((label, f"{ab} -> {full!r} is not an "
+                                               f"outcome name on the book"))
+                    continue
+                lo, hi, spread = M.fair_consensus(raws, idx)
+                fair = lo * (1.0 - TIE_RATE) + 0.5 * TIE_RATE
+                px = ask_price(m)
+                sz = ask_size(m)
+                n = 0 if px is None else (
+                    REF_CONTRACTS if sz is None
+                    else int(min(REF_CONTRACTS, max(sz, 0))))
+                edge = None if (px is None or n <= 0) else M.net_edge(fair, px, n)
+                rows.append(dict(pair=label, team=ab, px=px, sz=sz, fair=fair,
+                                 spread=spread, edge=edge, n=n,
+                                 book=ref.get("key"), sharp=sharp_used, age=age,
+                                 ticker=m.get("ticker"), event=ev_t,
+                                 kickoff=kick_o or kick_k,
+                                 book_odds=outs[idx].get("price")))
     return rows, diag
 
 
@@ -481,6 +515,9 @@ def main():
     print(f"  matched games            : "
           f"{len({r['pair'] for r in rows})}")
     print(f"  matched sides (rows)     : {len(rows)}")
+    print(f"  no Kalshi event for line : {len(diag['no_kalshi'])}"
+          + (f"   {', '.join(diag['no_kalshi'][:8])}"
+             if diag['no_kalshi'] else ""))
     print(f"  no odds event for pair   : {len(no_odds)}"
           + (f"   {', '.join(no_odds[:8])}" if no_odds else ""))
     print(f"  ambiguous, DROPPED       : {len(amb)}")
