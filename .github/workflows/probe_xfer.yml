@@ -1,0 +1,40 @@
+name: Transfer schema probe (bounded to about $1)
+
+# The endpoint is confirmed: an empty body returned
+#   400 invalid_parameters "amount must be positive"
+# so the path is right and the field is `amount`. The UNIT is unknown.
+#
+# amount=100 is safe either way on this account: $1 if cents, $100 if
+# dollars which exceeds shard 0's $94.29 and is refused. Worst case is
+# about a dollar, bounded by arithmetic rather than by trust.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bodies:
+        description: 'JSON array of request bodies to try, in order'
+        required: false
+        default: '[{"amount": 100}]'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Probe
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          PROBE_BODIES: ${{ inputs.bodies }}
+        run: python probe_xfer.py
