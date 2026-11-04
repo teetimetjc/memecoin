@@ -80,11 +80,10 @@ def main():
     print(f"\n  source shard {src} (${before[src]:,.2f}) -> "
           f"shard {TO_SHARD} (${before.get(TO_SHARD, 0.0):,.2f})")
 
-    if not send:
-        print("\n  DRY RUN. Nothing was moved. Re-run with 'send'.")
-        print("=" * 84)
-        return 0
-
+    # NO EARLY RETURN FOR DRY MODE. The schema probe below sends an empty
+    # body, which cannot move money and is the whole point of a dry run:
+    # returning here meant the dry run learned nothing and the only way to
+    # see the required fields was to run the mode that also transfers.
     url = P.KALSHI_BASE + PATH.replace("/trade-api/v2", "")
 
     def post(body):
