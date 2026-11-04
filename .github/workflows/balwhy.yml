@@ -1,0 +1,38 @@
+name: Why insufficient_balance (read-only)
+
+# The bot halted at 03:20 UTC on an order Kalshi rejected for insufficient
+# balance, while /portfolio/balance read $99.29 and the pre-flight funding
+# check passed. Both numbers cannot be right.
+#
+# This reads the account three ways -- every field of the balance payload,
+# every resting order, every open position -- and prints the raw responses.
+# If they do not explain the rejection it says so rather than fitting a
+# story to them.
+#
+# Signed GETs only. Places nothing, cancels nothing, and does NOT clear the
+# halt: resuming stays a human action.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  balwhy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Read the account three ways
+        env:
+          PYTHONUNBUFFERED: '1'
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python balwhy.py
