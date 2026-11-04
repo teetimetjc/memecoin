@@ -1,31 +1,34 @@
-name: Find the NFL series on Kalshi (read-only, no odds quota)
+name: Find a league's game series on Kalshi (read-only)
 
-# The line-gap probe listed 15,581 series. Keyword-matching "GAME" against
-# them returned GAMEAWARDS, KXAPPSTOREIPADGAME, KXALBUMRELEASENBAYB and
-# KXAFLGAME -- the last being Australian football, which a matcher built on
-# name similarity would have accepted without complaint.
+# Which series actually carries game winners, proven by what its markets
+# say rather than by what it is called. The probe listed 15,581 series and
+# a keyword filter on "GAME" returned GAMEAWARDS and KXAFLGAME -- Australian
+# football, which would have looked exactly right to a name matcher. And
+# KXEFOOTBALLGAME is a VIDEO GAME league whose markets read "Seattle (Knox)
+# wins". The NBA 2K equivalent will pass every name test too, which is why
+# this prints sample titles for a human to read instead of trusting a score.
 #
-# So this confirms the series by its MARKETS: open markets naming two NFL
-# teams. Thirty-two specific names make a false positive unlikely, and a
-# series about app-store rankings cannot fake it.
-#
-# Spends no Odds API credits. Reads Kalshi only. Places no order.
+# Kalshi only. Spends no Odds API quota. Places no order, writes no row.
 
 on:
   workflow_dispatch:
     inputs:
-      probe:
-        description: 'How many title-matched series to read markets for'
+      league:
+        description: 'NFL or NBA'
         required: false
-        default: '25'
+        default: 'NBA'
+      probe:
+        description: 'How many ranked series to probe'
+        required: false
+        default: '200'
 
 permissions:
   contents: read
 
 jobs:
-  nflfind:
+  find:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,10 +37,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests gspread google-auth cryptography
-      - name: Find it by its markets
+      - name: Find the series by its markets
         env:
           PYTHONUNBUFFERED: '1'
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
-          NFLFIND_PROBE: ${{ github.event.inputs.probe || '25' }}
+          FIND_LEAGUE: ${{ inputs.league }}
+          NFLFIND_PROBE: ${{ inputs.probe }}
         run: python nflfind.py
