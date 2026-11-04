@@ -1,4 +1,9 @@
-"""Which Kalshi series carries NFL game winners? Found, not guessed.
+"""Which Kalshi series carries a league's game winners? Found, not guessed.
+
+Set FIND_LEAGUE to NFL or NBA. The passes, the ranking and the evidence
+rule are shared; only the team list and the title hints change. A separate
+basketball copy would have drifted from this one the first time either was
+touched.
 
 WHY THIS IS ITS OWN STEP. The probe listed 15,581 series and a keyword
 filter on "GAME" returned GAMEAWARDS, KXAPPSTOREIPADGAME and
@@ -41,7 +46,14 @@ import collect15 as C
 # The thirty-two, by the name a market title would use. Matching on two
 # distinct names in one title is the test -- one name could be a futures
 # market ("will the Lions make the playoffs"), two means a game.
-TEAMS = [
+# LEAGUE-SWITCHABLE, so basketball reuses this machinery instead of getting
+# a copy of it. The three passes, the ranking and the evidence rule are the
+# part that was hard to get right; the team list is the part that changes.
+# A second file would have drifted from this one the first time either was
+# touched -- which is this project's standing failure, not a hypothetical.
+LEAGUE = (os.environ.get("FIND_LEAGUE") or "NFL").strip().upper()
+
+NFL_TEAMS = [
     "Cardinals", "Falcons", "Ravens", "Bills", "Panthers", "Bears",
     "Bengals", "Browns", "Cowboys", "Broncos", "Lions", "Packers",
     "Texans", "Colts", "Jaguars", "Chiefs", "Raiders", "Chargers",
@@ -56,7 +68,7 @@ TEAMS = [
 # that can only see nicknames reports a clean zero on the right series, which
 # is the same failure as the first run in a new place: the read returned
 # something plausible instead of failing.
-CITIES = [
+NFL_CITIES = [
     "Arizona", "Atlanta", "Baltimore", "Buffalo", "Carolina", "Chicago",
     "Cincinnati", "Cleveland", "Dallas", "Denver", "Detroit", "Green Bay",
     "Houston", "Indianapolis", "Jacksonville", "Kansas City", "Las Vegas",
@@ -64,7 +76,37 @@ CITIES = [
     "New York", "Philadelphia", "Pittsburgh", "San Francisco", "Seattle",
     "Tampa Bay", "Tennessee", "Washington",
 ]
-TITLE_HINTS = ("NFL", "FOOTBALL")
+NBA_TEAMS = [
+    "Hawks", "Celtics", "Nets", "Hornets", "Bulls", "Cavaliers",
+    "Mavericks", "Nuggets", "Pistons", "Warriors", "Rockets", "Pacers",
+    "Clippers", "Lakers", "Grizzlies", "Heat", "Bucks", "Timberwolves",
+    "Pelicans", "Knicks", "Thunder", "Magic", "76ers", "Suns",
+    "Trail Blazers", "Kings", "Spurs", "Raptors", "Jazz", "Wizards",
+]
+NBA_CITIES = [
+    "Atlanta", "Boston", "Brooklyn", "Charlotte", "Chicago", "Cleveland",
+    "Dallas", "Denver", "Detroit", "Golden State", "Houston", "Indiana",
+    "Los Angeles", "Memphis", "Miami", "Milwaukee", "Minnesota",
+    "New Orleans", "New York", "Oklahoma City", "Orlando", "Philadelphia",
+    "Phoenix", "Portland", "Sacramento", "San Antonio", "Toronto", "Utah",
+    "Washington",
+]
+
+_LEAGUES = {
+    "NFL": (NFL_TEAMS, NFL_CITIES, ("NFL", "FOOTBALL")),
+    # BASKETBALL IS LISTED AS A HINT AND NBA 2K IS NOT EXCLUDED BY NAME.
+    # KXEFOOTBALLGAME -- a video-game league whose markets read "Seattle
+    # (Knox) wins" -- passed every name test the NFL search had. The 2K
+    # equivalent will too, and the right place to catch it is a human
+    # reading the sample titles this prints, not a blocklist that has to
+    # anticipate what the thing is called.
+    "NBA": (NBA_TEAMS, NBA_CITIES, ("NBA", "BASKETBALL")),
+}
+if LEAGUE not in _LEAGUES:
+    raise SystemExit(f"FIND_LEAGUE={LEAGUE!r} is not one of "
+                     f"{sorted(_LEAGUES)}. Refusing to search with an empty "
+                     f"team list, which would report a confident zero.")
+TEAMS, CITIES, TITLE_HINTS = _LEAGUES[LEAGUE]
 MAX_SERIES_PROBE = int(os.environ.get("NFLFIND_PROBE") or 200)
 
 # RANKING, BECAUSE 629 SERIES MATCHED THE WORD FILTER AND THE FIRST RUN
@@ -101,7 +143,7 @@ def teams_in(text):
 
 def main():
     print("=" * 100)
-    print("FINDING THE NFL SERIES ON KALSHI -- by what its markets say, "
+    print(f"FINDING THE {LEAGUE} SERIES ON KALSHI -- by what its markets say, "
           "not by its name")
     print("=" * 100)
 
@@ -127,7 +169,7 @@ def main():
     # hundred get probed, so the order decides what is reached at all.
     cands.sort(key=lambda c: (-score(c[0], c[1]), c[0]))
     print(f"\n{'-' * 100}")
-    print(f"PASS 1 -- {len(cands)} series mention NFL or football, ranked by "
+    print(f"PASS 1 -- {len(cands)} series mention {' or '.join(TITLE_HINTS)}, ranked by "
           "how much the title sounds like a game winner")
     print("-" * 100)
     for tk, ti in cands[:25]:
@@ -139,7 +181,7 @@ def main():
     # PASS 2 -- the real test: open markets naming two NFL teams.
     print(f"\n{'-' * 100}")
     print("PASS 2 -- which of those actually have open markets naming TWO "
-          "NFL teams")
+          f"{LEAGUE} teams")
     print("-" * 100)
     confirmed = []
     shape_shown = False
@@ -171,7 +213,7 @@ def main():
                 hits += 1
                 events.add(m.get("event_ticker"))
                 example = example or (m, names)
-        flag = "  <- NAMES NFL TEAMS" if hits else ""
+        flag = f"  <- NAMES {LEAGUE} TEAMS" if hits else ""
         if hits or len(mks):
             print(f"  {tk:<28} {len(mks):>3} markets, {hits:>3} naming a "
                   f"team, {len(events):>3} event(s){flag}")
@@ -186,8 +228,8 @@ def main():
             confirmed.append((tk, ti, hits, example))
 
     if not confirmed:
-        print("\n  Nothing confirmed. Either the NFL series is named without")
-        print("  'NFL' or 'football', or its markets are closed right now.")
+        print(f"\n  Nothing confirmed. Either the {LEAGUE} series is named without")
+        print(f"  {TITLE_HINTS}, or its markets are closed right now.")
         print("  Next move is to widen PASS 1 rather than guess a ticker.")
         return 1
 
@@ -198,7 +240,7 @@ def main():
     print("-" * 100)
     for tk, ti, hits, example in sorted(confirmed, key=lambda x: -x[2]):
         print(f"\n  SERIES {tk}   {ti[:70]}")
-        print(f"    {hits} open market(s) naming two NFL teams")
+        print(f"    {hits} open market(s) naming two {LEAGUE} teams")
         md, _ = C.get("/trade-api/v2/markets", series_ticker=tk, limit=40)
         shown = 0
         for m in ((md or {}).get("markets") or []):
