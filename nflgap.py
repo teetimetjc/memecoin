@@ -73,30 +73,24 @@ import oddsmath as M
 
 ODDS_HOST = "https://api.the-odds-api.com/v4"
 
-SPORT = (os.environ.get("ODDS_SPORT") or "americanfootball_nfl").strip()
 MARKETS = "h2h"
 REGIONS = (os.environ.get("ODDS_REGIONS") or "us,eu").strip()
 SHARP = [b.strip().lower() for b in
          (os.environ.get("ODDS_SHARP") or "pinnacle").split(",") if b.strip()]
-SERIES = (os.environ.get("NFLGAP_SERIES") or "KXNFLGAME").strip()
 
-# PRE-REGISTERED, before any number is read. A threshold chosen after seeing
-# the distribution is not a threshold, it is a selection.
-EDGE_PTS = float(os.environ.get("NFLGAP_EDGE_PTS") or 3.0)
-# NFL ties: 0.2-0.4% of games historically. Mid-range, and the sensitivity to
-# it is printed so the choice is visible rather than buried.
-TIE_RATE = float(os.environ.get("NFLGAP_TIE_RATE") or 0.003)
-# A line older than this is a memory, not a quote.
-STALE_S = int(os.environ.get("ODDS_STALE_S") or 600)
-# Reference order size for the fee, which rounds up per ORDER. The real size
-# would be min(this, ask size); both are printed.
-REF_CONTRACTS = int(os.environ.get("NFLGAP_CONTRACTS") or 25)
-# Kickoff tolerance between the two sources. Same game, two clocks.
-KICK_TOL_H = float(os.environ.get("NFLGAP_KICK_TOL_H") or 30.0)
+# ONE MATCHER, TWO SPORTS. Everything that differs between them is in this
+# table; everything that decides what a matched row IS stays shared. A
+# basketball copy of this file would drift from the football one the first
+# time either was touched, with both halves still running green.
+#
+# KXNBAGAME was confirmed by reading it in full, not inferred from the
+# naming pattern -- the same search turned up KXSLBGAME (England Super
+# League, "Cheshire Phoenix wins") and KXBBLGAME (German Bundesliga,
+# "Phoenix Hagen wins"), both of which match NBA city names and neither of
+# which is the NBA.
+LEAGUE = (os.environ.get("GAP_LEAGUE") or "NFL").strip().upper()
 
-# THE JOIN TABLE. Exact, hand-written, no fuzzy fallback. NY and LA are the
-# reason this cannot be done on city alone: four teams, two cities.
-ABBR = {
+_NFL_ABBR = {
     "ARI": "Arizona Cardinals",      "ATL": "Atlanta Falcons",
     "BAL": "Baltimore Ravens",       "BUF": "Buffalo Bills",
     "CAR": "Carolina Panthers",      "CHI": "Chicago Bears",
@@ -113,11 +107,79 @@ ABBR = {
     "PIT": "Pittsburgh Steelers",    "SEA": "Seattle Seahawks",
     "SF": "San Francisco 49ers",     "TB": "Tampa Bay Buccaneers",
     "TEN": "Tennessee Titans",       "WAS": "Washington Commanders",
-    # Spellings seen in the wild for the same two franchises.
     "JAC": "Jacksonville Jaguars",   "WSH": "Washington Commanders",
     "OAK": "Las Vegas Raiders",      "SD": "Los Angeles Chargers",
     "STL": "Los Angeles Rams",
 }
+
+# Kalshi's own three-letter codes, read off real KXNBAGAME tickers
+# (KXNBAGAME-26NOV07HOUPHX-PHX, ...-26OCT25LACOKC-LAC).
+_NBA_ABBR = {
+    "ATL": "Atlanta Hawks",          "BOS": "Boston Celtics",
+    "BKN": "Brooklyn Nets",          "CHA": "Charlotte Hornets",
+    "CHI": "Chicago Bulls",          "CLE": "Cleveland Cavaliers",
+    "DAL": "Dallas Mavericks",       "DEN": "Denver Nuggets",
+    "DET": "Detroit Pistons",        "GSW": "Golden State Warriors",
+    "HOU": "Houston Rockets",        "IND": "Indiana Pacers",
+    "LAC": "Los Angeles Clippers",   "LAL": "Los Angeles Lakers",
+    "MEM": "Memphis Grizzlies",      "MIA": "Miami Heat",
+    "MIL": "Milwaukee Bucks",        "MIN": "Minnesota Timberwolves",
+    "NOP": "New Orleans Pelicans",   "NYK": "New York Knicks",
+    "OKC": "Oklahoma City Thunder",  "ORL": "Orlando Magic",
+    "PHI": "Philadelphia 76ers",     "PHX": "Phoenix Suns",
+    "POR": "Portland Trail Blazers", "SAC": "Sacramento Kings",
+    "SAS": "San Antonio Spurs",      "TOR": "Toronto Raptors",
+    "UTA": "Utah Jazz",              "WAS": "Washington Wizards",
+    # Spellings seen elsewhere for the same franchises.
+    "BRK": "Brooklyn Nets",          "PHO": "Phoenix Suns",
+    "NO": "New Orleans Pelicans",    "NY": "New York Knicks",
+    "SA": "San Antonio Spurs",       "GS": "Golden State Warriors",
+    "UTAH": "Utah Jazz",             "WSH": "Washington Wizards",
+}
+
+_LEAGUES = {
+    # NFL ties are 0.2-0.4% of games. The book's moneyline pushes; Kalshi
+    # pays $0.50 to each side. Mid-range, and the sensitivity is printed.
+    "NFL": dict(series="KXNFLGAME", sport="americanfootball_nfl",
+                tie=0.003, abbr=_NFL_ABBR),
+    # NBA PLAYS OVERTIME: there are no ties, and KXNBAGAME's rules_primary
+    # says nothing about one. The term is zero, not a smaller guess.
+    "NBA": dict(series="KXNBAGAME", sport="basketball_nba",
+                tie=0.0, abbr=_NBA_ABBR),
+}
+if LEAGUE not in _LEAGUES:
+    raise SystemExit(f"GAP_LEAGUE={LEAGUE!r} is not one of {sorted(_LEAGUES)}")
+_CFG = _LEAGUES[LEAGUE]
+
+SPORT = (os.environ.get("ODDS_SPORT") or _CFG["sport"]).strip()
+SERIES = (os.environ.get("NFLGAP_SERIES") or _CFG["series"]).strip()
+
+# PRE-REGISTERED, before any number is read. A threshold chosen after seeing
+# the distribution is not a threshold, it is a selection.
+EDGE_PTS = float(os.environ.get("NFLGAP_EDGE_PTS") or 3.0)
+_tie_env = os.environ.get("NFLGAP_TIE_RATE")
+TIE_RATE = float(_tie_env) if _tie_env not in (None, "") else _CFG["tie"]
+
+# AN EMPTY BOOK IS NOT A PRICE. Reading KXNBAGAME found games three days out
+# whose two Yes asks summed to 1.86 -- an 86-point spread, on markets created
+# minutes earlier with zero volume and zero open interest. Those are
+# placeholders, and every one of them would have shown an enormous fake edge.
+# Games two days out summed 1.04-1.10, which is a real book.
+#
+# So the two sides are required to price the same event to within a spread a
+# market maker would actually quote. This is a structural check, not a
+# filter on attractiveness: it drops both sides or neither, and it is
+# applied before any edge is computed, so it cannot select on the answer.
+MAX_ASK_SUM = float(os.environ.get("NFLGAP_MAX_ASK_SUM") or 1.15)
+# A line older than this is a memory, not a quote.
+STALE_S = int(os.environ.get("ODDS_STALE_S") or 600)
+# Reference order size for the fee, which rounds up per ORDER. The real size
+# would be min(this, ask size); both are printed.
+REF_CONTRACTS = int(os.environ.get("NFLGAP_CONTRACTS") or 25)
+# Kickoff tolerance between the two sources. Same game, two clocks.
+KICK_TOL_H = float(os.environ.get("NFLGAP_KICK_TOL_H") or 30.0)
+
+ABBR = _CFG["abbr"]
 NAME_TO_ABBR = {}
 for _a, _n in ABBR.items():
     # First spelling wins, so the aliases above do not displace the canonical
@@ -227,7 +289,8 @@ def match_rows(events, mks):
     what a row IS lives here.
     """
     diag = dict(odds_unmapped=[], books_seen=set(), k_events=0, k_bad=[],
-                usable_pairs=0, amb=[], no_odds=[], no_sharp_mk=[])
+                usable_pairs=0, amb=[], no_odds=[], no_sharp_mk=[],
+                empty_book=[])
 
     odds_by_pair = {}
     for ev in events:
@@ -311,6 +374,15 @@ def match_rows(events, mks):
         if lu is not None:
             age = (datetime.now(timezone.utc) - lu).total_seconds()
 
+        # AN EMPTY BOOK IS NOT A PRICE. Both sides, before any edge exists,
+        # so this cannot select on the answer: it drops the game or keeps it.
+        asks = [ask_price(m) for m in ms]
+        if all(a is not None for a in asks):
+            tot = sum(asks)
+            if tot > MAX_ASK_SUM:
+                diag["empty_book"].append((label, tot))
+                continue
+
         for m in ms:
             ab = side_abbr(m.get("ticker"))
             full = ABBR[ab]
@@ -341,10 +413,12 @@ def main():
     print("=" * 104)
     print("NFL LINE GAP -- PHASE 2: MATCHED. Paper only; places nothing, "
           "logs nothing to any sheet.")
-    print(f"  sport={SPORT}  regions={REGIONS}  sharp={'/'.join(SHARP)}  "
+    print(f"  league={LEAGUE}  sport={SPORT}  regions={REGIONS}  "
+          f"sharp={'/'.join(SHARP)}  "
           f"series={SERIES}")
     print(f"  PRE-REGISTERED: edge threshold {EDGE_PTS:.1f} pts   "
-          f"tie rate {100*TIE_RATE:.2f}%   fee coeff {M.FEE_COEFF} "
+          f"tie rate {100*TIE_RATE:.2f}%   max ask sum {MAX_ASK_SUM:.2f}   "
+          f"fee coeff {M.FEE_COEFF} "
           f"(UNVERIFIED on sports)")
     print("=" * 104)
 
@@ -412,6 +486,10 @@ def main():
     print(f"  ambiguous, DROPPED       : {len(amb)}")
     for lbl, why in amb[:12]:
         print(f"      {lbl:<18} {why}")
+    print(f"  empty book, DROPPED      : {len(diag['empty_book'])}"
+          + ("   " + ", ".join(f"{l} (asks sum {t:.2f})"
+                               for l, t in diag['empty_book'][:6])
+             if diag['empty_book'] else ""))
     print(f"  no usable h2h market     : {len(no_sharp_mk)}"
           + (f"   {', '.join(str(x) for x in no_sharp_mk[:6])}"
              if no_sharp_mk else ""))

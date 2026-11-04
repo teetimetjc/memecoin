@@ -47,10 +47,13 @@ import nflgap as G
 import oddsmath as M
 import predictor as P
 
-TAB = (os.environ.get("NFLCLV_TAB") or "NFLCLV").strip()
+# ONE TAB PER LEAGUE. Football and basketball have different tie terms and
+# different liquidity shapes, and mixing them in one sheet invites an
+# analysis that pools them without noticing.
+TAB = (os.environ.get("NFLCLV_TAB") or f"{G.LEAGUE}CLV").strip()
 
 HEADERS = [
-    "Snapshot UTC", "Ticker", "Event", "Pair", "Side", "Kickoff UTC",
+    "Snapshot UTC", "League", "Ticker", "Event", "Pair", "Side", "Kickoff UTC",
     "Hours To Kick", "Book", "Book Odds", "Fair %", "Kalshi Ask c",
     "Ask Size", "Devig Spread Pts", "Edge Pts", "Sharp", "Tie Rate",
     "Fee Coeff", "Contracts",
@@ -88,7 +91,7 @@ def tab(sh):
 
 def snap():
     print("=" * 104)
-    print(f"NFL CLV -- SNAPSHOT. Appends to {TAB}. Places no order.")
+    print(f"{G.LEAGUE} CLV -- SNAPSHOT. Appends to {TAB}. Places no order.")
     print("=" * 104)
 
     key = G.key_or_die()
@@ -126,7 +129,8 @@ def snap():
                 continue
             hrs = round(hrs, 2)
         out.append([
-            now.strftime("%Y-%m-%d %H:%M:%S UTC"), r["ticker"], r["event"],
+            now.strftime("%Y-%m-%d %H:%M:%S UTC"), G.LEAGUE,
+            r["ticker"], r["event"],
             r["pair"], r["team"],
             r["kickoff"].strftime("%Y-%m-%d %H:%M:%S UTC")
             if r.get("kickoff") else "",
@@ -183,7 +187,7 @@ def fnum(v):
 
 def score():
     print("=" * 104)
-    print(f"NFL CLV -- SCORE. Reads {TAB}. Writes nothing, places nothing.")
+    print(f"{G.LEAGUE} CLV -- SCORE. Reads {TAB}. Writes nothing.")
     print("  THE QUESTION: at the snapshot we computed an edge. Did Kalshi's")
     print("  price then move TOWARD our fair value by kickoff, or not?")
     print("=" * 104)
