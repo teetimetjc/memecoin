@@ -1,2 +1,4 @@
+# Python bytecode. Generated whenever a script here is imported or run --
+# including by the local checks run before pushing -- and never source.
 __pycache__/
-*.pyc
+*.py[cod]
