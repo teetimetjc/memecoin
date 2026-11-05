@@ -10,8 +10,15 @@ name: Depth check at T-9 (read-only)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '7 * * * *'
+  # SCHEDULE OFF, 2026-11-05, at the account holder's request.
+  # This existed to vet WTI and GOLD before any money went near them:
+  # oil backtested +3.56% in the 90-96c band on QUOTES, and the only
+  # open question was whether six contracts sit at the ask. Oil's live
+  # session has now been retired, so the answer would not be acted on,
+  # and a collector nobody will read is just noise in the Actions log.
+  # workflow_dispatch still works if oil is ever reconsidered.
+  # schedule:
+  # - cron: '7 * * * *'
 
 permissions:
   contents: read
