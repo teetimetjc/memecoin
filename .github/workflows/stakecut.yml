@@ -1,0 +1,43 @@
+name: The live T-9 record by stake (read-only)
+
+# Two reads of the same strategy disagree: all stakes gives -0.23% over 660
+# bets, $4/$5 only gives +2.72% over 504, and the 156 bets between them
+# carry a $66 swing. Stake scales an edge and cannot create one, so a clean
+# slice should land near the pooled figure.
+#
+# Either the excluded bets are an earlier stake era -- in which case the
+# $4/$5 cut is a date cut wearing a stake label -- or they are ladder
+# reductions scattered through the same days, in which case stake is set by
+# recent outcomes and filtering on it is partly filtering on outcome.
+#
+# This prints each stake bucket with its own record, its date span and its
+# strategy tags, and says which story the data supports, or that it cannot
+# tell.
+#
+# Reads the sheet and portfolio endpoints. Places no order, writes no row.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stakecut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Cut the live record by stake
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python stakecut.py
