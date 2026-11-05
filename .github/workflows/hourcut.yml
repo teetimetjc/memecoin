@@ -1,0 +1,51 @@
+name: The live T-9 record by hour (read-only)
+
+# Twenty-four hours is twenty-four chances to find a pattern, and ~600 bets
+# split 24 ways is about 25 a cell -- under two expected losses each at a
+# 92.6% win rate. Something will always look striking.
+#
+# So the method is fixed in hourcut.py before any number is read: every
+# hour is split chronologically and must keep the same sign in both halves,
+# neighbouring hours must agree, and a cell under the minimum gets no
+# verdict in either direction. The expected spread of the worst-looking
+# cell under pure chance is printed as the yardstick.
+#
+# Reads the sheet and the portfolio endpoints only. Places no order,
+# writes no row, changes no setting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stakes:
+        description: 'Stakes to include, comma separated'
+        required: false
+        default: '4,5'
+      min_n:
+        description: 'Minimum bets in an hour before any verdict'
+        required: false
+        default: '20'
+
+permissions:
+  contents: read
+
+jobs:
+  hourcut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Cut the live record by hour
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          HOURCUT_STAKES: ${{ inputs.stakes }}
+          HOURCUT_MIN_N: ${{ inputs.min_n }}
+        run: python hourcut.py
