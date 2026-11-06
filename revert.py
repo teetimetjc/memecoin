@@ -181,16 +181,29 @@ def main():
         k = sum(1 for r in recs if r["hit"][t] is not None)
         print(f"  reached {t:.0f}x the entry at some later sample: "
               f"{k} of {len(recs)}  ({100.0*k/len(recs):.1f}%)")
-    # What the auto-sale would actually have returned.
-    net = 0.0
-    for r in recs:
-        if r["hit"][2.0] is not None:
-            net += r["n"] * (2.0 * r["cost"]) - r["spent"]
-        else:
-            net += (r["n"] if r["won"] else 0.0) - r["spent"]
-    print(f"\n  sell at 2x when reached, else hold to expiry:")
-    print(f"    net ${net:+,.2f} on ${spent:,.2f} staked   "
-          f"ROI {100.0*net/spent:+.2f}%")
+    # What each auto-sale rule would actually have returned. EVERY target,
+    # not just one: the rule caps the upside at its multiple while leaving
+    # every loss whole, so which multiple you pick is the whole question
+    # and quoting one would answer a different one.
+    print()
+    hold_net = sum((r["n"] if r["won"] else 0.0) - r["spent"] for r in recs)
+    print(f"  {'rule':<28}{'net $':>12}{'ROI':>10}")
+    print(f"  {'hold to expiry':<28}{hold_net:>+12.2f}"
+          f"{100.0*hold_net/spent:>+9.2f}%")
+    for t in TARGETS:
+        net = 0.0
+        for r in recs:
+            if r["hit"][t] is not None:
+                net += r["n"] * (t * r["cost"]) - r["spent"]
+            else:
+                net += (r["n"] if r["won"] else 0.0) - r["spent"]
+        print(f"  {f'sell at {t:.0f}x, else hold':<28}{net:>+12.2f}"
+              f"{100.0*net/spent:>+9.2f}%")
+    # THE REASON A CAP HURTS, in one number: what a winner actually pays.
+    mult = st.mean([1.0 / r["cost"] for r in recs])
+    print(f"\n  a winner pays about {mult:.1f}x the entry, so a sell at 2x or")
+    print(f"  3x gives up most of the only outcome that makes this survivable")
+    print(f"  while keeping every loss in full.")
 
     # --------------------------------------------------------------- depth
     deps = [r["depth"] for r in recs if r["depth"] is not None]
@@ -209,8 +222,8 @@ def main():
         sp = sum(r["spent"] for r in part)
         nt = 0.0
         for r in part:
-            if r["hit"][2.0] is not None:
-                nt += r["n"] * (2.0 * r["cost"]) - r["spent"]
+            if r["hit"][TARGETS[-1]] is not None:
+                nt += r["n"] * (TARGETS[-1] * r["cost"]) - r["spent"]
             else:
                 nt += (r["n"] if r["won"] else 0.0) - r["spent"]
         print(f"  {label:<12} n {len(part):>5}   "
