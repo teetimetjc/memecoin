@@ -1,0 +1,40 @@
+name: Coverage -- which gate turns the bot away (read-only)
+
+# The selection-gap run found the bot bets in 42.1% of qualifying windows,
+# and takes 1.24 of the 2.18 legs available in the ones it plays. Raising
+# that is the only change that shortens the wait for a verdict without
+# touching the signal, the band or the threshold -- but a change aimed at
+# the wrong gate does nothing.
+#
+# So this counts first. Skips that live.py wrote to the sheet are counted
+# exactly, by cause. Windows that produced no row at all are reported as a
+# residual and explicitly as an upper bound, since the sheet cannot tell a
+# window the bot missed from one that held nothing when the scan passed.
+#
+# Reads the sheet only. Places no order, writes no row, changes no setting.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  covercut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Count the gates
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+        run: python covercut.py
