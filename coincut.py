@@ -41,6 +41,7 @@ Read-only. Places no order, writes no row, changes no setting.
 """
 import collections
 import math
+import os
 import statistics as st
 import time
 
@@ -48,6 +49,23 @@ import tally as T
 
 START = T.START
 MIN_N = 150
+
+# RESTRICT TO THE STAKES THE STRATEGY ACTUALLY RUNS. Empty means every
+# stake, which is how this file has always read.
+#
+# WHY THIS IS NOT A FREE PARAMETER. stakecut showed the $6, $7 and $10
+# buckets ran at -4.67%, -2.39% and -14.04% while $4 and $5 ran positive,
+# and those larger sizes were short experiments concentrated in mid-October
+# rather than the live rule. Reading the per-coin record with them in mixes
+# an abandoned sizing experiment into every coin's number, and unevenly:
+# whichever coin happened to be in the band during those days wears the
+# loss.
+#
+# It is still a filter chosen after seeing a result, so it is declared here
+# rather than buried, and the unfiltered reading stays one dispatch away. A
+# conclusion that holds under only one of them is not a conclusion.
+STAKES = tuple(float(x) for x in
+               (os.environ.get("COINCUT_STAKES") or "").split(",") if x.strip())
 
 # ONLY THE LIVE STRATEGY, AND ONLY THE CRYPTO SERIES.
 #
@@ -221,6 +239,12 @@ def main():
 
     before = len(bets)
     bets, why = keep(bets)
+    if STAKES:
+        before = len(bets)
+        bets = [b for b in bets
+                if any(abs((T.stake_of(b) or -1) - v) < 0.01 for v in STAKES)]
+        print(f"\n  STAKE FILTER {'/'.join(f'${v:.0f}' for v in STAKES)}: "
+              f"{before} -> {len(bets)} bet(s)")
     print(f"\n  {before} placed bets in the record; "
           f"{len(bets)} are T-9 on a coin")
     for k, v in sorted(why.items(), key=lambda kv: -kv[1]):
