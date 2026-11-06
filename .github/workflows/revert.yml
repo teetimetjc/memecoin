@@ -1,0 +1,58 @@
+name: 95/5 early reversion (read-only)
+
+# Three minutes into a window the price is already 95/5. Buy the cheap side
+# for about 50c and rest a sell above it.
+#
+# Two different bets, reported separately. The OUTCOME bet runs against the
+# favourite-longshot bias this project's own strategy rests on, so its
+# prior is negative. The PATH bet does not care who wins -- only whether
+# the cheap side's bid later reaches a multiple of its cost -- and a
+# positive path result beside a negative outcome result is the whole case
+# for the idea.
+#
+# The fee is charged on every entry: at 5c it is about 8% of the stake,
+# which on a few-cents edge is most of the question.
+#
+# Reads the collector's sheet. Places no order, writes no row.
+
+on:
+  workflow_dispatch:
+    inputs:
+      extreme:
+        description: 'How extreme counts (0.95 = 95/5)'
+        required: false
+        default: '0.95'
+      early:
+        description: 'Offset to read as "early" (12 = 3 min into a window)'
+        required: false
+        default: '12'
+      stake:
+        description: 'Dollars per entry'
+        required: false
+        default: '0.50'
+
+permissions:
+  contents: read
+
+jobs:
+  revert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Test the reversion
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          REVERT_EXTREME: ${{ inputs.extreme }}
+          REVERT_EARLY: ${{ inputs.early }}
+          REVERT_STAKE: ${{ inputs.stake }}
+        run: python revert.py
