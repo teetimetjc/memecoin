@@ -12,6 +12,11 @@ name: The live record by coin (read-only)
 
 on:
   workflow_dispatch:
+    inputs:
+      stakes:
+        description: 'Stakes to include, comma separated. Empty = all.'
+        required: false
+        default: '4,5'
 
 permissions:
   contents: read
@@ -34,4 +39,5 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          COINCUT_STAKES: ${{ inputs.stakes }}
         run: python coincut.py
