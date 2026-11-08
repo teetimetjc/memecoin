@@ -1,0 +1,41 @@
+name: Would a small opposite-side hedge have helped (read-only)
+
+# Replays the real record with a few contracts of the OTHER side bought
+# alongside each favourite. Places no order and writes no row.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stakes:
+        description: 'Stake sizes to include, e.g. 4,5 (blank = all)'
+        required: false
+        default: '4,5'
+      sizes:
+        description: 'Hedge sizes in contracts, e.g. 1,2,3'
+        required: false
+        default: '1,2,3'
+
+permissions:
+  contents: read
+
+jobs:
+  hedgecut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Replay the record with a hedge
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          COINCUT_STAKES: ${{ inputs.stakes }}
+          HEDGE_SIZES: ${{ inputs.sizes }}
+        run: python hedgecut.py
