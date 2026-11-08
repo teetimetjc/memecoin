@@ -90,6 +90,39 @@ ALLOW_DOWN = os.environ.get("LIVE_ALLOW_DOWN", "").strip() == "1"
 # being run. So BOTH ends move together, each run states its own, and the
 # defaults stay exactly what v6 used.
 MAX_ENTRY = float(os.environ.get("MAX_ENTRY_CENTS") or 50.0)
+
+# SERIES THIS SESSION WILL NOT BET, whatever the signal says.
+#
+# XRP, from 2026-11-08, at the account holder's instruction. The honest
+# reason is recorded here rather than dressed up as a finding, because the
+# record does NOT establish that XRP is a worse coin:
+#
+#   107 bets, 90.65% won, -$8.19, -1.75%. That is 4.04 points below the
+#   pooled rate against a confidence band of +/-6.15 -- INSIDE the noise.
+#   Its fills were ordinary too (-0.33c to -0.89c slippage, the same band
+#   as every other coin), so there is no MECHANISM of the kind that
+#   retired oil and T-3.
+#
+# Separating XRP from the pool at this sample would have taken roughly 99
+# more bets, and the cost of being wrong either way over that stretch is
+# about $10. At that price, proof is not worth buying. So this is a
+# preference, taken deliberately and reversibly, and it should not later be
+# cited as evidence that XRP underperforms.
+#
+# THE DATA KEEPS COMING. This stops the BETTING only; collect15 still
+# records XRP's book every window, so the question stays answerable and
+# this can be undone by clearing the variable.
+SKIP_SERIES = frozenset(
+    s.strip().upper()
+    for s in (os.environ.get("LIVE_SKIP_SERIES")
+              if os.environ.get("LIVE_SKIP_SERIES") is not None
+              else "KXXRP15M").split(",")
+    if s.strip())
+
+
+def series_of(ticker):
+    """KXXRP15M-26NOV08... -> KXXRP15M. The prefix IS the series."""
+    return str(ticker or "").upper().split("-")[0]
 # THE FLOOR IS NOW SETTABLE, and here is what it silently did.
 #
 # It was fixed at 20c, which was right for v6: that rule's evidence lived in
@@ -481,6 +514,14 @@ def place(ts, symbol, side, ticker, entry_cents, stake):
 
     if not ticker:
         return "SKIPPED", "no Kalshi market for this window", 0, 0.0, ""
+    # CHECKED HERE TOO, not only in the betable filter, so that a signal
+    # reaching place() by any other path still cannot bet, and so the skip
+    # is written to the sheet with its reason rather than vanishing.
+    if series_of(ticker) in SKIP_SERIES:
+        return ("SKIPPED",
+                f"{series_of(ticker)} is switched off for betting "
+                f"(LIVE_SKIP_SERIES); data collection continues",
+                0, 0.0, "")
     if entry_cents is None or entry_cents <= 0:
         return "SKIPPED", "no usable entry price", 0, 0.0, ""
     if entry_cents >= MAX_ENTRY:
@@ -651,8 +692,13 @@ def run_window(client, signals, stake=None):
     stake = stake if stake is not None else control.get_stake(client)
 
     # Only the signals we would actually bet count toward the funding need.
+    # A switched-off series is excluded HERE as well as in place(), so its
+    # stake is not counted toward the funding check. Left in, the window
+    # would reserve money for a bet that is never going to be sent, and
+    # could halt the whole window for a shortfall it does not have.
     betable = [s for s in signals
-               if s[3] and s[4] is not None and 0 < s[4] < MAX_ENTRY]
+               if s[3] and s[4] is not None and 0 < s[4] < MAX_ENTRY
+               and series_of(s[3]) not in SKIP_SERIES]
     if not betable:
         print("  [live] nothing betable this window.")
         return []
