@@ -1,0 +1,49 @@
+name: Maker vs taker -- rest a bid or take the ask (read-only)
+
+# Replays the collector record asking whether resting a bid at T-9 would
+# have filled, and how those windows settled against the ones it missed.
+# Places no order and writes no row.
+
+on:
+  workflow_dispatch:
+    inputs:
+      under:
+        description: 'Cents below the ask to rest'
+        required: false
+        default: '1'
+      fee_mult:
+        description: 'Maker fee multiplier: 1 = same as taker, 0 = full rebate'
+        required: false
+        default: '1'
+      stake:
+        description: 'Dollars per bet'
+        required: false
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  makercut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Replay maker against taker
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          MAKER_UNDER: ${{ inputs.under }}
+          MAKER_FEE_MULT: ${{ inputs.fee_mult }}
+          MAKER_STAKE: ${{ inputs.stake }}
+          MIN_ENTRY_CENTS: '90'
+          MAX_ENTRY_CENTS: '96'
+        run: python makercut.py
