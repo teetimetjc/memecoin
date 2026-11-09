@@ -691,6 +691,20 @@ def run_window(client, signals, stake=None):
 
     stake = stake if stake is not None else control.get_stake(client)
 
+    # READ FRESH EVERY WINDOW, from the Control tab, falling back to the
+    # value compiled into this file. A long session cannot see a code
+    # change until it restarts -- favlive runs 5h45m and checks out once --
+    # so the tab is the only switch that acts within the hour. That is not
+    # hypothetical: XRP was switched off in code at 14:04 on 2026-11-08 and
+    # the session started at 12:22 kept betting it until cancelled by hand.
+    #
+    # The UNION is deliberate. The tab can add to what the deployed code
+    # already refuses, but clearing the tab cannot re-enable something the
+    # code was told to skip, so a blank cell is never a silent switch-on.
+    skip = SKIP_SERIES | control.get_skip_series(client, SKIP_SERIES)
+    if skip:
+        print(f"  [live] not betting: {', '.join(sorted(skip))}")
+
     # Only the signals we would actually bet count toward the funding need.
     # A switched-off series is excluded HERE as well as in place(), so its
     # stake is not counted toward the funding check. Left in, the window
@@ -698,7 +712,7 @@ def run_window(client, signals, stake=None):
     # could halt the whole window for a shortfall it does not have.
     betable = [s for s in signals
                if s[3] and s[4] is not None and 0 < s[4] < MAX_ENTRY
-               and series_of(s[3]) not in SKIP_SERIES]
+               and series_of(s[3]) not in skip]
     if not betable:
         print("  [live] nothing betable this window.")
         return []
@@ -727,6 +741,22 @@ def run_window(client, signals, stake=None):
         tickers=[s[3] for s in betable])
     control.record_balance(client, bal)
     if not ok:
+        # TWO KINDS OF NO, AND THEY ARE NOT THE SAME EMERGENCY.
+        #
+        # A shortfall is a fact about the money and needs a human, so it
+        # halts and notifies, as it always has.
+        #
+        # A TRANSIENT refusal means the check could not be PERFORMED -- the
+        # balance endpoint returned 429, or a market's shard would not
+        # load. Halting on that stops every strategy until someone flips
+        # the tab back, which is a far worse outcome than missing one
+        # fifteen-minute window. It skips, says so, and the next window
+        # tries again.
+        if reason.startswith(control.TRANSIENT):
+            print(f"  [live] funding check unavailable -- "
+                  f"{reason[len(control.TRANSIENT):]} Skipping this window; "
+                  f"not halting.")
+            return []
         control.halt(client, f"Funding short -- {reason}. No orders were placed.")
         return []
 
@@ -738,6 +768,16 @@ def run_window(client, signals, stake=None):
             return [ts, symbol, side, ticker,
                     round(entry, 1) if entry else "", "", "", "",
                     "SKIPPED", "", f"held back by LIVE_MAX_BETS={cap}",
+                    "", "", "", "", strategy()]
+        # The tab's list checked here too. place() enforces the compiled-in
+        # SKIP_SERIES, but it cannot see a series switched off on the sheet
+        # thirty seconds ago, and that freshness is the whole point.
+        if series_of(ticker) in skip:
+            return [ts, symbol, side, ticker,
+                    round(entry, 1) if entry else "", "", "", "",
+                    "SKIPPED", "",
+                    f"{series_of(ticker)} is switched off for betting; "
+                    f"data collection continues",
                     "", "", "", "", strategy()]
         status, detail, n, cost, oid = place(ts, symbol, side, ticker, entry, stake)
         # Read straight after the call, before anything else can place an

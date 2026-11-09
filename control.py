@@ -24,7 +24,9 @@ and the dashboard keeps updating, so a halt costs money-making, not data.
 """
 
 import math
+import os
 import sys
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -47,6 +49,13 @@ LAYOUT = [
      "Dollars per bet, once live betting is enabled."],
     ["Last balance $", "",
      "Account balance as of the last check."],
+    # APPENDED AT THE END ON PURPOSE. _ROW is positional and
+    # record_balance writes to B{_ROW['Last balance $']}, so a row inserted
+    # anywhere above would move the cell every other function addresses and
+    # start writing the balance over something else.
+    ["Skip series", "",
+     "Comma-separated series to NOT bet, e.g. KXXRP15M. Blank = bet all. "
+     "Read every window, so a change here takes effect in minutes."],
 ]
 
 _ROW = {name: i + 1 for i, (name, *_ ) in enumerate(LAYOUT)}   # 1-based rows
@@ -119,23 +128,44 @@ def get_stake(client, default=10.0):
         return default
 
 
+def get_skip_series(client, default=frozenset()):
+    """Series not to bet, read from the Control tab EVERY window.
+
+    WHY THIS IS NOT A CONSTANT IN live.py. It was, and on 2026-11-08 that
+    cost three unwanted bets. A favlive session runs for 5h45m and
+    actions/checkout happens once, at the start, so a change pushed to
+    live.py is invisible to the process already running -- for up to nearly
+    six hours. XRP was switched off in code at 14:04 and the session that
+    had started at 12:22 went on betting it until it was cancelled by hand.
+
+    A value on the Control tab has none of that latency: the tab is already
+    read every window for the state and the stake, so a coin switched off
+    here stops being bet within one fifteen-minute cycle, from a phone,
+    with no deploy and no session restart.
+
+    FAILS TOWARD THE CALLER'S DEFAULT, not toward betting everything. An
+    unreadable tab must never silently re-enable a series someone turned
+    off; get_state already refuses to bet at all in that case, and this
+    keeps whatever the code was configured with rather than widening it.
+    """
+    try:
+        v = _tab(client).acell(f"B{_ROW['Skip series']}").value
+    except Exception as e:
+        print(f"  [control] could not read Skip series ({str(e)[:60]}); "
+              f"keeping the configured default {sorted(default)}")
+        return frozenset(default)
+    if v is None or not str(v).strip():
+        return frozenset(default)
+    return frozenset(s.strip().upper() for s in str(v).split(",") if s.strip())
+
+
 def fetch_balance():
     """Account balance in dollars, or None. Read-only: a signed GET."""
-    import predictor as P
-    hdrs = P._kalshi_headers("GET", "/trade-api/v2/portfolio/balance")
-    if not hdrs:
+    d = _balance_json()
+    if not d:
         return None
-    try:
-        r = requests.get(f"{P.KALSHI_BASE}/portfolio/balance",
-                         headers=hdrs, timeout=10)
-        if not r.ok:
-            print(f"  [balance] HTTP {r.status_code} {r.text[:80]}")
-            return None
-        cents = r.json().get("balance")
-        return cents / 100.0 if isinstance(cents, (int, float)) else None
-    except Exception as e:
-        print(f"  [balance] {e}")
-        return None
+    cents = d.get("balance")
+    return cents / 100.0 if isinstance(cents, (int, float)) else None
 
 
 def record_balance(client, bal):
@@ -144,6 +174,50 @@ def record_balance(client, bal):
                             [[f"{bal:.2f}" if bal is not None else ""]])
     except Exception:
         pass
+
+
+# A refusal that means "I could not check", as opposed to "I checked and
+# there is not enough money". The two must not be treated alike: a shortfall
+# needs a human and should halt, while an unreadable balance is a transient
+# API condition that the next window will probably read fine. Halting on the
+# second one would stop all betting on a single 429.
+TRANSIENT = "TRANSIENT: "
+
+# How hard to try before calling a balance read unreadable. Kalshi returns
+# 429 on this endpoint under load -- it did so twice in a row on the
+# transfer read-backs on 2026-11-07, reporting a transfer that had in fact
+# succeeded as unconfirmed. One retry would have cleared both.
+BAL_TRIES = int(os.environ.get("BALANCE_READ_TRIES") or 3)
+
+
+def _balance_json():
+    """The raw balance payload, retried on transient failures, or None.
+
+    RETRIES ONLY WHAT IS WORTH RETRYING. A 429 or a 5xx is the server
+    saying "not now"; a 401 is the key being wrong and will say the same
+    thing however many times it is asked.
+    """
+    import predictor as P
+    for attempt in range(BAL_TRIES):
+        hdrs = P._kalshi_headers("GET", "/trade-api/v2/portfolio/balance")
+        if not hdrs:
+            return None
+        try:
+            r = requests.get(f"{P.KALSHI_BASE}/portfolio/balance",
+                             headers=hdrs, timeout=10)
+            if r.ok:
+                return r.json()
+            if r.status_code != 429 and r.status_code < 500:
+                print(f"  [balance] HTTP {r.status_code} -- not retried")
+                return None
+            print(f"  [balance] HTTP {r.status_code}, attempt "
+                  f"{attempt + 1}/{BAL_TRIES}")
+        except Exception as e:
+            print(f"  [balance] {str(e)[:80]}, attempt "
+                  f"{attempt + 1}/{BAL_TRIES}")
+        if attempt + 1 < BAL_TRIES:
+            time.sleep(0.6 * (2 ** attempt))
+    return None
 
 
 def shard_balances():
@@ -159,29 +233,19 @@ def shard_balances():
     crypto series trades on shard 2, which held $0.00. Both numbers were
     right and they were measuring different things.
     """
-    import predictor as P
-    hdrs = P._kalshi_headers("GET", "/trade-api/v2/portfolio/balance")
-    if not hdrs:
+    d = _balance_json()
+    if not d:
         return None
-    try:
-        r = requests.get(f"{P.KALSHI_BASE}/portfolio/balance",
-                         headers=hdrs, timeout=10)
-        if not r.ok:
-            print(f"  [balance] breakdown HTTP {r.status_code}")
-            return None
-        rows = r.json().get("balance_breakdown")
-        if not rows:
-            return None
-        out = {}
-        for row in rows:
-            try:
-                out[int(row.get("exchange_index"))] = float(row.get("balance"))
-            except (TypeError, ValueError):
-                continue
-        return out or None
-    except Exception as e:
-        print(f"  [balance] breakdown {e}")
+    rows = d.get("balance_breakdown")
+    if not rows:
         return None
+    out = {}
+    for row in rows:
+        try:
+            out[int(row.get("exchange_index"))] = float(row.get("balance"))
+        except (TypeError, ValueError):
+            continue
+    return out or None
 
 
 _SHARD_CACHE = {}
@@ -242,13 +306,36 @@ def check_window(client, n_signals, stake=None, balance=None, tickers=None):
     needed = round(n_signals * stake, 2)
     bal = balance if balance is not None else fetch_balance()
     if bal is None:
-        return False, needed, None, "could not read the account balance"
+        # TRANSIENT for the same reason as the shard read below: a balance
+        # that would not load is the API being busy, not the account being
+        # empty, and it should cost one window rather than halt the bot.
+        return (False, needed, None,
+                TRANSIENT + f"could not read the account balance after "
+                f"{BAL_TRIES} attempt(s)")
 
     if tickers:
         shards = shard_balances()
         if shards is None:
-            print("  [balance] no shard breakdown -- falling back to the "
-                  "account total, which Kalshi does NOT authorise against")
+            # THE SECOND FAIL-OPEN, AND THE ONE THAT ACTUALLY FIRED.
+            #
+            # This used to print a warning and fall through to the total
+            # test, which then passed -- the total is always healthy, that
+            # is the entire point of the shard problem. On 2026-11-08 the
+            # balance read came back 429, the breakdown was None, the
+            # window was approved on a $91.51 total while shard 2 held
+            # $3.85, two orders went to Kalshi and both were rejected for
+            # insufficient_balance. The bot then HALTED on the rejection.
+            #
+            # So the old fallback did not keep the bot running; it swapped
+            # a quiet skip for a halt and a phone notification. Refusing
+            # here is strictly better, PROVIDED the refusal is marked
+            # transient so the caller skips instead of halting.
+            return (False, needed, bal,
+                    TRANSIENT + "the per-shard balance could not be read "
+                    f"after {BAL_TRIES} attempt(s), so funding cannot be "
+                    "checked against the shard Kalshi authorises on. "
+                    "Skipping this window rather than sending orders that "
+                    "would be rejected.")
         else:
             by_shard = {}
             unknown = 0
@@ -267,17 +354,20 @@ def check_window(client, n_signals, stake=None, balance=None, tickers=None):
             # bug it was written to fix: a check that returns a plausible
             # pass instead of refusing. A signal whose shard cannot be read
             # cannot be funded-checked, so it is refused.
+            # MARKED TRANSIENT, because it is. An unreadable shard is an
+            # API hiccup, not a funding problem, and halting the whole bot
+            # on one 429 was never the intent of refusing here.
             if unknown:
                 return (False, needed, bal,
-                        f"{unknown} of {len(tickers)} signal(s) have an "
-                        f"unreadable exchange shard, so their funding cannot "
-                        f"be checked. Refusing rather than guessing -- a "
-                        f"rejected order halts the bot, and an unchecked "
-                        f"approval is how this went wrong before.")
+                        TRANSIENT + f"{unknown} of {len(tickers)} signal(s) "
+                        f"have an unreadable exchange shard, so their "
+                        f"funding cannot be checked. Refusing rather than "
+                        f"guessing -- an unchecked approval is how this "
+                        f"went wrong before.")
             if not by_shard:
                 return (False, needed, bal,
-                        "no signal resolved to an exchange shard; nothing "
-                        "could be checked")
+                        TRANSIENT + "no signal resolved to an exchange "
+                        "shard; nothing could be checked")
             for idx in sorted(by_shard):
                 want = round(by_shard[idx] * stake, 2)
                 have = shards.get(idx, 0.0)

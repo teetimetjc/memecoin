@@ -82,17 +82,79 @@ def f(v, default=None):
 
 
 def money(row, *names):
-    """Dollars from whichever field exists. _dollars is dollars; bare is cents."""
-    for k in names:
-        if k.endswith("_dollars") or k.endswith("_dollars_fp"):
-            v = f(row.get(k))
-            if v is not None:
-                return v
+    """Dollars from whichever field exists, by SUFFIX, not by guesswork.
+
+    THE FIRST VERSION OF THIS GUESSED THE NAMES and the guesses were wrong,
+    which is the bug this whole file is supposed to be proof against. It
+    looked for 'amount_dollars'/'amount' on a deposit whose real field is
+    `amount_cents`, and for 'price'/'count' on a fill whose real fields are
+    `yes_price_dollars` and `count_fp`. Both reads therefore returned
+    nothing, both totals summed to zero, and the report printed "net since
+    the account opened +$84.53" and "net on trading +$3,872.02" -- two
+    confident figures built from no data at all.
+
+    The names below now come from Kalshi's published OpenAPI schema rather
+    than from what a field ought to be called. The suffix carries the unit:
+    _cents is cents, _dollars is a fixed-point decimal string of dollars.
+    Anything unrecognised returns None so the CALLER can count it as
+    unreadable, which is what makes a missing field show up as a warning
+    instead of as a zero.
+    """
     for k in names:
         v = f(row.get(k))
-        if v is not None:
+        if v is None:
+            continue
+        if k.endswith("_cents") or k in CENTS_FIELDS:
             return v / 100.0
+        return v            # _dollars, _cost, and other dollar-denominated
     return None
+
+
+# FIELDS DENOMINATED IN CENTS WHOSE NAME DOES NOT SAY SO. The suffix rule
+# above is right for everything Kalshi named carefully, and wrong for these.
+# A settlement's `revenue` is documented as "total revenue ... in cents
+# (winning contracts pay out 100 cents each)" while sitting next to
+# `yes_total_cost_dollars`, so the same row mixes both conventions. Read by
+# suffix alone, a $5 settlement reads as $500 -- a hundredfold overstatement
+# of every payout, which would have turned this report into nonsense in the
+# flattering direction. Listed explicitly rather than inferred from
+# magnitude, because "it looks too big" is not a unit test.
+CENTS_FIELDS = frozenset(("revenue", "value"))
+
+
+# Which Kalshi deposit/withdrawal rows represent money that actually moved.
+# 'applied' is the only status the docs describe as funds having landed;
+# pending, failed and returned have not (or no longer) changed the balance,
+# and counting them would make the cash reckoning disagree with the bank.
+APPLIED = ("applied",)
+
+
+def fill_cost(x):
+    """What one fill cost in dollars, including its fee, or None.
+
+    THE PRICE DEPENDS ON WHICH SIDE THE FILL BOUGHT. Kalshi reports both
+    legs on every fill -- yes_price_dollars and no_price_dollars -- and
+    `outcome_side` says which one this account ended up holding. Taking
+    the YES price on a NO fill would price a 8c purchase at 92c.
+
+    ASSUMES EVERY FILL IS AN OPENING BUY, which is true of this account:
+    live.py only ever sends IOC buys and nothing here sells a position
+    before settlement. If that changes, a sell would be counted as a cost
+    instead of a credit and this function has to learn the difference.
+    """
+    n = f(x.get("count_fp"))
+    if n is None:
+        n = f(x.get("count"))
+    if n is None:
+        return None
+    side = str(x.get("outcome_side") or x.get("side") or "").strip().lower()
+    if side == "no":
+        px = f(x.get("no_price_dollars"))
+    else:
+        px = f(x.get("yes_price_dollars"))
+    if px is None:
+        return None
+    return n * px + (f(x.get("fee_cost"), 0.0) or 0.0)
 
 
 def main():
@@ -117,18 +179,24 @@ def main():
     deps, dp = pages("/portfolio/deposits", "deposits")
     wds, wp = pages("/portfolio/withdrawals", "withdrawals")
 
-    def total(rows, *names):
+    def total(rows):
+        """Applied rows only, summed; everything else counted and named."""
         s, unknown = 0.0, 0
+        skipped = collections.Counter()
         for r in rows:
-            v = money(r, *names)
+            st = str(r.get("status") or "").strip().lower()
+            if st and st not in APPLIED:
+                skipped[st or "?"] += 1
+                continue
+            v = money(r, "amount_cents", "amount_dollars", "amount")
             if v is None:
                 unknown += 1
             else:
                 s += v
-        return s, unknown
+        return s, unknown, skipped
 
-    dep_sum, dep_bad = total(deps, "amount_dollars", "amount")
-    wd_sum, wd_bad = total(wds, "amount_dollars", "amount")
+    dep_sum, dep_bad, dep_skip = total(deps)
+    wd_sum, wd_bad, wd_skip = total(wds)
 
     print(f"\n{'-' * 96}")
     print("1. THE CASH RECKONING -- true by construction")
@@ -143,12 +211,18 @@ def main():
         for i in sorted(shards):
             print(f"      shard {i}  ${shards[i]:>9,.4f}"
                   + ("   <- crypto" if i == 2 else ""))
-    if dep_bad or wd_bad:
-        print(f"  NOTE: {dep_bad} deposit(s) and {wd_bad} withdrawal(s) had no "
-              f"readable amount and are NOT counted. The figure below is")
-        print(f"  therefore incomplete, and that is said rather than hidden.")
+    for label, sk in (("deposit", dep_skip), ("withdrawal", wd_skip)):
+        for st, k in sorted(sk.items()):
+            print(f"      ({k} {label}(s) with status '{st}' are excluded: "
+                  f"the money has not landed)")
     cash_net = None
-    if bal is not None:
+    if dep_bad or wd_bad:
+        print(f"\n  UNREADABLE: {dep_bad} deposit(s) and {wd_bad} "
+              f"withdrawal(s) carry no amount this code understands.")
+        print("  NO NET IS PRINTED. An earlier version summed them as zero")
+        print("  and reported the balance as if it were lifetime profit,")
+        print("  which is exactly the failure this refuses to repeat.")
+    elif bal is not None:
         cash_net = bal + wd_sum - dep_sum
         print(f"\n  NET SINCE THE ACCOUNT OPENED   "
               f"${cash_net:+,.2f}")
@@ -167,17 +241,14 @@ def main():
     fill_bad = 0
     by_series_cost = collections.defaultdict(float)
     for x in fills:
-        n = f(x.get("count"), 0.0) or 0.0
-        px = money(x, "yes_price_dollars", "price_dollars", "yes_price",
-                   "price")
-        fee = money(x, "fee_dollars", "fee") or 0.0
-        if px is None:
+        c = fill_cost(x)
+        if c is None:
             fill_bad += 1
             continue
-        c = n * px + fee
         spent += c
-        fee_total += fee
-        by_series_cost[str(x.get("ticker") or "").split("-")[0]] += c
+        fee_total += f(x.get("fee_cost"), 0.0) or 0.0
+        tk = str(x.get("ticker") or x.get("market_ticker") or "")
+        by_series_cost[tk.split("-")[0]] += c
 
     returned = 0.0
     sett_bad = 0
@@ -202,10 +273,18 @@ def main():
           f"${spent:>10,.2f}")
     print(f"  returned by settlements                 ${returned:>10,.2f}")
     trade_net = returned - spent
-    print(f"\n  NET ON TRADING                          ${trade_net:>+10,.2f}")
+    if fill_bad and not spent:
+        trade_net = None
+        print("\n  NO NET IS PRINTED. Not one fill could be priced, so the")
+        print("  'cost' side is empty and subtracting it from revenue would")
+        print("  report the gross payout as profit. That is what the first")
+        print("  version of this file did -- it printed +$3,872.02.")
+    else:
+        print(f"\n  NET ON TRADING                          "
+              f"${trade_net:>+10,.2f}")
 
     # ------------------------------------------------------------- the gap
-    if cash_net is not None:
+    if cash_net is not None and trade_net is not None:
         gap = cash_net - trade_net
         print(f"\n{'-' * 96}")
         print("THE GAP BETWEEN THEM")

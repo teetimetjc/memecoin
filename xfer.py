@@ -52,6 +52,7 @@ import uuid
 
 import requests
 
+import control
 import predictor as P
 
 TO_SHARD = int(os.environ.get("XFER_TO") or 2)
@@ -63,21 +64,19 @@ CENTICENTS = 10_000                             # per dollar, per the docs
 
 
 def balances(label):
-    h = P._kalshi_headers("GET", "/trade-api/v2/portfolio/balance")
-    if not h:
-        print(f"  {label}: could not sign the request")
+    """Shard balances, via control's RETRYING reader.
+
+    THE READ-BACK USED TO 429 AND REPORT A SUCCESS AS UNCONFIRMED. Both
+    transfers on 2026-11-07 returned HTTP 200 with a transfer_id and then
+    printed 'balances after: HTTP 429', so the script said it could not
+    confirm something that had in fact worked, and the balances had to be
+    checked with a separate job. Kalshi rate-limits this endpoint hardest
+    immediately after a write, which is exactly when this calls it.
+    """
+    out = control.shard_balances()
+    if not out:
+        print(f"  {label}: the balance could not be read")
         return {}
-    r = requests.get(f"{P.KALSHI_BASE}/portfolio/balance", headers=h,
-                     timeout=15)
-    if not r.ok:
-        print(f"  {label}: HTTP {r.status_code} {r.text[:200]}")
-        return {}
-    out = {}
-    for row in (r.json() or {}).get("balance_breakdown") or []:
-        try:
-            out[int(row["exchange_index"])] = float(row["balance"])
-        except (TypeError, ValueError, KeyError):
-            continue
     print(f"  {label}:")
     for i in sorted(out):
         print(f"    shard {i}   ${out[i]:,.4f}"
