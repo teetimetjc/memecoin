@@ -553,19 +553,46 @@ jobs:
           # limit cannot refuse a cheap fill, so not sending is the only
           # lever. See MAX_DROP_CENTS in live.py for the evidence.
           #
-          # FIVE, NOT TEN, because the damage starts well before ten. Splitting
-          # the 126-bet record on how far the fill landed below the quote:
+          # THREE, FROM 2026-11-09, replacing five. guardsweep replayed the
+          # whole order log at every threshold, deciding each counterfactual
+          # fill from the presubmit ask the order itself recorded:
+          #
+          #     drop   kept  won %     ROI    first half  second half
+          #       2c    461  94.52  +1.74%      +2.88%      +0.59%
+          #       3c    494  93.87  +1.28%      +1.20%      +1.37%
+          #       4c    513  93.11  +0.63%      +0.14%      +1.14%
+          #       5c    525  92.50  +0.12%       0.00%      +0.23%
+          #
+          # A monotone slope over four adjacent values, positive in BOTH
+          # halves at 2c, 3c and 4c -- the shape a real effect makes, not
+          # the single lucky cell this project has been fooled by before.
+          # The mechanism was already stated when this guard was written: an
+          # ask collapsing in the seconds before the order lands is
+          # information about the outcome, not noise around a price.
+          #
+          # 3 AND NOT 2, though 2 reads best. 2c sits at the extreme end of
+          # the sweep and its halves are lopsided (+2.88 / +0.59) where 3c
+          # is even. Taking the best cell of a sweep run on the same record
+          # the threshold was fitted to is overfitting twice.
+          #
+          # THE SWEEP WAS IN-SAMPLE, so +1.28% is an upper bound and not a
+          # forecast. It also could not test LOOSENING at all: orders this
+          # guard already refused carry no contract count and fell out of
+          # the dataset, which is why 5c, 7c, 10c and 99c scored the same.
+          #
+          # PRE-REGISTERED: success is ROI above the +0.12% the 5c setting
+          # produced, over the next 150 settled bets, with stake held at $5
+          # and XRP still off -- one variable at a time. Below that, revert.
+          #
+          # THE EARLIER REASONING FOR FIVE, kept because it is still the
+          # reason the guard exists at all. Splitting the 126-bet record on
+          # how far the fill landed below the quote:
           #
           #   within 2c of quote   98 bets  95.9% won  break-even 92.3%  +$10.50
           #   more than 2c below   28 bets  78.6% won  break-even 81.3%  -$11.46
           #
-          # That is the whole of the net loss, in one column. Sweeping the
-          # threshold, every value from 2c to 15c leaves the kept record better
-          # than the raw one -- which is why the DIRECTION is trustworthy even
-          # though the exact number is not: 5c keeps 115 bets at 95.7% for
-          # +$16.25, against +$12.61 at 10c, on a difference of six bets. Do
-          # not read 5 as optimised; read it as "tighter than ten".
-          MAX_DROP_CENTS: '5'
+          # That was the whole of the net loss, in one column.
+          MAX_DROP_CENTS: '3'
           # HOW FAR WE CHASE A RISING ASK, raised from 1c on 2026-10-15.
           #
           # The two guards are opposites and do not interact. MAX_DROP_CENTS
@@ -580,6 +607,12 @@ jobs:
           # A limit is a MAXIMUM, so on a calm book this changes nothing: the
           # IOC still fills at the best offer. It only binds on the bets
           # currently being missed.
+          #
+          # LEFT AT 3 ON 2026-11-09. The same guardsweep found the surface
+          # flat above it -- 4c, 5c, 6c and 8c score identically because by
+          # then every order already fills, so there is nothing further to
+          # chase -- and the halves at 1c disagree in sign (-1.14% / +0.27%).
+          # The 1 -> 3 move already collected whatever was here.
           SLIP_BUFFER_CENTS: '3'
           # And the ceiling that the buffer alone does not provide: a 95.9c
           # entry plus 3c would be a 98.9c limit, needing ~99% to break even,
