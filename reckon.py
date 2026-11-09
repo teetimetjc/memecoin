@@ -240,11 +240,36 @@ def main():
     fee_total = 0.0
     fill_bad = 0
     by_series_cost = collections.defaultdict(float)
+    # TWO THINGS THE EARLIER GAP COULD HAVE BEEN, counted rather than
+    # guessed at. I attributed a $578 discrepancy to sell fills being
+    # counted as purchases; the other candidate, which I had overlooked
+    # entirely, is that the exchange covers ALL TIME while the sheet starts
+    # on 2026-10-07. Both are measured here so the answer is read off
+    # rather than argued.
+    by_action = collections.Counter()
+    by_side = collections.Counter()
+    sell_cost = 0.0
+    pre_start_cost = 0.0
+    pre_start_n = 0
+    times = []
     for x in fills:
         c = fill_cost(x)
         if c is None:
             fill_bad += 1
             continue
+        act = str(x.get("action") or "").strip().lower() or "(absent)"
+        by_action[act] += 1
+        by_side[str(x.get("outcome_side") or x.get("side") or "?").lower()] += 1
+        if act == "sell":
+            sell_cost += c
+        ts = str(x.get("created_time") or x.get("ts") or "")
+        if ts:
+            times.append(ts)
+            # START is the sheet's first day. A fill before it is real
+            # money the sheet never saw, not an error in either source.
+            if ts[:10] < str(CC.START)[:10]:
+                pre_start_cost += c
+                pre_start_n += 1
         spent += c
         fee_total += f(x.get("fee_cost"), 0.0) or 0.0
         tk = str(x.get("ticker") or x.get("market_ticker") or "")
@@ -271,6 +296,27 @@ def main():
               f"readable amount and are excluded.")
     print(f"  spent on fills (incl. ${fee_total:,.2f} of fees)  "
           f"${spent:>10,.2f}")
+    print(f"\n  WHAT THOSE FILLS ARE -- the two candidates for the gap:")
+    print(f"    by action : "
+          + ", ".join(f"{k} {v}" for k, v in sorted(by_action.items())))
+    print(f"    by side   : "
+          + ", ".join(f"{k} {v}" for k, v in sorted(by_side.items())))
+    if by_action.get("sell"):
+        print(f"    SELLS ARE PRESENT and this code prices them as though")
+        print(f"      they were purchases: ${sell_cost:,.2f} of the 'spent'")
+        print(f"      figure is sells, which are credits, not costs. The")
+        print(f"      total above overstates spending by roughly twice that.")
+    else:
+        print(f"    no sell fills, so the buy/sell assumption is not the gap")
+    if times:
+        times.sort()
+        print(f"    date range: {times[0][:10]} to {times[-1][:10]}  "
+              f"(the sheet starts {str(CC.START)[:10]})")
+    if pre_start_n:
+        print(f"    {pre_start_n} fill(s) worth ${pre_start_cost:,.2f} "
+              f"predate the sheet entirely -- real money the")
+        print(f"      strategy sections below cannot see, and the likeliest")
+        print(f"      single cause of a gap against them.")
     print(f"  returned by settlements                 ${returned:>10,.2f}")
     trade_net = returned - spent
     if fill_bad and not spent:
