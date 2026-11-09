@@ -1,0 +1,49 @@
+name: Guard sweep -- chase a rising ask, refuse a falling one (read-only)
+
+# Replays the real order log at every SLIP_BUFFER_CENTS and MAX_DROP_CENTS,
+# using the presubmit ask each order recorded. Places no order.
+
+on:
+  workflow_dispatch:
+    inputs:
+      buffers:
+        description: 'Slip buffers to sweep, cents'
+        required: false
+        default: '1,2,3,4,5,6,8'
+      drops:
+        description: 'Drop thresholds to sweep, cents (99 = guard off)'
+        required: false
+        default: '2,3,4,5,7,10,99'
+      stakes:
+        description: 'Stake sizes to include'
+        required: false
+        default: '4,5'
+
+permissions:
+  contents: read
+
+jobs:
+  guardsweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Sweep the guards
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          SWEEP_BUFFERS: ${{ inputs.buffers }}
+          SWEEP_DROPS: ${{ inputs.drops }}
+          SWEEP_STAKES: ${{ inputs.stakes }}
+          SLIP_BUFFER_CENTS: '3'
+          MAX_DROP_CENTS: '5'
+          MAX_LIMIT_CENTS: '97'
+        run: python guardsweep.py
