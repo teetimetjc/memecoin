@@ -1,0 +1,34 @@
+name: Probe pump.fun / Solana data sources (read-only, no credentials)
+
+# Asks each candidate public endpoint what it returns and prints one
+# record's keys verbatim. Uses no API key, touches no wallet, places no
+# order. Exists so the scanner is built against real field names rather
+# than guessed ones.
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Substring to limit which sources are probed (blank = all)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  pumpprobe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Probe the sources
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: python pumpprobe.py "${{ inputs.only }}"
