@@ -1,0 +1,52 @@
+name: The 19c side held to expiry (read-only)
+
+# Tests the trade behind 89% of a leaderboard week: buy the cheap side of a
+# 15-minute crypto market and hold it. Scores the favourite it faces on the
+# SAME windows, head to head. Places no order and writes no row.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lo:
+        description: 'Band low, cents'
+        required: false
+        default: '15'
+      hi:
+        description: 'Band high, cents'
+        required: false
+        default: '25'
+      offsets:
+        description: 'Minutes before close to test'
+        required: false
+        default: '14,12,9,6,3'
+      stake:
+        description: 'Dollars per bet'
+        required: false
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  longcut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Score the cheap side against the favourite
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          LONG_LO_CENTS: ${{ inputs.lo }}
+          LONG_HI_CENTS: ${{ inputs.hi }}
+          LONG_OFFSETS: ${{ inputs.offsets }}
+          LONG_STAKE: ${{ inputs.stake }}
+        run: python longcut.py
