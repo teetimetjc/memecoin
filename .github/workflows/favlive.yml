@@ -310,7 +310,36 @@ jobs:
       #
       # To resume: set this back to 'live' and dispatch a fresh run, because
       # a queued run carries the workflow file as of its creation.
-      default_mode: 'live'
+      # DRY FROM 2026-11-10, at the operator's decision.
+      #
+      # The MAX_DROP_CENTS 5 -> 3 test went live on 11-09, lost its
+      # first two bets, and was halted. Those two were ordinary: both
+      # filled ABOVE the quote (+1.1c and +1.9c), so the book was
+      # rising into the close and neither was the collapse the new
+      # guard exists to refuse. Two losses in two bets is about a
+      # 1-in-130 draw at the record's 8.65% loss rate -- uncommon, and
+      # not evidence of anything at n=2.
+      #
+      # THE REAL PROBLEM WAS THE LOOP, not the bets: change a setting,
+      # watch two bets, stop. The pre-registration asked for 150
+      # settled bets and got 1.3% of that, so the 3c-vs-5c question is
+      # no better answered than before the change.
+      #
+      # Dry runs the identical loop against real markets and real
+      # prices and places nothing, writing every signal to the Paper
+      # Bets tab. The 150 bets accumulate with no money at risk.
+      #
+      # WHAT A PAPER ROW IS WORTH, so the answer is not over-read when
+      # it arrives: the price recorded is the QUOTE the selector saw,
+      # never a fill. Paper results are therefore systematically BETTER
+      # than trading would have been, by about 0.75c a bet on this
+      # session's own measured history. Read it as 'did the favourite
+      # hold', never as 'we would have made this'.
+      #
+      # Set back to 'live' and dispatch a FRESH run to resume -- a
+      # queued run carries the workflow file as of its creation, which
+      # cost two cancelled sessions on 11-09 to rediscover.
+      default_mode: 'dry'
     steps:
       - uses: actions/checkout@v4
         with:
