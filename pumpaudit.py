@@ -219,11 +219,22 @@ def main():
                   f"(launches start ~30)")
             print(f"    vTokens median {st.median(toks):,.0f} "
                   f"(launches start ~1.07bn)")
-            odd = sum(1 for a, _ in early if not (25 <= a <= 120))
-            if odd:
-                print(f"    {odd} sample(s) far outside the expected range "
-                      f"-- worth a look")
-                problems["implausible early reserves"] += odd
+            # MY FIRST BAND WAS WRONG AND FLAGGED REAL DATA. It called
+            # anything outside 25-120 SOL implausible, but a pump.fun curve
+            # STARTS at 30 virtual SOL and only rises as people buy, so a
+            # high reading is a token being bought hard -- the single most
+            # interesting thing the dataset can contain -- not an error.
+            # What is genuinely impossible is BELOW the starting reserve.
+            impossible = [a for a, _ in early if a < 29.9]
+            hot = [a for a, _ in early if a > 60]
+            if impossible:
+                print(f"    {len(impossible)} sample(s) BELOW the 30 SOL "
+                      f"starting reserve, which cannot happen -- "
+                      f"min {min(impossible):.3f}")
+                problems["vSol below the starting reserve"] += len(impossible)
+            if hot:
+                print(f"    {len(hot)} sample(s) above 60 SOL by 30s -- "
+                      f"bought hard, not an error (max {max(hot):.1f})")
 
         # What the data can already say about movement.
         mults = [f(g(r, ph, "X vs Launch")) for r in prices]

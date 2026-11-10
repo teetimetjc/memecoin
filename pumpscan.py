@@ -146,6 +146,8 @@ async def run():
     creates, migs = [], []
     kinds = Counter()
     creators = Counter()
+    seen_mints = set()
+    dupes = [0]
     written = 0
     skipped_small = 0
     t_end = time.time() + SECONDS
@@ -192,6 +194,18 @@ async def run():
             now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
             if tx == "create":
+                # THE FEED CAN REPEAT A CREATE, and the audit found 12
+                # duplicate mints across 2,477 rows. A duplicate is not
+                # corruption -- both rows are true -- but it double-counts
+                # in any per-launch rate, so it is refused at the source
+                # rather than left for every later reader to remember.
+                # Cross-session duplicates are still possible and remain an
+                # analysis-time dedupe on mint.
+                mint_seen = d.get("mint")
+                if not mint_seen or mint_seen in seen_mints:
+                    dupes[0] += 1
+                    continue
+                seen_mints.add(mint_seen)
                 sol = f(d.get("solAmount"), 0.0) or 0.0
                 if MIN_SOL and sol < MIN_SOL:
                     skipped_small += 1
@@ -217,6 +231,8 @@ async def run():
         print(f"  {skipped_small} create(s) skipped by "
               f"PUMPSCAN_MIN_SOL={MIN_SOL}")
     print(f"  message kinds: {dict(kinds)}")
+    if dupes[0]:
+        print(f"  {dupes[0]} repeated create event(s) refused at the source")
     rep = [(k, c) for k, c in creators.most_common(8) if c > 1]
     if rep:
         print("\n  WALLETS THAT LAUNCHED MORE THAN ONCE IN THIS SESSION:")
