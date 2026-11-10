@@ -1,0 +1,29 @@
+name: Audit the pump.fun data (read-only)
+
+# Recomputes every derived figure on the pump.fun tabs from the raw values
+# stored beside it and reports disagreements. A collector that runs is not
+# a collector that is correct. Places no order, writes no row.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pumpaudit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests
+      - name: Audit
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python pumpaudit.py
