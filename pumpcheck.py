@@ -76,12 +76,43 @@ def main():
           "every figure is optimistic.")
     print("=" * 100)
 
-    sh = client().open_by_key(SHEET_ID)
     try:
-        rows = sh.worksheet("Sheet1").get_all_values()
+        sh = client().open_by_key(SHEET_ID)
     except Exception as e:
-        print(f"\n  could not open Sheet1: {str(e)[:120]}")
+        print(f"\n  could not open the spreadsheet: {str(e)[:160]}")
+        print("  The service account may not have been shared on this file.")
         return 1
+
+    # SAY WHAT IS THERE RATHER THAN FAIL ON A GUESSED NAME. The first run
+    # died on worksheet("Sheet1") because that tab does not exist, which
+    # tells the reader nothing about what does.
+    try:
+        tabs = [w.title for w in sh.worksheets()]
+    except Exception as e:
+        print(f"\n  could not list worksheets: {str(e)[:160]}")
+        return 1
+    print(f"\n  tabs on this spreadsheet: {tabs}")
+
+    want = os.environ.get("MEME_TAB") or ""
+    name = None
+    if want and want in tabs:
+        name = want
+    else:
+        # Pick the tab that actually carries the scanner's schema.
+        for t in tabs:
+            try:
+                head = sh.worksheet(t).row_values(1)
+            except Exception:
+                continue
+            if "Address" in head and any(h.startswith("% +") for h in head):
+                name = t
+                break
+    if not name:
+        print("  NO TAB CARRIES THE SCANNER'S COLUMNS (Address plus '% +Nm').")
+        print("  Either the log was cleared, or it lives on another file.")
+        return 0
+    print(f"  reading '{name}'")
+    rows = sh.worksheet(name).get_all_values()
     if len(rows) < 2:
         print("\n  THE SHEET IS EMPTY. The scanner logged nothing, or the "
               "rows were cleared.")
