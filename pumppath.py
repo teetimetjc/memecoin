@@ -138,6 +138,7 @@ async def run():
     cohort_rows, trade_rows = [], []
     kinds = Counter()
     per_mint = Counter()
+    unmatched = Counter()
     shown_raw = 0
     written = 0
     t_end = time.time() + SECONDS
@@ -203,23 +204,30 @@ async def run():
                           f"following trades only from here")
                 continue
 
-            mint = d.get("mint")
-            if mint not in born:
-                continue
-            if written + len(trade_rows) >= MAX_ROWS:
-                continue
-
-            # THE SCHEMA OF A TRADE EVENT HAS NOT BEEN SEEN BY THIS FILE.
-            # Print the first few verbatim so the next version is written
-            # against what arrives rather than what was assumed.
-            if shown_raw < SHOW_RAW:
+            # THE DIAGNOSTIC COMES FIRST, BEFORE ANY FILTER. The previous
+            # version printed samples only AFTER checking that the message
+            # named a cohort mint -- so if a trade event called the token
+            # anything other than `mint`, the message was dropped silently
+            # and the print that existed to catch exactly that never ran.
+            # A diagnostic gated behind the bug it diagnoses is not a
+            # diagnostic. The first run recorded 0 trades and could not say
+            # whether the feed was quiet or the reader was wrong.
+            if shown_raw < SHOW_RAW and not d.get("message"):
                 shown_raw += 1
-                print(f"\n  --- trade event sample #{shown_raw} "
-                      f"({len(d)} keys)")
+                hit = d.get("mint") in born
+                print(f"\n  --- non-create message #{shown_raw} "
+                      f"({len(d)} keys)  cohort-match={hit}")
                 for k in sorted(d):
                     print(f"      {k:<26} "
                           f"{json.dumps(d[k], default=str)[:76]}")
                 print()
+
+            mint = d.get("mint")
+            if mint not in born:
+                unmatched[tx or "?"] += 1
+                continue
+            if written + len(trade_rows) >= MAX_ROWS:
+                continue
 
             per_mint[mint] += 1
             trade_rows.append(trade_row(d, now, now_s - born[mint]))
@@ -233,6 +241,10 @@ async def run():
     flush()
     print(f"\n  DONE. cohort {len(born)}, {written} trade row(s) recorded.")
     print(f"  message kinds: {dict(kinds)}")
+    if unmatched:
+        print(f"  messages that named no cohort mint: {dict(unmatched)}")
+        print("  If that count is large while the trade count is zero, the")
+        print("  reader is wrong, not the feed.")
     traded = len(per_mint)
     if born:
         print(f"\n  {traded} of {len(born)} cohort token(s) traded at all "
