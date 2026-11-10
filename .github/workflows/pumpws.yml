@@ -1,0 +1,40 @@
+name: Probe the pumpportal websocket (read-only, no credentials)
+
+# pump.fun's HTTP API answers 403 behind Cloudflare from a datacenter.
+# This tries the websocket path, which is the only route to launch-time
+# data. Listens for a fixed window, prints what arrives, exits.
+# No key, no wallet, no order.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'How long to listen'
+        required: false
+        default: '60'
+      subs:
+        description: 'Subscription methods, comma separated'
+        required: false
+        default: 'subscribeNewToken,subscribeMigration'
+
+permissions:
+  contents: read
+
+jobs:
+  pumpws:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install websockets
+      - name: Listen
+        env:
+          PYTHONUNBUFFERED: '1'
+          PUMPWS_SECONDS: ${{ inputs.seconds }}
+          PUMPWS_SUBS: ${{ inputs.subs }}
+        run: python pumpws.py
