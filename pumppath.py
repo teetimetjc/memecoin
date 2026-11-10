@@ -202,6 +202,16 @@ async def run():
                 if len(born) == COHORT:
                     print(f"  cohort full at {len(born)} mint(s); "
                           f"following trades only from here")
+                    # BATCHED RE-SUBSCRIBE. Two runs recorded zero trades
+                    # with every per-mint subscription acknowledged, which
+                    # is what it would look like if each call REPLACED the
+                    # key set instead of adding to it. Sending all keys at
+                    # once costs one frame and rules that out.
+                    await sock.send(json.dumps(
+                        {"method": "subscribeTokenTrade",
+                         "keys": list(born)}))
+                    print(f"  re-subscribed with all {len(born)} key(s) "
+                          f"in one call")
                 continue
 
             # THE DIAGNOSTIC COMES FIRST, BEFORE ANY FILTER. The previous
@@ -212,7 +222,14 @@ async def run():
             # A diagnostic gated behind the bug it diagnoses is not a
             # diagnostic. The first run recorded 0 trades and could not say
             # whether the feed was quiet or the reader was wrong.
-            if shown_raw < SHOW_RAW and not d.get("message"):
+            if d.get("message"):
+                # THE ACKNOWLEDGEMENTS ARE EVIDENCE, NOT NOISE. If the feed
+                # replaces the subscription set on each call rather than
+                # adding to it, only the last key is live and the ack is
+                # where that shows. The previous version skipped these.
+                print(f"  [ack] {str(d.get('message'))[:120]}")
+                continue
+            if shown_raw < SHOW_RAW:
                 shown_raw += 1
                 hit = d.get("mint") in born
                 print(f"\n  --- non-create message #{shown_raw} "
