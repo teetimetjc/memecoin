@@ -1,0 +1,52 @@
+name: Record pump.fun trade paths (read-only, no wallet)
+
+# Takes a cohort of fresh launches and follows EVERY trade on them for the
+# session, so exit horizons can be swept later. pumpscan records that a
+# token launched; this records what its price did afterwards.
+#
+# A COHORT, NOT A WATCHLIST: the first N launches of a session are followed
+# for the rest of it, so every member has a known age at every observation
+# and all are watched over the same elapsed window.
+#
+# No private key, no wallet, no order, and no possibility of one.
+
+on:
+  schedule:
+    - cron: '37 * * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'How long the session records'
+        required: false
+        default: '20700'
+      cohort:
+        description: 'How many launches to follow'
+        required: false
+        default: '40'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pumppath
+  cancel-in-progress: false
+
+jobs:
+  pumppath:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install websockets gspread google-auth requests
+      - name: Record trade paths
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          PUMPPATH_SECONDS: ${{ inputs.seconds || '20700' }}
+          PUMPPATH_COHORT: ${{ inputs.cohort || '40' }}
+        run: python pumppath.py
