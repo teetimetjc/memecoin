@@ -157,9 +157,23 @@ def rpc_accounts(url, keys, session):
     if "error" in j:
         return None, f"rpc {json.dumps(j['error'])[:120]}"
     vals = ((j.get("result") or {}).get("value")) or []
-    out = {}
+    # LENGTH MUST MATCH OR THE ZIP MISALIGNS EVERY KEY AFTER THE GAP.
+    # getMultipleAccounts returns one slot per key, nulls included; a short
+    # array would silently attribute one token's reserves to another.
+    if len(vals) != len(keys):
+        return None, f"length {len(vals)} != {len(keys)}"
+    out, foreign = {}, 0
     for k, v in zip(keys, vals):
         if not v:
+            continue
+        # THE OWNER CHECK, WHICH I DEFINED AND THEN FAILED TO USE. The
+        # audit found 30-second samples holding 1.853 SOL and 929 SOL --
+        # both impossible for a curve that starts at 30 and graduates near
+        # 85 -- because any account at all was being decoded as if it were
+        # a bonding curve. An account not owned by the pump.fun program is
+        # not a curve, and its bytes are not reserves.
+        if v.get("owner") != CURVE_OWNER:
+            foreign += 1
             continue
         data = v.get("data")
         if not isinstance(data, list) or not data:
@@ -168,9 +182,15 @@ def rpc_accounts(url, keys, session):
             dec = decode_curve(base64.b64decode(data[0]))
         except Exception:
             dec = None
-        if dec:
+        # A curve's virtual SOL reserve starts at 30 and only rises. Below
+        # that is arithmetically impossible, so it is refused here rather
+        # than written and caught by an audit later.
+        if dec and dec["vs"] >= 29.9 and dec["vt"] > 0:
             out[k] = dec
-    return out, None
+        elif dec:
+            foreign += 1
+    return out, (f"skipped {foreign} non-curve account(s)" if foreign
+                 and not out else None)
 
 
 async def recruit(cohort, seconds):
