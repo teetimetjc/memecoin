@@ -1,0 +1,34 @@
+name: What the meme-coin scanner actually earned (read-only)
+
+# Reads the Solana scanner's own alert log and scores a fixed-minute exit
+# rule against it. Places no order and writes no row.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stake:
+        description: 'Dollars into every alert'
+        required: false
+        default: '100'
+
+permissions:
+  contents: read
+
+jobs:
+  pumpcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth
+      - name: Score the scanner's record
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          MEME_STAKE: ${{ inputs.stake }}
+        run: python pumpcheck.py
