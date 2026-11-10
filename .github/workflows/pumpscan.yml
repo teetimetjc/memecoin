@@ -4,13 +4,34 @@ name: Record pump.fun launches (read-only, no wallet)
 # to two sheet tabs. Records only -- it computes no verdict. No private
 # key, no wallet, no order, and no possibility of one.
 
+# WHY A LONG SESSION ON AN HOURLY CRON, rather than a short frequent one.
+# This is the pattern favlive already proves in this repo. GitHub drops
+# scheduled triggers at roughly the same rate whatever the interval, so a
+# frequent cron misses windows wholesale; a long session with a concurrency
+# group means a dropped trigger usually costs nothing, because the running
+# job still owns the group and the next trigger queues behind it. A
+# websocket recorder needs exactly that -- the feed is continuous and every
+# gap is launches that were never seen.
+#
+# THE SESSION IS 5h45m so four triggers a day are enough to stay covered
+# even when several are dropped.
+#
+# ROW VOLUME IS THE THING TO WATCH. 7 creates a minute is ~10,000 a day at
+# 14 columns, so ~140,000 cells a day into a spreadsheet that already holds
+# the Kalshi collector. PUMPSCAN_MIN_SOL stays 0 while the base rate is
+# being measured, because filtering before measuring would measure the
+# filter -- but this should be reviewed within days, not left to run for a
+# month unattended.
+
 on:
+  schedule:
+    - cron: '7 * * * *'
   workflow_dispatch:
     inputs:
       seconds:
         description: 'How long the session records'
         required: false
-        default: '1800'
+        default: '20700'
       min_sol:
         description: "Skip creates whose creator bought less than this (0 = keep all)"
         required: false
@@ -39,6 +60,6 @@ jobs:
         env:
           PYTHONUNBUFFERED: '1'
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          PUMPSCAN_SECONDS: ${{ inputs.seconds }}
-          PUMPSCAN_MIN_SOL: ${{ inputs.min_sol }}
+          PUMPSCAN_SECONDS: ${{ inputs.seconds || '20700' }}
+          PUMPSCAN_MIN_SOL: ${{ inputs.min_sol || '0' }}
         run: python pumpscan.py
