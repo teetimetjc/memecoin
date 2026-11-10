@@ -1,0 +1,36 @@
+name: Free price source probe (read-only, no credentials)
+
+# pumpportal paywalls trade data. This tests whether the bonding curve can
+# be read straight off the Solana RPC instead -- free, unpaywalled -- and
+# VERIFIES the decode against the websocket's own figures before trusting
+# it. Also checks DexScreener and Jupiter on the same fresh token.
+# No key, no wallet, no order.
+
+on:
+  workflow_dispatch:
+    inputs:
+      rpcs:
+        description: 'Comma-separated Solana RPC URLs'
+        required: false
+        default: 'https://api.mainnet-beta.solana.com'
+
+permissions:
+  contents: read
+
+jobs:
+  pricesrc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install websockets requests
+      - name: Probe price sources
+        env:
+          PYTHONUNBUFFERED: '1'
+          SOLANA_RPCS: ${{ inputs.rpcs }}
+        run: python pricesrc.py
