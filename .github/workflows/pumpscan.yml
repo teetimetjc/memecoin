@@ -1,0 +1,44 @@
+name: Record pump.fun launches (read-only, no wallet)
+
+# Holds the pumpportal websocket and writes every create and migrate event
+# to two sheet tabs. Records only -- it computes no verdict. No private
+# key, no wallet, no order, and no possibility of one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'How long the session records'
+        required: false
+        default: '1800'
+      min_sol:
+        description: "Skip creates whose creator bought less than this (0 = keep all)"
+        required: false
+        default: '0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pumpscan
+  cancel-in-progress: false
+
+jobs:
+  pumpscan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install websockets gspread google-auth requests
+      - name: Record launches
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          PUMPSCAN_SECONDS: ${{ inputs.seconds }}
+          PUMPSCAN_MIN_SOL: ${{ inputs.min_sol }}
+        run: python pumpscan.py
