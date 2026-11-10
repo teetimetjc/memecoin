@@ -1,0 +1,52 @@
+name: What separates the 19c winners from the losers (read-only)
+
+# Takes every window in the collector that offered a 15-25c side and splits
+# it by five pre-named features, asking whether any bucket clears its own
+# break-even in both halves. Places no order and writes no row.
+
+on:
+  workflow_dispatch:
+    inputs:
+      at:
+        description: 'Minutes before close to enter'
+        required: false
+        default: '9'
+      lo:
+        description: 'Band low, cents'
+        required: false
+        default: '15'
+      hi:
+        description: 'Band high, cents'
+        required: false
+        default: '25'
+      buckets:
+        description: 'Buckets per feature'
+        required: false
+        default: '4'
+
+permissions:
+  contents: read
+
+jobs:
+  longwhy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests gspread google-auth cryptography
+      - name: Split the cheap side by every feature we record
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          LONGWHY_AT: ${{ inputs.at }}
+          LONG_LO_CENTS: ${{ inputs.lo }}
+          LONG_HI_CENTS: ${{ inputs.hi }}
+          LONGWHY_BUCKETS: ${{ inputs.buckets }}
+        run: python longwhy.py
