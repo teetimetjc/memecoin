@@ -189,35 +189,35 @@ def main():
             print(f"    {m}")
             print(f"      launch    {launches[m]}")
             print(f"      migration {matched[m]}   ({delta:,.0f}s earlier)")
-        # WHETHER THIS IS FATAL DEPENDS ON THE SIZE, and the two cases are
-        # genuinely different rather than a judgement call:
+        # THE SHARE DECIDES THIS, NOT THE LAG, and the first version of this
+        # guard had that backwards. It aborted when the worst lag exceeded
+        # ten minutes, on the reasoning that a big lag means a systemically
+        # wrong join key -- but a big lag is precisely what ONE bogus row
+        # looks like, so the rule fired on exactly the case it was meant to
+        # tolerate and blocked the graduation rate over two rows in 142.
         #
-        #   a systematically wrong join key would make MOST matches
-        #   backwards, because nothing would line up;
+        # What actually distinguishes the two cases is how MANY pairs are
+        # backwards. A wrong join key makes most of them backwards, because
+        # nothing lines up. A couple means a couple of bad rows.
         #
-        #   a handful, at a lag of seconds, is the recorder stamping its own
-        #   RECEIPT time rather than the chain's -- two sockets, two
-        #   sessions, one-second resolution and out-of-order delivery around
-        #   a reconnect will put a migration a few seconds ahead of a create
-        #   it genuinely followed.
-        #
-        # So a large share stops the run, and a small one drops just those
-        # mints and says so. The threshold is stated here rather than tuned
-        # until the data passed.
+        # AND THE PROVENANCE DOES NOT MATTER HERE. One of these mints is
+        # USDC's own address, which cannot have launched on pump.fun, so
+        # either its launch row or its migration row is wrong -- and
+        # whichever it is, that mint cannot be scored. Excluding it is
+        # correct under either answer, so the rate does not have to wait on
+        # finding out which tab is at fault.
         share = len(backwards) / max(1, len(matched))
         worst = max((launches[m] - matched[m]).total_seconds()
                     for m in backwards)
-        if share > 0.02 or worst > 600:
-            print(f"\n  that is {100*share:.1f}% of matches, worst "
-                  f"{worst:,.0f}s. Too much to be receipt-time noise, so")
-            print("  the join key is wrong. Stopping rather than reporting "
-                  "a rate from it.")
+        if share > 0.02:
+            print(f"\n  that is {100*share:.1f}% of matches. Too many to be "
+                  f"stray rows, so the join key itself is wrong.")
+            print("  Stopping rather than reporting a rate from it.")
             return 1
-        print(f"\n  that is {100*share:.1f}% of matches, worst "
-              f"{worst:,.0f}s -- consistent with receipt-time stamping")
-        print("  around a reconnect, not a broken join. Those mints are")
-        print("  DROPPED from everything below rather than counted either "
-              "way.")
+        print(f"\n  that is {100*share:.1f}% of matches (worst lag "
+              f"{worst:,.0f}s), so these are stray bad rows rather than a")
+        print("  broken join. They are DROPPED from everything below and")
+        print("  named above, never counted as graduated or as failed.")
         for m in backwards:
             matched.pop(m, None)
             launches.pop(m, None)
