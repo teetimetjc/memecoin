@@ -219,22 +219,47 @@ def main():
                   f"(launches start ~30)")
             print(f"    vTokens median {st.median(toks):,.0f} "
                   f"(launches start ~1.07bn)")
-            # MY FIRST BAND WAS WRONG AND FLAGGED REAL DATA. It called
-            # anything outside 25-120 SOL implausible, but a pump.fun curve
-            # STARTS at 30 virtual SOL and only rises as people buy, so a
-            # high reading is a token being bought hard -- the single most
-            # interesting thing the dataset can contain -- not an error.
-            # What is genuinely impossible is BELOW the starting reserve.
+            # TWO WRONG BANDS BEFORE THIS ONE, so the reasoning is written
+            # down rather than left in a commit message.
+            #
+            # The first called anything outside 25-120 SOL implausible,
+            # which flagged real data: a curve STARTS at 30 virtual SOL and
+            # rises as people buy, so a moderately high reading is a token
+            # being bought, not a decode error.
+            #
+            # The second over-corrected and called every high reading
+            # "bought hard, not an error". That is also wrong, and saying
+            # it in the output was worse than saying nothing, because a
+            # pump.fun curve GRADUATES near 85 real SOL and stops. A
+            # reading of 950 SOL at the 30-second mark is not a token being
+            # bought hard; it is either a curve variant this decoder does
+            # not understand or a wrong account being read, and it feeds
+            # straight into the X-vs-launch column an exit sweep would use.
+            #
+            # So both ends are now reported as UNEXPLAINED. Below the
+            # starting reserve is impossible. Far above the graduation
+            # threshold is impossible for a curve that still exists. Until
+            # one of them has a cause, no multiple from this tab is a
+            # finding.
             impossible = [a for a, _ in early if a < 29.9]
-            hot = [a for a, _ in early if a > 60]
+            hot = [a for a, _ in early if a > 115]
+            warm = [a for a, _ in early if 60 < a <= 115]
             if impossible:
                 print(f"    {len(impossible)} sample(s) BELOW the 30 SOL "
                       f"starting reserve, which cannot happen -- "
                       f"min {min(impossible):.3f}")
                 problems["vSol below the starting reserve"] += len(impossible)
+            if warm:
+                print(f"    {len(warm)} sample(s) between 60 and 115 SOL by "
+                      f"30s -- high but reachable before graduation")
             if hot:
-                print(f"    {len(hot)} sample(s) above 60 SOL by 30s -- "
-                      f"bought hard, not an error (max {max(hot):.1f})")
+                print(f"    {len(hot)} sample(s) ABOVE 115 SOL by 30s "
+                      f"(max {max(hot):.1f}). A curve graduates near 85 "
+                      f"real SOL and stops, so this is UNEXPLAINED --")
+                print("      a curve variant this decoder does not know, or")
+                print("      the wrong account. Not 'bought hard'.")
+                problems["vSol above any graduated curve (UNEXPLAINED)"] += \
+                    len(hot)
 
         # What the data can already say about movement.
         mults = [f(g(r, ph, "X vs Launch")) for r in prices]
