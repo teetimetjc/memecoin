@@ -1,0 +1,33 @@
+name: Verify the bonding-curve byte offsets (read-only)
+
+# Fetches the raw curve accounts behind readings that decoded plausibly and
+# readings that decoded impossibly, prints every u64 at every offset, and
+# tests each against the curve invariant (virtual SOL * virtual tokens is
+# ~3.2e10 for an honest pump.fun curve). Says whether the two sets have
+# different account layouts.
+#
+# Places no order, writes no row, uses no wallet. Reads a public Solana RPC.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pumpoffs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests
+      - name: Verify offsets
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python pumpoffs.py
