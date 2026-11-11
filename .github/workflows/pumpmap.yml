@@ -1,0 +1,33 @@
+name: Map the bonding-curve layout (read-only)
+
+# Recruits fresh launches, polls each curve account repeatedly, and finds
+# which 8-byte offsets hold the LIVE reserves: a field that never changes is
+# configuration, a field that moves is state. The winning pair must also
+# reproduce the launch event's own vSol/vTokens and hold its product like an
+# AMM, and must agree across several tokens.
+#
+# Places no order, writes no row, uses no wallet and no sheet. Reads the
+# public websocket and a public Solana RPC.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pumpmap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install websockets requests
+      - name: Map the layout
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: python pumpmap.py
