@@ -341,21 +341,67 @@ def main():
             if unknown:
                 print(f"    ({unknown} row(s) gave no evidence either way -- "
                       f"they predate the collector.)")
-            # AN IDENTICAL RESERVE ON DIFFERENT MINTS cannot come from the
-            # market: two tokens do not hold the same reserve to four
-            # decimals. It means one account was read for many mints, which
-            # points at the account derivation rather than the byte layout.
-            vals = collections.Counter(round(v, 1) for _, v in suspect if v)
-            rep = [(v, c) for v, c in vals.most_common(3) if c > 1]
+            # MY OWN ROUNDING MANUFACTURED A FINDING. This counted repeats
+            # after round(v, 1), then announced that two tokens held
+            # "identical reserves". At ~925 SOL a tenth of a SOL is a wide
+            # bucket, so values that merely cluster were reported as equal
+            # and I drew a conclusion about account derivation from my own
+            # aggregation. Repeats are now counted at FULL precision, and
+            # the clustering is reported separately as clustering.
+            exact = collections.Counter(v for _, v in suspect if v)
+            rep = [(v, c) for v, c in exact.most_common(5) if c > 1]
             if rep:
-                print("\n    AND THE SAME VALUE REPEATS ACROSS DIFFERENT "
-                      "MINTS:")
+                print("\n    THE SAME EXACT VALUE, repeated to full "
+                      "precision:")
                 for v, c in rep:
-                    print(f"      {v:,.1f} SOL on {c} sample(s)")
-                print("    Two tokens cannot hold identical reserves, so one")
-                print("    account is being read for many mints. That points")
-                print("    at how the curve address is derived, not at the")
-                print("    byte layout of the decode.")
+                    print(f"      {v!r} SOL on {c} sample(s)")
+                print("    Two tokens cannot hold byte-identical reserves,")
+                print("    so these samples read the SAME account.")
+            else:
+                print("\n    no two samples share an exact value, so the")
+                print("    earlier 'identical reserves' claim was my own")
+                print("    rounding. They CLUSTER; they are not equal.")
+            vals = sorted(v for _, v in suspect if v)
+            if vals:
+                print(f"\n    the {len(vals)} bad reading(s) span "
+                      f"{vals[0]:,.3f} to {vals[-1]:,.3f} SOL, "
+                      f"median {st.median(vals):,.3f}")
+
+            # WHICH ACCOUNT DID THESE COME FROM. The 'Curve' column was
+            # added for exactly this and the cross-check predates it, so it
+            # was being ignored. An account appearing under many mints is
+            # the thing to find; a bad reading on a one-mint account means
+            # the byte layout is wrong instead.
+            per_curve = collections.defaultdict(set)
+            no_curve = 0
+            for r in prices:
+                if (f(g(r, ph, "vSol")) or 0) <= 115:
+                    continue
+                cv = g(r, ph, "Curve")
+                if not cv:
+                    no_curve += 1
+                    continue
+                per_curve[cv].add(g(r, ph, "Mint"))
+            if no_curve:
+                print(f"\n    {no_curve} bad reading(s) have NO curve "
+                      f"address: written before the column existed and")
+                print("    therefore untraceable. Not evidence either way.")
+            if per_curve:
+                shared = {c: ms for c, ms in per_curve.items() if len(ms) > 1}
+                print(f"\n    {len(per_curve)} curve account(s) behind the "
+                      f"traceable bad readings")
+                for c, ms in sorted(shared.items(),
+                                    key=lambda x: -len(x[1]))[:5]:
+                    print(f"      {c[:44]}  read for {len(ms)} DIFFERENT "
+                          f"mint(s)")
+                if shared:
+                    print("    An account serving several mints is the "
+                          "defect: the curve address is being reused.")
+                else:
+                    print("    Each belongs to ONE mint, so no account is "
+                          "being shared. The reserve values themselves are")
+                    print("    wrong, which points at the byte layout or the")
+                    print("    field offsets in the decode.")
 
         # What the data can already say about movement.
         mults = [f(g(r, ph, "X vs Launch")) for r in prices]
