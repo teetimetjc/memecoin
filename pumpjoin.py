@@ -182,10 +182,45 @@ def main():
     # is on the wrong key. Checked rather than assumed.
     backwards = [m for m, t in matched.items() if t < launches[m]]
     if backwards:
-        print(f"\n  {len(backwards)} migration(s) timestamped BEFORE their "
-              f"own launch. That is impossible and means")
-        print("  the join is wrong. Stopping rather than reporting a rate.")
-        return 1
+        print(f"\n  {len(backwards)} of {len(matched)} migration(s) "
+              f"timestamped BEFORE their own launch, which is impossible:")
+        for m in backwards[:10]:
+            delta = (launches[m] - matched[m]).total_seconds()
+            print(f"    {m}")
+            print(f"      launch    {launches[m]}")
+            print(f"      migration {matched[m]}   ({delta:,.0f}s earlier)")
+        # WHETHER THIS IS FATAL DEPENDS ON THE SIZE, and the two cases are
+        # genuinely different rather than a judgement call:
+        #
+        #   a systematically wrong join key would make MOST matches
+        #   backwards, because nothing would line up;
+        #
+        #   a handful, at a lag of seconds, is the recorder stamping its own
+        #   RECEIPT time rather than the chain's -- two sockets, two
+        #   sessions, one-second resolution and out-of-order delivery around
+        #   a reconnect will put a migration a few seconds ahead of a create
+        #   it genuinely followed.
+        #
+        # So a large share stops the run, and a small one drops just those
+        # mints and says so. The threshold is stated here rather than tuned
+        # until the data passed.
+        share = len(backwards) / max(1, len(matched))
+        worst = max((launches[m] - matched[m]).total_seconds()
+                    for m in backwards)
+        if share > 0.02 or worst > 600:
+            print(f"\n  that is {100*share:.1f}% of matches, worst "
+                  f"{worst:,.0f}s. Too much to be receipt-time noise, so")
+            print("  the join key is wrong. Stopping rather than reporting "
+                  "a rate from it.")
+            return 1
+        print(f"\n  that is {100*share:.1f}% of matches, worst "
+              f"{worst:,.0f}s -- consistent with receipt-time stamping")
+        print("  around a reconnect, not a broken join. Those mints are")
+        print("  DROPPED from everything below rather than counted either "
+              "way.")
+        for m in backwards:
+            matched.pop(m, None)
+            launches.pop(m, None)
 
     # ----------------------------------- correction 3: collector blind spots
     stamps = sorted(launches.values())
