@@ -271,18 +271,60 @@ def rpc_accounts(url, keys, session):
 
 
 async def recruit(cohort, seconds):
-    """Fill the cohort from the free websocket subscription."""
+    """Fill the cohort from the free websocket subscription.
+
+    ONE FAILED HANDSHAKE USED TO KILL THE WHOLE SESSION. The 20:04 run
+    died 21 seconds in with "timed out during opening handshake" and the
+    job exited FAILURE having recorded nothing -- the same defect already
+    fixed in pumpscan, left in place here because recruit had no retry at
+    all. A 5h45m collection window was lost to one transient connect, and
+    nothing restarted it until the next hourly trigger.
+
+    So the connection is retried with backoff inside the recruiting
+    window, and the cohort is passed in and accumulated across attempts
+    rather than restarted, so a drop halfway through keeps what it had.
+    """
+    import websockets
+    end = time.time() + seconds
+    tries = 0
+    while time.time() < end and len(cohort) < COHORT:
+        tries += 1
+        if tries > 1:
+            wait = min(20.0, 2.0 * (2 ** min(tries - 2, 3)))
+            wait = min(wait, max(0.0, end - time.time()))
+            if wait <= 0:
+                break
+            print(f"  recruit attempt {tries} in {wait:.0f}s "
+                  f"({len(cohort)} so far)")
+            await asyncio.sleep(wait)
+            if time.time() >= end:
+                break
+        try:
+            await _recruit_once(cohort, end)
+        except Exception as e:
+            # A connect or read failure is a retry, never the end of the
+            # session. Anything already recruited is kept.
+            print(f"  recruit feed problem: {type(e).__name__}: "
+                  f"{str(e)[:110]}")
+            continue
+        # _recruit_once only returns when the window closed or the cohort
+        # filled, so there is nothing left to retry.
+        break
+    if tries > 1:
+        print(f"  recruiting took {tries} attempt(s)")
+    return cohort
+
+
+async def _recruit_once(cohort, end):
+    """One websocket session's worth of recruiting. Raises on any failure."""
     import websockets
     async with websockets.connect(WS, open_timeout=20) as s:
         await s.send(json.dumps({"method": "subscribeNewToken"}))
-        end = time.time() + seconds
         while time.time() < end and len(cohort) < COHORT:
             try:
                 raw = await asyncio.wait_for(
                     s.recv(), timeout=max(1, end - time.time()))
             except asyncio.TimeoutError:
-                break
-            except Exception:
                 break
             try:
                 d = json.loads(raw)
