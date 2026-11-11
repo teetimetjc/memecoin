@@ -75,34 +75,59 @@ def settlement(tickers):
     outcome from a spot price read later would regrade the market against a
     different source than the one that paid, and this project has already
     been bitten by exactly that.
+
+    GRADED IN BATCHES, because one request per ticker is not viable. The
+    first version of this file fetched /markets/{ticker} 527 times at ~0.22s
+    each and was still going after a minute; it got about 250 through before
+    the job ended, so the whole grading half produced nothing. GET /markets
+    takes a comma-separated `tickers` list, which turns that into six
+    requests. If the list parameter is not honoured -- which would show as a
+    response full of markets nobody asked about -- that is detected and said
+    out loud rather than quietly mis-joined.
     """
     import requests
     import predictor as P
+    want = sorted(tickers)[:GRADE_MAX]
     out = {}
-    for i, t in enumerate(sorted(tickers)[:GRADE_MAX]):
-        path = f"/trade-api/v2/markets/{t}"
-        h = P._kalshi_headers("GET", path)
+    CHUNK = 100
+    for i in range(0, len(want), CHUNK):
+        batch = want[i:i + CHUNK]
+        qs = "tickers=" + ",".join(batch) + f"&limit={CHUNK}"
+        # Kalshi signs the PATH ONLY, without the query string. Signing the
+        # full path with the query is what produces a 401 that looks like a
+        # bad key.
+        h = P._kalshi_headers("GET", "/trade-api/v2/markets")
         if not h:
             print("  could not sign a markets request; grading skipped")
             return {}
         try:
-            r = requests.get(P.KALSHI_BASE + f"/markets/{t}",
-                             headers=h, timeout=15)
+            r = requests.get(P.KALSHI_BASE + "/markets?" + qs,
+                             headers=h, timeout=30)
         except Exception as e:
-            print(f"  {t}: request failed ({str(e)[:60]})")
-            continue
-        if r.status_code == 429:
-            time.sleep(1.0)
+            print(f"  batch at {i}: request failed ({str(e)[:70]})")
             continue
         if not r.ok:
+            print(f"  batch at {i}: HTTP {r.status_code} {r.text[:120]}")
             continue
-        m = (r.json() or {}).get("market") or {}
-        res = (m.get("result") or "").strip().lower()
-        # An empty result means NOT SETTLED. It must not be read as a loss.
-        out[t] = res or None
-        if i and i % 50 == 0:
-            print(f"  ... graded {i}/{min(len(tickers), GRADE_MAX)}")
-        time.sleep(0.12)
+        ms = (r.json() or {}).get("markets") or []
+        asked = set(batch)
+        got = {m.get("ticker") for m in ms}
+        extra = got - asked
+        if extra:
+            print(f"  THE tickers FILTER WAS IGNORED: {len(extra)} market(s) "
+                  f"came back that were not asked for. Grading is not "
+                  f"trustworthy this way; stopping.")
+            return {}
+        for m in ms:
+            res = (m.get("result") or "").strip().lower()
+            # An empty result means NOT SETTLED. Never read it as a loss.
+            out[m.get("ticker")] = res or None
+        print(f"  ... {len(out)}/{len(want)} looked up")
+        time.sleep(0.2)
+    missing = [t for t in want if t not in out]
+    if missing:
+        print(f"  {len(missing)} ticker(s) were not returned by Kalshi at "
+              f"all; left ungraded rather than assumed")
     return out
 
 

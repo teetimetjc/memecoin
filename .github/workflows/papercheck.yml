@@ -1,0 +1,31 @@
+name: Check the Kalshi paper test (read-only)
+
+# Reads the 'Paper Bets' tab and grades it against Kalshi's own settlement
+# result. Answers one question: is the dry favlive session collecting, and
+# what does the record say. Places no order, writes no row.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  papercheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests cryptography
+      - name: Check
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+        run: python papercheck.py
