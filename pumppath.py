@@ -73,14 +73,24 @@ LAMPORTS = 1_000_000_000
 TOKEN_DEC = 10 ** 6
 CURVE_OWNER = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 
+# "Curve" IS APPENDED LAST, ON PURPOSE. The audit found 488 reserve
+# readings above anything a bonding curve can hold, with the SAME value
+# repeating across different mints -- 33,219.1 SOL on several at once. Two
+# tokens cannot hold identical reserves, so one account was being read for
+# many mints. Which account could not be determined from the data, because
+# the address this price was read FROM was never written down: the row kept
+# the mint and the numbers and threw away the only field that identifies
+# their source. So it is recorded now, at the END of each header so every
+# existing column keeps its position and nothing already on the tab changes
+# meaning.
 PRICE_HEADERS = [
     "Seen UTC", "Mint", "Target s", "Actual age s", "Price SOL",
     "vSol", "vTokens", "Real SOL", "Real Tokens", "Complete",
-    "Launch Price SOL", "X vs Launch", "Session",
+    "Launch Price SOL", "X vs Launch", "Session", "Curve",
 ]
 COHORT_HEADERS = [
     "Launched UTC", "Mint", "Symbol", "Name", "Creator",
-    "Creator Buy SOL", "Launch Price SOL", "Session",
+    "Creator Buy SOL", "Launch Price SOL", "Session", "Curve",
 ]
 
 
@@ -121,6 +131,17 @@ def tab(sh, title, headers):
         raise SystemExit(f"  tab '{title}' header differs: {have[:5]}")
     if not have:
         ws.update(values=[headers], range_name="A1")
+        return ws
+    # A COLUMN APPENDED AT THE END can be adopted safely, and refusing to
+    # would mean a new tab or a lost diagnostic. Only an append is allowed:
+    # the existing names must still match position for position, so nothing
+    # already written changes meaning. Anything else is the error above.
+    if len(have) < len(headers) and have == headers[:len(have)]:
+        if ws.col_count < len(headers):
+            ws.add_cols(len(headers) - ws.col_count)
+        ws.update(values=[headers], range_name="A1")
+        print(f"  tab '{title}': adopted {len(headers) - len(have)} new "
+              f"column(s) at the end; existing columns unchanged")
     return ws
 
 
@@ -216,6 +237,23 @@ async def recruit(cohort, seconds):
             mint, curve = d.get("mint"), d.get("bondingCurveKey")
             if not mint or not curve or mint in cohort:
                 continue
+            # TWO MINTS MUST NOT SHARE A CURVE ACCOUNT. Each bonding curve
+            # belongs to one token, so a repeated bondingCurveKey means
+            # either the feed is wrong or this is not the per-token account
+            # it is assumed to be -- and following both would attribute one
+            # account's reserves to two tokens, which is exactly the
+            # identical-value symptom the audit found. The second mint is
+            # refused and the collision is reported, rather than silently
+            # overwriting the first in the curve->mint map.
+            if any(v["curve"] == curve for v in cohort.values()):
+                clash = next(m for m, v in cohort.items()
+                             if v["curve"] == curve)
+                print(f"  CURVE COLLISION: {mint[:16]}... reports the same "
+                      f"bonding curve as {clash[:16]}...")
+                print(f"    curve {curve}")
+                print("    refusing the second mint; one account cannot be "
+                      "two tokens' price.")
+                continue
             vs, vt = f(d.get("vSolInBondingCurve")), f(d.get("vTokensInBondingCurve"))
             cohort[mint] = dict(
                 curve=curve, born=time.time(),
@@ -252,7 +290,7 @@ def main():
     ws_co.append_rows(
         [[time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(v["born"])),
           m, v["symbol"], v["name"], v["creator"], v["buy_sol"],
-          v["launch_px"] if v["launch_px"] else "", session_id]
+          v["launch_px"] if v["launch_px"] else "", session_id, v["curve"]]
          for m, v in cohort.items()],
         value_input_option="USER_ENTERED", table_range="A1")
 
@@ -307,7 +345,7 @@ def main():
                 stamp, mint, tgt, round(age, 1), px,
                 dec["vs"], dec["vt"], dec["rs"], dec["rt"],
                 dec["complete"], lp if lp else "",
-                (px / lp) if (px and lp) else "", session_id])
+                (px / lp) if (px and lp) else "", session_id, curve])
 
         if time.time() - last_flush >= FLUSH_EVERY:
             flush()
