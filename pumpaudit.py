@@ -311,15 +311,51 @@ def main():
                   f"(~30 SOL / ~1.07bn tokens)")
             print(f"    {not_a_curve} NEVER looked like a curve at launch")
             print(f"    {unknown} have no usable launch row")
-            if not_a_curve + unknown >= was_a_curve:
-                print("\n    SO THE HYPOTHESIS HOLDS: the impossible reserves")
-                print("    sit mostly on rows that were never bonding curves.")
-                print("    That is one defect, not two, and it is upstream in")
-                print("    what the recorder accepts as a launch.")
-            elif was_a_curve:
-                print("\n    SO THE HYPOTHESIS DOES NOT HOLD: these readings")
-                print("    sit on rows that really did start as curves, so")
-                print("    the decode or the account choice is wrong instead.")
+            # THE FIRST VERSION OF THIS VERDICT WAS WRONG, and it printed
+            # the opposite of what the data said. It tested
+            # not_a_curve + unknown >= was_a_curve, which counts "no launch
+            # row" as evidence FOR the hypothesis. It is not evidence at
+            # all: those mints launched before the collector existed, so
+            # nothing is known about them either way. With 296 unknowns and
+            # 192 confirmed curves it announced that the hypothesis held
+            # while every checkable row refuted it.
+            #
+            # Absence of evidence is not evidence. The verdict now rests
+            # only on rows where the launch IS known.
+            known = was_a_curve + not_a_curve
+            if not known:
+                print(f"\n    NO VERDICT: all {unknown} of these mints "
+                      f"launched before the collector existed, so there is")
+                print("    no launch row to judge them against.")
+            elif not_a_curve > was_a_curve:
+                print(f"\n    HYPOTHESIS HOLDS on the {known} checkable "
+                      f"row(s): the impossible reserves sit mostly on rows")
+                print("    that were never bonding curves, so it is one")
+                print("    defect, upstream in what counts as a launch.")
+            else:
+                print(f"\n    HYPOTHESIS REFUTED. Of the {known} row(s) whose "
+                      f"launch is known, {was_a_curve} started as a REAL")
+                print("    bonding curve at ~30 SOL. So these are not "
+                      "mis-recorded pools; the per-mint reserve DECODE is")
+                print("    wrong, and the bad mints are a separate defect.")
+            if unknown:
+                print(f"    ({unknown} row(s) gave no evidence either way -- "
+                      f"they predate the collector.)")
+            # AN IDENTICAL RESERVE ON DIFFERENT MINTS cannot come from the
+            # market: two tokens do not hold the same reserve to four
+            # decimals. It means one account was read for many mints, which
+            # points at the account derivation rather than the byte layout.
+            vals = collections.Counter(round(v, 1) for _, v in suspect if v)
+            rep = [(v, c) for v, c in vals.most_common(3) if c > 1]
+            if rep:
+                print("\n    AND THE SAME VALUE REPEATS ACROSS DIFFERENT "
+                      "MINTS:")
+                for v, c in rep:
+                    print(f"      {v:,.1f} SOL on {c} sample(s)")
+                print("    Two tokens cannot hold identical reserves, so one")
+                print("    account is being read for many mints. That points")
+                print("    at how the curve address is derived, not at the")
+                print("    byte layout of the decode.")
 
         # What the data can already say about movement.
         mults = [f(g(r, ph, "X vs Launch")) for r in prices]
