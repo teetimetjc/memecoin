@@ -145,13 +145,56 @@ def tab(sh, title, headers):
     return ws
 
 
+# EVERY HONEST PUMP.FUN CURVE HOLDS THE SAME CONSTANT PRODUCT. Each one is
+# initialised at 30 virtual SOL against 1.073bn virtual tokens, and a
+# constant-product AMM preserves that product as people trade, so
+# vSol * vTokens is ~3.219e10 for any curve in a real trading state.
+CURVE_K = 30.0 * 1.073e9
+# How far from it a reading may sit and still be believed. Measured, not
+# guessed: across 14 fresh launches every genuine curve read 3.219e+10 to
+# four figures, while every template read 9.823e+11 -- a factor of 30 apart,
+# so this band separates them with room to spare.
+K_BAND = float(os.environ.get("PUMPPATH_K_BAND") or 0.25)
+
+
 def decode_curve(blob):
-    """Reserves from the curve account. Layout verified by pricesrc against
-    the websocket's own figures on a live token -- 0.000% apart."""
+    """Reserves from the curve account, or None if this is not a real one.
+
+    THE ACCOUNT HAS TWO STATES AND THE OLD DECODER COULD NOT TELL THEM
+    APART. That is the whole cause of the 812 impossible readings, and it
+    took four wrong theories to find, so the evidence is written down here.
+
+    Before a token's FIRST TRADE the account holds a template: virtual
+    tokens at exactly the initial 1,073,000,000, real SOL at zero, and the
+    virtual-SOL slot holding a value that is IDENTICAL across every such
+    account -- 915.4951 on 9 of 14 fresh launches sampled together, 925.7,
+    950.7 and 929.2 in the recorded data, so the template's own value
+    drifts over time. After the first trade the same bytes hold real
+    reserves.
+
+    The offsets were never wrong. pricesrc verified them correctly, and
+    repointing them would have corrupted the good readings while leaving
+    the bad ones just as wrong.
+
+    The two states are separated by the one property a template cannot
+    fake: an honest curve's vSol * vTokens is the initialisation constant.
+    A template's is thirty times larger. So the product is checked, and a
+    reading that fails is refused rather than written -- the next poll will
+    try again, by which time the token may have traded. A MISSING SAMPLE IS
+    HONEST; A TEMPLATE READING RECORDED AS A PRICE IS NOT, and 812 of them
+    made every multiple in the tab meaningless.
+    """
     if len(blob) < 49:
         return None
     vt, vs, rt, rs, _sup = struct.unpack_from("<QQQQQ", blob, 8)
-    return dict(vt=vt / TOKEN_DEC, vs=vs / LAMPORTS,
+    vts, vss = vt / TOKEN_DEC, vs / LAMPORTS
+    if not vts or not vss:
+        return None
+    k = vss * vts
+    if not (1.0 - K_BAND) <= (k / CURVE_K) <= (1.0 + K_BAND):
+        # Not a trading curve: the template, or a state this does not know.
+        return None
+    return dict(vt=vts, vs=vss,
                 rt=rt / TOKEN_DEC, rs=rs / LAMPORTS,
                 complete=bool(blob[48]))
 
@@ -183,7 +226,7 @@ def rpc_accounts(url, keys, session):
     # array would silently attribute one token's reserves to another.
     if len(vals) != len(keys):
         return None, f"length {len(vals)} != {len(keys)}"
-    out, foreign = {}, 0
+    out, foreign, rejected = {}, 0, 0
     for k, v in zip(keys, vals):
         if not v:
             continue
@@ -203,15 +246,28 @@ def rpc_accounts(url, keys, session):
             dec = decode_curve(base64.b64decode(data[0]))
         except Exception:
             dec = None
+        if dec is None:
+            # decode_curve refuses anything whose constant product is not
+            # the initialisation constant, which is how a pre-trade
+            # template is told from a real curve. Counted separately from
+            # foreign-owner accounts because the two mean different things:
+            # a template will become readable once the token trades, a
+            # foreign account never will.
+            rejected += 1
+            continue
         # A curve's virtual SOL reserve starts at 30 and only rises. Below
         # that is arithmetically impossible, so it is refused here rather
         # than written and caught by an audit later.
-        if dec and dec["vs"] >= 29.9 and dec["vt"] > 0:
+        if dec["vs"] >= 29.9 and dec["vt"] > 0:
             out[k] = dec
-        elif dec:
+        else:
             foreign += 1
-    return out, (f"skipped {foreign} non-curve account(s)" if foreign
-                 and not out else None)
+    notes = []
+    if foreign:
+        notes.append(f"{foreign} non-curve account(s)")
+    if rejected:
+        notes.append(f"{rejected} not yet trading (template state)")
+    return out, ("skipped " + ", ".join(notes)) if notes and not out else None
 
 
 async def recruit(cohort, seconds):
