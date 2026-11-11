@@ -45,6 +45,19 @@ import statistics as st
 SHEET_ID = os.environ.get("MEME_SHEET_ID")
 TOL = float(os.environ.get("AUDIT_TOL") or 0.001)      # 0.1%
 
+# THE CUTOFF THAT MAKES "IS IT ACCURATE NOW" ANSWERABLE. Every price row
+# written before the template fix is contaminated: the decoder could not
+# tell a pre-trade template from a real curve, so 812 readings held a
+# template's bogus virtual-SOL value. Those rows cannot be repaired and
+# cannot be told apart by eye, so an audit that pools them with new rows
+# can only ever report the old damage and will never show the fix working.
+#
+# 22:58 UTC on 2026-11-11 is the start of the first collector session that
+# actually ran with the fix -- not the commit time. The two runs between
+# the commit and that session do not count: one had checked out the old
+# code hours earlier, and the other died in its opening handshake.
+SINCE = os.environ.get("PUMPAUDIT_SINCE") or "2026-11-11 22:58:00"
+
 
 def client():
     import gspread
@@ -402,6 +415,62 @@ def main():
                           "being shared. The reserve values themselves are")
                     print("    wrong, which points at the byte layout or the")
                     print("    field offsets in the decode.")
+
+        # ---------------------------------------------------------------
+        # BEFORE AND AFTER THE TEMPLATE FIX, scored separately. Pooling the
+        # two can only ever report the old damage, so this is the section
+        # that answers whether the collector is trustworthy NOW rather than
+        # whether it ever was.
+        print(f"\n{'-' * 100}")
+        print(f"BEFORE vs AFTER THE TEMPLATE FIX  (cutoff {SINCE} UTC)")
+        print("-" * 100)
+        halves = {"before": [], "after": []}
+        undated = 0
+        for r in prices:
+            stamp = str(g(r, ph, "Seen UTC")).strip()
+            if not stamp:
+                undated += 1
+                continue
+            halves["after" if stamp >= SINCE else "before"].append(r)
+        if undated:
+            print(f"  {undated} row(s) carry no timestamp and are in "
+                  f"neither half")
+        print(f"  {'half':<8}{'rows':>8}{'>115 SOL':>11}{'<29.9':>8}"
+              f"{'no curve':>10}{'bad share':>12}")
+        for name in ("before", "after"):
+            rs = halves[name]
+            if not rs:
+                print(f"  {name:<8}{0:>8}{'-':>11}{'-':>8}{'-':>10}{'-':>12}")
+                continue
+            hi = sum(1 for r in rs if (f(g(r, ph, "vSol")) or 0) > 115)
+            lo = sum(1 for r in rs if 0 < (f(g(r, ph, "vSol")) or 0) < 29.9)
+            nc = sum(1 for r in rs if not g(r, ph, "Curve"))
+            print(f"  {name:<8}{len(rs):>8}{hi:>11}{lo:>8}{nc:>10}"
+                  f"{100.0 * (hi + lo) / len(rs):>11.2f}%")
+        aft = halves["after"]
+        if not aft:
+            print("\n  NO ROWS YET AFTER THE CUTOFF, so this says nothing")
+            print("  about the fix. The collector has not written since it")
+            print("  started, or it is not running. Check the run, not the")
+            print("  data.")
+            problems["no post-fix rows to judge the fix by"] += 1
+        else:
+            bad = sum(1 for r in aft
+                      if (f(g(r, ph, "vSol")) or 0) > 115
+                      or 0 < (f(g(r, ph, "vSol")) or 0) < 29.9)
+            if bad:
+                print(f"\n  {bad} IMPOSSIBLE READING(S) STILL GETTING "
+                      f"THROUGH after the fix. It is not working as")
+                print("  intended; the figures above are not trustworthy.")
+                problems["impossible reading after the template fix"] += bad
+            else:
+                print(f"\n  {len(aft)} post-fix row(s) and NOT ONE impossible "
+                      f"reading. The gate is holding on live data,")
+                print("  which is the thing that could not be claimed from a "
+                      "unit test alone.")
+                if len(aft) < 100:
+                    print(f"  THOUGH {len(aft)} ROWS IS A THIN SAMPLE -- it "
+                          f"shows the fix works, not that it works always.")
 
         # What the data can already say about movement.
         mults = [f(g(r, ph, "X vs Launch")) for r in prices]
