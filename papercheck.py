@@ -68,6 +68,34 @@ def f(v):
         return None
 
 
+def series_of(ticker):
+    """The series a Kalshi ticker belongs to, e.g. KXBTC15M.
+
+    A 15-minute crypto ticker looks like KXBTC15M-26NOV11H04-T104999.99, so
+    the series is everything before the first hyphen. Anything that does not
+    look like that is returned whole rather than silently truncated.
+    """
+    t = (ticker or "").strip().upper()
+    return t.split("-")[0] if "-" in t else (t or "?")
+
+
+def wilson(won, n):
+    """95% Wilson score interval on a hit rate, in percent.
+
+    A NORMAL APPROXIMATION IS WRONG HERE. These rates sit near 90% with n
+    sometimes under 20, where the symmetric interval runs past 100% and
+    understates how little a single day says.
+    """
+    if not n:
+        return 0.0, 0.0
+    z = 1.959964
+    p = won / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    hw = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return 100.0 * max(0.0, c - hw), 100.0 * min(1.0, c + hw)
+
+
 def settlement(tickers):
     """Kalshi's own settlement result per ticker, or None if unsettled.
 
@@ -184,8 +212,10 @@ def main():
     settled = {k: v for k, v in res.items() if v}
     print(f"  {len(settled)} settled, {len(res) - len(settled)} still open")
 
-    staked = payout = fees = 0.0
-    won = graded = 0
+    # Build one record per gradeable row, THEN aggregate. The first version
+    # accumulated totals in the loop, which made every split a second pass
+    # over the same parsing and invited the two passes to disagree.
+    recs = []
     for r in data:
         t = g(r, "Ticker")
         outcome = settled.get(t)
@@ -197,7 +227,6 @@ def main():
         if not n or not q:
             continue
         p = q / 100.0
-        cost = n * p
         # The paper row records which side the selector wanted. A 'yes'/'up'
         # row is paid when the market settles yes; a 'no'/'down' row when it
         # settles no. Anything else is left ungraded rather than guessed.
@@ -207,44 +236,88 @@ def main():
             winner = outcome == "no"
         else:
             continue
-        graded += 1
-        staked += cost
         fee = 0.07 * n * p * (1.0 - p)
         # Kalshi rounds the fee UP to the next cent at ORDER level.
-        fees += (int(fee * 100) + (1 if fee * 100 % 1 else 0)) / 100.0
-        if winner:
-            won += 1
-            payout += n
-    if not graded:
+        fee = (int(fee * 100) + (1 if fee * 100 % 1 else 0)) / 100.0
+        recs.append({
+            "day": str(g(r, "Timestamp"))[:10],
+            "series": series_of(t),
+            "cost": n * p,
+            "p": p,
+            "fee": fee,
+            "payout": float(n) if winner else 0.0,
+            "won": 1 if winner else 0,
+        })
+    if not recs:
         print("\n  no row could be graded (side or price missing).")
         print("=" * 96)
         return 0
 
-    net = payout - staked - fees
-    print(f"\n{'-' * 96}")
-    print("PAPER RESULT ON THE SETTLED ROWS")
-    print("-" * 96)
-    print(f"  graded rows      {graded}")
-    print(f"  hit rate         {100.0 * won / graded:.2f}%  ({won}/{graded})")
-    print(f"  staked           ${staked:,.2f}")
-    print(f"  payout           ${payout:,.2f}")
-    print(f"  fees charged     ${fees:,.2f}")
-    print(f"  net              ${net:+,.2f}")
-    print(f"  ROI              {100.0 * net / staked:+.3f}%  of stake")
-    costs = [f(g(r, "Quote ¢")) for r in data]
-    costs = [c for c in costs if c]
-    if costs:
-        mp = st.mean(costs) / 100.0
-        print(f"\n  mean entry {100*mp:.1f}c -> break-even hit rate "
-              f"{100 * (mp + 0.07 * mp * (1-mp)):.2f}%")
-        print("  BREAK-EVEN IS THE GROUP'S OWN MEAN COST, not 50%.")
+    def report(label, rs, indent="  "):
+        if not rs:
+            return
+        staked = sum(x["cost"] for x in rs)
+        fees = sum(x["fee"] for x in rs)
+        payout = sum(x["payout"] for x in rs)
+        won = sum(x["won"] for x in rs)
+        net = payout - staked - fees
+        mp = st.mean([x["p"] for x in rs])
+        # BREAK-EVEN IS THE GROUP'S OWN MEAN COST, never 50%.
+        be = 100.0 * (mp + 0.07 * mp * (1 - mp))
+        lo, hi = wilson(won, len(rs))
+        print(f"{indent}{label:<14}{len(rs):>5}"
+              f"{100.0*won/len(rs):>9.2f}%"
+              f"{be:>10.2f}%"
+              f"{100.0*won/len(rs) - be:>+9.2f}"
+              f"{net:>+11.2f}"
+              f"{100.0*net/staked:>+9.2f}%"
+              f"   [{lo:.1f}-{hi:.1f}]")
 
-    print("\n" + "=" * 96)
+    head = (f"  {'group':<14}{'n':>5}{'hit':>10}{'need':>10}"
+            f"{'edge pt':>9}{'net $':>11}{'ROI':>10}   [95% hit]")
+
+    print(f"\n{'-' * 112}")
+    print("PAPER RESULT ON THE SETTLED ROWS")
+    print("-" * 112)
+    print(head)
+    report("ALL", recs)
+
+    # --------------------------------------------------------- by series
+    print(f"\n{'-' * 112}")
+    print("BY SERIES -- which coin is paying for the others")
+    print("-" * 112)
+    print(head)
+    by_s = collections.defaultdict(list)
+    for x in recs:
+        by_s[x["series"]].append(x)
+    for k in sorted(by_s, key=lambda k: -len(by_s[k])):
+        report(k, by_s[k])
+
+    # ------------------------------------------------------------ by day
+    print(f"\n{'-' * 112}")
+    print("BY UTC DAY -- XRP was switched off on 2026-11-09, the drop guard")
+    print("went 5c -> 3c on 2026-11-10. Both are visible as a date, not a flag.")
+    print("-" * 112)
+    print(head)
+    by_d = collections.defaultdict(list)
+    for x in recs:
+        by_d[x["day"]].append(x)
+    for k in sorted(by_d):
+        report(k, by_d[k])
+
+    print(f"\n  A SINGLE DAY IS 13-67 BETS. The 95% interval on the right is")
+    print("  the reason no day on its own means anything: at n=20 it spans")
+    print("  tens of points, so a good day and a bad day are the same day.")
+
+    print("\n" + "=" * 112)
     print("  AND THIS IS NOT THE PRE-REGISTERED TEST. MAX_DROP_CENTS 3 was")
     print("  registered on 150 SETTLED LIVE bets at $5. Paper rows do not")
     print("  count toward it; while favlive runs dry that test is paused.")
     print("  Entry prices here are QUOTES, not fills, so this is optimistic.")
-    print("=" * 96)
+    print("  'edge pt' is hit rate MINUS the break-even that group's own mean")
+    print("  cost demands. Negative means that group loses money at its own")
+    print("  prices, however high the hit rate looks.")
+    print("=" * 112)
     return 0
 
 
