@@ -165,68 +165,124 @@ async def run():
                                table_range="A1")
             migs = []
 
-    print(f"  connecting to {URL}")
-    async with websockets.connect(URL, open_timeout=20,
-                                  max_size=4_000_000) as sock:
-        for m in ("subscribeNewToken", "subscribeMigration"):
-            await sock.send(json.dumps({"method": m}))
-        print(f"  subscribed; recording for {SECONDS}s into "
-              f"'{SHEET_TAB}' and '{MIG_TAB}'")
-
-        while time.time() < t_end:
-            try:
-                raw = await asyncio.wait_for(
-                    sock.recv(), timeout=max(1.0, t_end - time.time()))
-            except asyncio.TimeoutError:
+    # A DROPPED WEBSOCKET USED TO END THE WHOLE SESSION, and that is the
+    # failure this reconnect loop exists for. The 2026-11-10 23:59 run was
+    # meant to record for 5h45m; at 02:43 the feed closed without a close
+    # frame, the recv loop broke, and the job exited SUCCESS after 2h44m.
+    # Nothing looked wrong: the run is green, the summary printed, 1,172
+    # creates were written. The collector was simply dead for the rest of
+    # its window, and the next hourly trigger was the only thing that could
+    # restart it -- so every drop costs up to an hour of launches, and
+    # costs it silently.
+    #
+    # So the connection is now re-established inside the session, with
+    # backoff, and the counters live OUTSIDE the connect block so a
+    # reconnect does not reset the dedupe set or re-count what was written.
+    # The number of reconnects is printed, because a collector that
+    # reconnected thirty times collected something different from one that
+    # held a single socket, and no later reader could tell from the rows.
+    attempts = 0
+    reconnects = 0
+    while time.time() < t_end:
+        attempts += 1
+        if attempts > 1:
+            reconnects += 1
+            # Backoff, but capped: the remaining window is what matters,
+            # not politeness to a free public endpoint.
+            wait = min(30.0, 2.0 * (2 ** min(reconnects - 1, 4)))
+            wait = min(wait, max(0.0, t_end - time.time()))
+            if wait <= 0:
                 break
-            except Exception as e:
-                print(f"  recv ended: {str(e)[:120]}")
+            print(f"  reconnecting in {wait:.0f}s "
+                  f"(reconnect #{reconnects})")
+            await asyncio.sleep(wait)
+            if time.time() >= t_end:
                 break
+        try:
+            print(f"  connecting to {URL}")
+            async with websockets.connect(URL, open_timeout=20,
+                                          max_size=4_000_000) as sock:
+                for m in ("subscribeNewToken", "subscribeMigration"):
+                    await sock.send(json.dumps({"method": m}))
+                print(f"  subscribed; recording until the {SECONDS}s window "
+                      f"ends, into '{SHEET_TAB}' and '{MIG_TAB}'")
+
+                while time.time() < t_end:
+                    try:
+                        raw = await asyncio.wait_for(
+                            sock.recv(),
+                            timeout=max(1.0, t_end - time.time()))
+                    except asyncio.TimeoutError:
+                        # The window is over. This is the ONLY clean exit.
+                        break
+                    try:
+                        d = json.loads(raw)
+                    except Exception:
+                        continue
+                    if not isinstance(d, dict):
+                        continue
+
+                    tx = d.get("txType") or ""
+                    kinds[tx or "other"] += 1
+                    now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+
+                    if tx == "create":
+                        # THE FEED CAN REPEAT A CREATE, and the audit found
+                        # 12 duplicate mints across 2,477 rows. A duplicate
+                        # is not corruption -- both rows are true -- but it
+                        # double-counts in any per-launch rate, so it is
+                        # refused at the source rather than left for every
+                        # later reader to remember. Cross-session duplicates
+                        # are still possible and remain an analysis-time
+                        # dedupe on mint. A RECONNECT MAKES THIS MATTER
+                        # MORE, since a replayed backlog would otherwise
+                        # arrive twice.
+                        mint_seen = d.get("mint")
+                        if not mint_seen or mint_seen in seen_mints:
+                            dupes[0] += 1
+                            continue
+                        seen_mints.add(mint_seen)
+                        sol = f(d.get("solAmount"), 0.0) or 0.0
+                        if MIN_SOL and sol < MIN_SOL:
+                            skipped_small += 1
+                            continue
+                        if written + len(creates) >= MAX_ROWS:
+                            continue
+                        creators[d.get("traderPublicKey", "")] += 1
+                        creates.append(create_row(d, now))
+                    elif tx == "migrate":
+                        migs.append([now, d.get("mint", ""),
+                                     d.get("pool", ""),
+                                     d.get("signature", "")])
+
+                    if time.time() - last_flush >= FLUSH_EVERY:
+                        flush()
+                        last_flush = time.time()
+                        print(f"  ... {written} create(s) written, "
+                              f"{kinds.get('migrate', 0)} migration(s) seen")
+                # Reaching here means the inner loop ended on the WINDOW,
+                # not on a drop -- a drop raises out of recv and is caught
+                # below. So this session is finished.
+                break
+        except Exception as e:
+            # ANY failure to connect or read is a drop, not an ending.
+            # Rows already buffered are flushed before retrying so a
+            # repeated failure cannot lose them.
+            print(f"  feed dropped: {type(e).__name__}: {str(e)[:120]}")
             try:
-                d = json.loads(raw)
-            except Exception:
-                continue
-            if not isinstance(d, dict):
-                continue
-
-            tx = d.get("txType") or ""
-            kinds[tx or "other"] += 1
-            now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-
-            if tx == "create":
-                # THE FEED CAN REPEAT A CREATE, and the audit found 12
-                # duplicate mints across 2,477 rows. A duplicate is not
-                # corruption -- both rows are true -- but it double-counts
-                # in any per-launch rate, so it is refused at the source
-                # rather than left for every later reader to remember.
-                # Cross-session duplicates are still possible and remain an
-                # analysis-time dedupe on mint.
-                mint_seen = d.get("mint")
-                if not mint_seen or mint_seen in seen_mints:
-                    dupes[0] += 1
-                    continue
-                seen_mints.add(mint_seen)
-                sol = f(d.get("solAmount"), 0.0) or 0.0
-                if MIN_SOL and sol < MIN_SOL:
-                    skipped_small += 1
-                    continue
-                if written + len(creates) >= MAX_ROWS:
-                    continue
-                creators[d.get("traderPublicKey", "")] += 1
-                creates.append(create_row(d, now))
-            elif tx == "migrate":
-                migs.append([now, d.get("mint", ""), d.get("pool", ""),
-                             d.get("signature", "")])
-
-            if time.time() - last_flush >= FLUSH_EVERY:
                 flush()
-                last_flush = time.time()
-                print(f"  ... {written} create(s) written, "
-                      f"{kinds.get('migrate', 0)} migration(s) seen")
+            except Exception as fe:
+                print(f"  flush after drop failed: {str(fe)[:100]}")
+            last_flush = time.time()
 
     flush()
+    left = max(0, int(t_end - time.time()))
     print(f"\n  DONE. {written} create(s), {kinds.get('migrate', 0)} "
           f"migration(s) recorded.")
+    print(f"  {reconnects} reconnect(s); {left}s of the window unused")
+    if left > 60:
+        print("  THE WINDOW DID NOT RUN OUT, so this session gave up early;")
+        print("  read the drop messages above before trusting the counts.")
     if skipped_small:
         print(f"  {skipped_small} create(s) skipped by "
               f"PUMPSCAN_MIN_SOL={MIN_SOL}")
