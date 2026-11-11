@@ -261,6 +261,66 @@ def main():
                 problems["vSol above any graduated curve (UNEXPLAINED)"] += \
                     len(hot)
 
+        # ---------------------------------------------------------------
+        # IS THE IMPOSSIBLE RESERVE THE SAME ROW AS THE IMPOSSIBLE MINT?
+        #
+        # pumpjoin found launch rows whose Mint is not a pump.fun launch at
+        # all -- one of them is USDC's own mint address, with a graduation
+        # timestamped fifteen hours before its "launch". That suggests some
+        # rows describe a real liquidity pool rather than a bonding curve,
+        # and a real pool's reserves would naturally read in the hundreds
+        # of SOL. If so, one defect explains both symptoms.
+        #
+        # So the two are cross-checked directly instead of being left as a
+        # guess: for every sample above any graduated curve, the launch row
+        # for that same mint is examined. A launch that started near 30 SOL
+        # against ~1.07bn tokens WAS a bonding curve, and a high reading on
+        # it is a token that was bought; a launch that never looked like a
+        # curve was never a pump.fun launch, and both numbers are garbage.
+        lmap = {}
+        for r in launches:
+            m = g(r, lh, "Mint")
+            if m:
+                lmap[m] = (f(g(r, lh, "vSol")), f(g(r, lh, "vTokens")))
+        suspect = [(g(r, ph, "Mint"), f(g(r, ph, "vSol")))
+                   for r in prices
+                   if (f(g(r, ph, "vSol")) or 0) > 115]
+        if suspect:
+            print(f"\n  CROSS-CHECK: {len(suspect)} sample(s) above 115 SOL, "
+                  f"traced back to their launch row")
+            not_a_curve = was_a_curve = unknown = 0
+            shown = 0
+            for m, vs in sorted(suspect, key=lambda x: -(x[1] or 0)):
+                lv = lmap.get(m)
+                if lv is None:
+                    verdict, unknown = "NO LAUNCH ROW", unknown + 1
+                elif lv[0] is None or lv[1] is None:
+                    verdict, unknown = "launch row blank", unknown + 1
+                elif 29.0 <= lv[0] <= 31.5 and 1.0e9 <= lv[1] <= 1.1e9:
+                    verdict, was_a_curve = "was a real curve", was_a_curve + 1
+                else:
+                    verdict, not_a_curve = ("NEVER A CURVE",
+                                            not_a_curve + 1)
+                if shown < 15:
+                    shown += 1
+                    at = (f"launch vSol {lv[0]:,.3f}" if lv and lv[0]
+                          else "launch vSol -")
+                    print(f"    {vs:>10,.1f} SOL  {m[:44]:<44} "
+                          f"{at:<24} {verdict}")
+            print(f"\n    {was_a_curve} started as a real bonding curve "
+                  f"(~30 SOL / ~1.07bn tokens)")
+            print(f"    {not_a_curve} NEVER looked like a curve at launch")
+            print(f"    {unknown} have no usable launch row")
+            if not_a_curve + unknown >= was_a_curve:
+                print("\n    SO THE HYPOTHESIS HOLDS: the impossible reserves")
+                print("    sit mostly on rows that were never bonding curves.")
+                print("    That is one defect, not two, and it is upstream in")
+                print("    what the recorder accepts as a launch.")
+            elif was_a_curve:
+                print("\n    SO THE HYPOTHESIS DOES NOT HOLD: these readings")
+                print("    sit on rows that really did start as curves, so")
+                print("    the decode or the account choice is wrong instead.")
+
         # What the data can already say about movement.
         mults = [f(g(r, ph, "X vs Launch")) for r in prices]
         mults = [m for m in mults if m]
