@@ -150,12 +150,42 @@ def tab(sh, title, headers):
         print(f"  created tab '{title}'")
         return ws
     have = ws.row_values(1)
-    if have and have[:3] != headers[:3]:
-        raise SystemExit(f"  tab '{title}' has a different header: "
-                         f"{have[:5]}")
     if not have:
         ws.update(values=[headers], range_name="A1")
-    return ws
+        return ws
+    if have == headers:
+        return ws
+    # A HEADER THAT DIFFERS ANYWHERE IS A REAL PROBLEM, not just one whose
+    # first three names differ. This collector's schema changed between its
+    # first dispatch and this one -- the earlier version wrote 14 columns
+    # and this one writes 21, with different fields from position 9 on --
+    # and a check that only compared the first three names would have let
+    # 21-column rows be appended under the old header. The extra columns
+    # would carry no name, and every reader maps by name, so volume, price
+    # change and the hourly counts would simply vanish while looking fine.
+    rows_used = len(ws.col_values(1))
+    if rows_used <= 1:
+        # Header only, nothing to misalign. Safe to restate.
+        ws.resize(cols=max(ws.col_count, len(headers)))
+        ws.update(values=[headers], range_name="A1")
+        print(f"  tab '{title}': header rewritten ({len(have)} -> "
+              f"{len(headers)} columns); the tab held no data rows")
+        return ws
+    if len(have) < len(headers) and have == headers[:len(have)]:
+        # A pure end-append: existing names keep their positions, so
+        # nothing already written changes meaning.
+        ws.resize(cols=max(ws.col_count, len(headers)))
+        ws.update(values=[headers], range_name="A1")
+        print(f"  tab '{title}': adopted {len(headers) - len(have)} new "
+              f"column(s) at the end; existing columns unchanged")
+        return ws
+    raise SystemExit(
+        f"  tab '{title}' holds {rows_used - 1} row(s) under a DIFFERENT "
+        f"header and the difference is not an end-append.\n"
+        f"    on the sheet: {have}\n"
+        f"    expected:     {headers}\n"
+        f"  Refusing to append: the rows would be written under the wrong\n"
+        f"  column names. Rename or clear that tab, then re-run.")
 
 
 def launch_index(sh):
