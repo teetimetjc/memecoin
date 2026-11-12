@@ -80,10 +80,40 @@ TRACK_S = int(os.environ.get("PUMPFLIP_TRACK") or 3600)
 TARGETS = [int(x) for x in (os.environ.get("PUMPFLIP_TARGETS") or
            "0,30,60,120,300,600,900,1800,3600").split(",") if x.strip()]
 
+LAUNCH_TAB = os.environ.get("PUMPSCAN_TAB") or "Pump Launches"
+TOKEN_TAB = os.environ.get("PUMPFLIP_TOKEN_TAB") or "Pump Flip Tokens"
+
+# TWO TABS, BECAUSE THE DATA HAS TWO SHAPES. A token's creator, launch time
+# and socials do not change between horizons, so repeating ten such columns
+# across nine price rows would write them eighty times for nothing -- and
+# this spreadsheet already carries 65k Kalshi rows plus 11k launches, so
+# volume is a real constraint rather than a tidiness preference.
+#
+# One row per graduation goes to TOKEN_TAB; one row per price sample goes to
+# the price tab, joined on Mint.
+TOKEN_HEADERS = [
+    "Graduated UTC", "Mint", "Pool", "Launched UTC", "Mins to graduate",
+    "Creator", "Creator Buy SOL", "Creator launch count",
+    "Entry Price SOL", "Entry lateness s", "Entry Liquidity USD",
+    "Entry FDV USD", "Entry Market Cap USD", "Socials", "Pair age s",
+    "Session",
+]
+
+# PER-SAMPLE FIELDS, chosen for what could plausibly separate a winner from
+# a rug rather than for what the API happened to offer:
+#   liquidity        a price with no depth behind it is not one you can sell
+#                    into, and depth draining is what a rug looks like
+#   volume m5/h1     whether anyone is actually trading it
+#   change m5/h1     momentum, the thing the original scanner alerted on
+#   buys/sells       one-sided flow; heavy sells with a flat price means the
+#                    pool is absorbing an exit
+#   fdv/mcap         size, so a result is not an artefact of tiny tokens
 HEADERS = [
     "Seen UTC", "Mint", "Pool", "Target s", "Actual age s",
-    "Price SOL", "Price USD", "Liquidity USD", "Buys 5m", "Sells 5m",
-    "Entry Price SOL", "X vs Entry", "Entry lateness s", "Session",
+    "Price SOL", "Price USD", "Liquidity USD", "Volume 5m", "Volume 1h",
+    "Change 5m %", "Change 1h %", "Buys 5m", "Sells 5m",
+    "Buys 1h", "Sells 1h", "FDV USD", "Market Cap USD",
+    "Entry Price SOL", "X vs Entry", "Session",
 ]
 
 
@@ -111,20 +141,69 @@ def sheet():
     return gspread.authorize(creds).open_by_key(sid)
 
 
-def tab(sh):
+def tab(sh, title, headers):
     try:
-        ws = sh.worksheet(TAB)
+        ws = sh.worksheet(title)
     except Exception:
-        ws = sh.add_worksheet(title=TAB, rows=20000, cols=len(HEADERS))
-        ws.update(values=[HEADERS], range_name="A1")
-        print(f"  created tab '{TAB}'")
+        ws = sh.add_worksheet(title=title, rows=20000, cols=len(headers))
+        ws.update(values=[headers], range_name="A1")
+        print(f"  created tab '{title}'")
         return ws
     have = ws.row_values(1)
-    if have and have[:3] != HEADERS[:3]:
-        raise SystemExit(f"  tab '{TAB}' has a different header: {have[:5]}")
+    if have and have[:3] != headers[:3]:
+        raise SystemExit(f"  tab '{title}' has a different header: "
+                         f"{have[:5]}")
     if not have:
-        ws.update(values=[HEADERS], range_name="A1")
+        ws.update(values=[headers], range_name="A1")
     return ws
+
+
+def launch_index(sh):
+    """{mint: (launched, creator, buy_sol)} plus how often each creator has
+    launched, read from this project's own launch log.
+
+    THIS JOIN IS THE POINT OF THE WHOLE TAB. The only real signal pump.fun
+    has produced here is creator history: a first-time creator graduated
+    10.09% of the time against 0.05% for wallets with 51+ launches, and the
+    intervals do not overlap. If that separates graduations, it may well
+    separate the graduations worth BUYING from the ones that dump -- but
+    only if the creator is recorded beside the price, which needs this
+    lookup at the moment of graduation.
+
+    A mint that is not in the log is left blank rather than defaulted. Most
+    graduations here are of tokens launched before this collector existed,
+    and writing a zero launch count for them would make unknown creators
+    look like first-timers -- the exact category the signal says is good.
+    """
+    try:
+        rows = sh.worksheet(LAUNCH_TAB).get_all_values()
+    except Exception as e:
+        print(f"  could not read '{LAUNCH_TAB}': {str(e)[:90]}")
+        print("  graduations will carry no launch history. Not fatal, but")
+        print("  the creator signal cannot be tested without it.")
+        return {}, {}
+    if len(rows) < 2:
+        return {}, {}
+    h = {k: i for i, k in enumerate(rows[0])}
+
+    def g(r, k):
+        i = h.get(k)
+        return r[i] if i is not None and i < len(r) else ""
+
+    idx, counts = {}, Counter()
+    for r in rows[1:]:
+        mint = g(r, "Mint")
+        if not mint:
+            continue
+        creator = g(r, "Creator")
+        counts[creator] += 1
+        # Keep the EARLIEST sighting; a duplicated create event is the same
+        # launch and the first time it was seen is its age origin.
+        seen = g(r, "Seen UTC")
+        if mint not in idx or (seen and seen < idx[mint][0]):
+            idx[mint] = (seen, creator, f(g(r, "Creator Buy SOL")))
+    print(f"  launch log: {len(idx)} mint(s), {len(counts)} creator(s)")
+    return idx, counts
 
 
 def price_one(mint, session):
@@ -171,10 +250,20 @@ def price_one(mint, session):
     if best is None:
         return None
     p = best[1]
-    tx = (p.get("txns") or {}).get("m5") or {}
+    tx = p.get("txns") or {}
+    m5, h1 = tx.get("m5") or {}, tx.get("h1") or {}
+    vol = p.get("volume") or {}
+    chg = p.get("priceChange") or {}
+    info = p.get("info") or {}
+    socials = len(info.get("socials") or []) + len(info.get("websites") or [])
     return dict(px_sol=f(p.get("priceNative")), px_usd=f(p.get("priceUsd")),
                 liq=f((p.get("liquidity") or {}).get("usd")),
-                buys=f(tx.get("buys")), sells=f(tx.get("sells")),
+                vol5=f(vol.get("m5")), vol1h=f(vol.get("h1")),
+                chg5=f(chg.get("m5")), chg1h=f(chg.get("h1")),
+                buys=f(m5.get("buys")), sells=f(m5.get("sells")),
+                buys1h=f(h1.get("buys")), sells1h=f(h1.get("sells")),
+                fdv=f(p.get("fdv")), mcap=f(p.get("marketCap")),
+                socials=socials, created=f(p.get("pairCreatedAt")),
                 pool=p.get("dexId", ""), pairs=len(pairs))
 
 
@@ -245,24 +334,31 @@ def main():
     print("=" * 100)
 
     sh = sheet()
-    ws = tab(sh)
+    ws = tab(sh, TAB, HEADERS)
+    ws_tok = tab(sh, TOKEN_TAB, TOKEN_HEADERS)
+    launches, creator_counts = launch_index(sh)
     session_id = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     http = requests.Session()
     http.headers.update({"Accept": "application/json"})
 
     found, rows, written = {}, [], 0
+    tok_rows, tok_written = [], 0
     t_end = time.time() + SECONDS
     last_flush = time.time()
     stats = Counter()
 
     def flush():
-        nonlocal rows, written
-        if not rows:
-            return
-        ws.append_rows(rows, value_input_option="USER_ENTERED",
-                       table_range="A1")
-        written += len(rows)
-        rows = []
+        nonlocal rows, written, tok_rows, tok_written
+        if rows:
+            ws.append_rows(rows, value_input_option="USER_ENTERED",
+                           table_range="A1")
+            written += len(rows)
+            rows = []
+        if tok_rows:
+            ws_tok.append_rows(tok_rows, value_input_option="USER_ENTERED",
+                               table_range="A1")
+            tok_written += len(tok_rows)
+            tok_rows = []
 
     # The migration feed runs in the background for the whole session while
     # the main loop prices what it finds.
@@ -318,6 +414,35 @@ def main():
                 # later reader can mistake one for the other.
                 v["entry"] = px
                 v["entry_late"] = age
+                # The token's standing attributes are written ONCE, here,
+                # at the moment it has a usable entry. The launch join is
+                # blank for mints launched before this collector existed --
+                # left blank rather than zeroed, since a zero launch count
+                # would make an unknown creator look like a first-timer,
+                # which is the category the signal says is good.
+                lk = launches.get(mint)
+                launched, creator, buy_sol = lk if lk else ("", "", None)
+                mins = ""
+                if launched:
+                    try:
+                        t0 = time.mktime(time.strptime(
+                            launched, "%Y-%m-%d %H:%M:%S"))
+                        mins = round((v["at"] - (t0 - time.timezone)) / 60.0,
+                                     1)
+                    except Exception:
+                        mins = ""
+                pair_age = ""
+                if d.get("created"):
+                    pair_age = round(now - d["created"] / 1000.0, 1)
+                tok_rows.append([
+                    stamp, mint, d.get("pool") or v["pool"], launched, mins,
+                    creator, buy_sol if buy_sol is not None else "",
+                    creator_counts.get(creator, "") if creator else "",
+                    px, round(age, 1),
+                    d["liq"] if d["liq"] is not None else "",
+                    d["fdv"] if d["fdv"] is not None else "",
+                    d["mcap"] if d["mcap"] is not None else "",
+                    d.get("socials", ""), pair_age, session_id])
             if written + len(rows) >= MAX_ROWS:
                 stats["row_cap"] += 1
                 continue
@@ -325,11 +450,18 @@ def main():
                 stamp, mint, d.get("pool") or v["pool"], tgt, round(age, 1),
                 px, d["px_usd"] if d["px_usd"] else "",
                 d["liq"] if d["liq"] is not None else "",
+                d["vol5"] if d["vol5"] is not None else "",
+                d["vol1h"] if d["vol1h"] is not None else "",
+                d["chg5"] if d["chg5"] is not None else "",
+                d["chg1h"] if d["chg1h"] is not None else "",
                 d["buys"] if d["buys"] is not None else "",
                 d["sells"] if d["sells"] is not None else "",
+                d["buys1h"] if d["buys1h"] is not None else "",
+                d["sells1h"] if d["sells1h"] is not None else "",
+                d["fdv"] if d["fdv"] is not None else "",
+                d["mcap"] if d["mcap"] is not None else "",
                 v["entry"], (px / v["entry"]) if v["entry"] else "",
-                round(v["entry_late"], 1) if v["entry_late"] is not None
-                else "", session_id])
+                session_id])
         if time.time() - last_flush >= FLUSH_EVERY:
             flush()
             last_flush = time.time()
@@ -342,9 +474,15 @@ def main():
     except Exception:
         pass
     flush()
-    print(f"\n  DONE. {len(found)} graduation(s) seen, {written} row(s) "
-          f"written to '{TAB}'.")
+    print(f"\n  DONE. {len(found)} graduation(s) seen, {written} price "
+          f"row(s) to '{TAB}', {tok_written} token row(s) to '{TOKEN_TAB}'.")
     print(f"  {dict(stats)}")
+    known = sum(1 for m in found if m in launches)
+    if found:
+        print(f"\n  {known} of {len(found)} graduation(s) matched a launch in "
+              f"our own log ({100.0*known/len(found):.0f}%).")
+        print("  The rest launched before this collector existed, so their")
+        print("  creator history is unknown and left blank -- not zero.")
     lates = [v["entry_late"] for v in found.values()
              if v["entry_late"] is not None]
     if lates:
