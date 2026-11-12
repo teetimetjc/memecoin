@@ -1,0 +1,48 @@
+name: Send a Pushover notification
+
+# Pushes one message to the operator's phone. Used by scheduled checks so a
+# finding reaches them instead of sitting in a run log nobody opens.
+#
+# The title and body are workflow_dispatch INPUTS; the credentials are
+# secrets and are never inputs, so they cannot appear in a dispatch record
+# or in this file. Places no order, reads no sheet, touches no exchange.
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: 'Notification title'
+        required: false
+        default: 'Memecoin bot'
+      body:
+        description: 'Notification body'
+        required: true
+      url:
+        description: 'Optional link to tap through to'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Send
+        env:
+          PYTHONUNBUFFERED: '1'
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          NOTIFY_TITLE: ${{ inputs.title }}
+          NOTIFY_BODY: ${{ inputs.body }}
+          NOTIFY_URL: ${{ inputs.url }}
+        run: python notify.py
