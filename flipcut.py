@@ -108,17 +108,33 @@ def main():
     # ------------------------------------------------------------- tokens
     tok = {}
     dropped_old = 0
+    late_noliq = [0]
     for r in trows:
         m = g(r, th, "Mint")
         if not m or m in tok:
             continue
-        # Pre-fix tokens are excluded outright rather than pooled: their
-        # entry may be a bonding-curve price, which is not a number any
-        # average should contain. The count is printed so the exclusion is
-        # visible instead of silent.
+        # THE TIMESTAMP CUTOFF DID NOT WORK and the evidence said so: it
+        # excluded 36 tokens when roughly 195 had been written before the
+        # fix, so about 157 poisoned rows leaked through and 4.108e-07 was
+        # still sitting in the extremes table.
+        #
+        # So the filter is now the DATA ITSELF rather than a date. The fix
+        # requires a pair to have liquidity above zero before it will price
+        # anything, so EVERY entry it accepts carries a liquidity figure and
+        # every pre-fix curve entry carries none. Requiring liquidity
+        # therefore selects exactly the post-fix rows, without depending on
+        # my clock, my cutoff or when a particular collector session
+        # happened to restart. 165 of 333 tokens had one, which matches the
+        # leak precisely.
+        #
+        # The timestamp is still read and reported, because a disagreement
+        # between the two would mean something else is wrong again.
         stamp = str(g(r, th, "Graduated UTC")).strip()
-        if stamp and stamp < SINCE:
+        liq = f(g(r, th, "Entry Liquidity USD"))
+        if liq is None or liq <= 0:
             dropped_old += 1
+            if stamp and stamp >= SINCE:
+                late_noliq[0] += 1
             continue
         tok[m] = dict(
             entry=f(g(r, th, "Entry Price SOL")),
@@ -127,10 +143,21 @@ def main():
             creator_n=f(g(r, th, "Creator launch count")),
             socials=f(g(r, th, "Socials")),
             mins=f(g(r, th, "Mins to graduate")))
-    print(f"\n  cutoff {SINCE} UTC -- the entry-price fix")
-    print(f"  {dropped_old} token(s) graduated BEFORE it and are excluded;")
-    print(f"  their entry may be a bonding-curve price, which is not a")
-    print(f"  number any average should contain.")
+    print(f"\n  FILTER: an entry must carry a liquidity figure.")
+    print(f"  {dropped_old} token(s) have none and are excluded -- their")
+    print(f"  entry came from the no-liquidity bonding-curve pair, which is")
+    print(f"  not a number any average should contain.")
+    if late_noliq[0]:
+        # A token that graduated AFTER the fix yet has no liquidity would
+        # mean the fix is not holding. Stated loudly rather than buried.
+        print(f"\n  WARNING: {late_noliq[0]} of those graduated AFTER "
+              f"{SINCE},")
+        print("  which should be impossible -- the fix refuses to price a")
+        print("  pair without liquidity. The collector is not behaving as")
+        print("  intended and the figures below are suspect.")
+    else:
+        print(f"\n  none of them graduated after {SINCE}, so the fix is")
+        print("  holding: every entry it has accepted carries liquidity.")
     print(f"\n  {len(tok)} graduated token(s) with an entry")
     if len(tok) < MIN_N:
         print(f"\n  FEWER THAN {MIN_N} TOKENS SINCE THE FIX, so there is")
