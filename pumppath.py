@@ -156,6 +156,26 @@ CURVE_K = 30.0 * 1.073e9
 # so this band separates them with room to spare.
 K_BAND = float(os.environ.get("PUMPPATH_K_BAND") or 0.25)
 
+# THE PRODUCT ALONE IS NOT ENOUGH, and shipping it alone let 323 impossible
+# readings through in the first five hours after the "fix".
+#
+# vSol * vTokens = k is a HYPERBOLA. It constrains how the two reserves
+# relate, not where on the curve they sit, so a reading of 200 SOL against
+# 161M tokens lies exactly on it and passes. It caught the template class
+# -- vSol 925 against an untouched 1,073M tokens gives k 30x too large, and
+# that class went from 182 bad rows to 0 -- and missed everything that is
+# merely too far along.
+#
+# WHERE THE CURVE ENDS, arithmetically rather than by assumption: 793.1M of
+# the 1,073M virtual tokens are sellable, so at exhaustion vTokens is
+# 279.9M and vSol is k/279.9M = 115.01, which is the 30 it starts with plus
+# the 85 raised at graduation. A reading outside those bounds describes a
+# curve that sold more than it has.
+VT_MIN = 279.0e6            # exhaustion, with a little margin
+VT_MAX = 1073.5e6           # the initial reserve, with a little margin
+VS_MIN = 29.9               # the starting virtual reserve
+VS_MAX = 115.5              # 30 + the 85 raised by graduation
+
 
 def decode_curve(blob):
     """Reserves from the curve account, or None if this is not a real one.
@@ -193,6 +213,10 @@ def decode_curve(blob):
     k = vss * vts
     if not (1.0 - K_BAND) <= (k / CURVE_K) <= (1.0 + K_BAND):
         # Not a trading curve: the template, or a state this does not know.
+        return None
+    # AND IT MUST SIT WITHIN THE CURVE, not merely on it. Checked second
+    # because the product test cannot do it: see the VS_MAX comment above.
+    if not (VS_MIN <= vss <= VS_MAX) or not (VT_MIN <= vts <= VT_MAX):
         return None
     return dict(vt=vts, vs=vss,
                 rt=rt / TOKEN_DEC, rs=rs / LAMPORTS,
