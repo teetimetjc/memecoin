@@ -273,8 +273,24 @@ def price_one(mint, session):
             # would be the other asset's.
             continue
         liq = f((p.get("liquidity") or {}).get("usd"), 0.0) or 0.0
-        pumpish = 1 if "pump" in str(p.get("dexId", "")).lower() else 0
-        score = (pumpish, liq)
+        dex = str(p.get("dexId", "")).lower()
+        # A PAIR WITH NO LIQUIDITY IS NOT A PRICE, and taking one produced
+        # returns of +343,863%. Seconds after a migration the real pool is
+        # often not indexed yet, and the only pair on offer is the
+        # BONDING CURVE entry, dexId 'pumpfun', carrying no liquidity. Every
+        # curve is exhausted at the same reserves when it graduates, so that
+        # price is IDENTICAL across tokens -- 4.108e-07 appeared as the
+        # entry for two different mints, and 2.796e-08 for two more. The
+        # "return" was then a curve price against a real pool price.
+        #
+        # So a pair must have liquidity to be priced at all, and the real
+        # AMM is preferred over the curve rather than merely scored beside
+        # it. Returning None makes the caller wait and try again, which is
+        # correct: a few samples lost beats a fabricated entry.
+        if liq <= 0:
+            continue
+        curve = 1 if dex == "pumpfun" else 0
+        score = (-curve, liq)
         if best is None or score > best[0]:
             best = (score, p)
     if best is None:
