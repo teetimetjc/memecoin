@@ -1,0 +1,47 @@
+name: Record post-graduation prices (read-only, no wallet)
+
+# Watches for pump.fun graduations and records each token's price at a
+# series of ages, so "buy at graduation, sell N minutes later" can be
+# measured instead of guessed. Prices come from an API, not an on-chain
+# decode, deliberately: a graduated token trades in a pool whose layout
+# this code does not know, and the one layout it did assume produced 812
+# impossible readings.
+#
+# Places no order, writes no row to any betting tab, uses no wallet.
+#
+# Hourly cron with long sessions, the pattern favlive and pumpscan prove
+# here: GitHub drops scheduled triggers at roughly the same rate whatever
+# the interval, and a long session holding a concurrency group means a
+# dropped trigger usually costs nothing, because the running job still owns
+# the group and the next trigger queues behind it.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 * * * *'
+
+concurrency:
+  group: pumpflip
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  pumpflip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install websockets gspread google-auth requests
+      - name: Record post-graduation prices
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          PUMPFLIP_SECONDS: '20700'
+        run: python pumpflip.py
