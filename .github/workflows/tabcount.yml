@@ -1,0 +1,37 @@
+name: Tab census (read-only)
+
+# Row counts and newest-row age for every tab. Answers "is the collector
+# writing?" without reading a workflow log -- which GitHub refuses to serve
+# while a job is still running, which is exactly when the question matters.
+#
+# Writes nothing, orders nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Comma-separated tab names, or blank for all'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  tabcount:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests
+      - name: Census
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          TABCOUNT_ONLY: ${{ inputs.only }}
+        run: python tabcount.py
