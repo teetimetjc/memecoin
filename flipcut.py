@@ -156,6 +156,93 @@ def main():
               f"{(f'{be:.2f}%' if be > 0 else 'none -- loses gross'):>18}"
               f"{100*min(rets):>+10.1f}{100*max(rets):>+10.1f}")
 
+    # ---------------------------------------------------------------
+    # WHO IS PRODUCING THE ABSURD RETURNS. The first run reported a mean
+    # of +3,752% and a best of +343,863% -- a 3,400x inside five minutes,
+    # which is a broken entry price rather than a trade. One such row
+    # moves the mean from about +11% to thousands of percent, so the mean
+    # and every break-even figure derived from it were meaningless.
+    #
+    # Printing the extremes with their actual prices is what makes the
+    # cause findable instead of guessable, which is the lesson from
+    # spending a day on a decode by theory.
+    diag_t = 300 if 300 in targets else targets[len(targets) // 2]
+    rows = []
+    for m, v in tok.items():
+        e, p = v["entry"], price.get(m, {}).get(diag_t)
+        if e and p:
+            rows.append((p / e - 1.0, m, e, p, v["liq"]))
+    rows.sort(reverse=True)
+    if rows:
+        print(f"\n{'-' * 104}")
+        print(f"THE EXTREMES AT {diag_t}s -- where an implausible return "
+              f"comes from")
+        print("-" * 104)
+        print(f"  {'return %':>14}{'entry SOL':>16}{'exit SOL':>16}"
+              f"{'liq USD':>12}  mint")
+        for r, m, e, p, liq in rows[:4] + rows[-3:]:
+            print(f"  {100*r:>+14.1f}{e:>16.3e}{p:>16.3e}"
+                  f"{(f'{liq:,.0f}' if liq is not None else '-'):>12}  "
+                  f"{m[:44]}")
+        # A PRICE THAT MOVES MORE THAN A HUNDREDFOLD IN MINUTES is not a
+        # market move on a token that just graduated with real liquidity.
+        # Counted, named, and excluded from the figures below rather than
+        # left to poison the mean.
+        wild = [x for x in rows if x[0] > 99.0 or x[0] < -0.995]
+        print(f"\n  {len(wild)} token(s) moved more than 100x or lost more "
+              f"than 99.5% by {diag_t}s.")
+        print("  Treated as suspect data, not trades, and excluded below.")
+
+        clean = [x[0] for x in rows if -0.995 <= x[0] <= 99.0]
+        if len(clean) >= MIN_N:
+            mean, med = pct(clean)
+            up = 100.0 * sum(1 for x in clean if x > 0) / len(clean)
+            print(f"\n  EXCLUDING THEM, at {diag_t}s over {len(clean)} "
+                  f"token(s):")
+            print(f"    mean {mean:+.2f}%   median {med:+.2f}%   "
+                  f"up {up:.1f}%")
+            print(f"    break-even round-trip cost: "
+                  + (f"{mean:.2f}%" if mean > 0 else "none, it loses gross"))
+
+    # ---------------------------------------------------------------
+    # DEAD POOLS AS LOSSES, which is the other half of an honest number.
+    # A token with no price at a horizon has usually stopped being
+    # indexed, which for a pump.fun pool means unsellable. Dropping it
+    # flatters the strategy; calling it -100% is the conservative bound.
+    # Both are printed, because the truth is between them and neither
+    # alone is defensible.
+    print(f"\n{'-' * 104}")
+    print("THE SAME HORIZONS WITH DEAD POOLS COUNTED AS A TOTAL LOSS")
+    print("  survivors-only flatters it; -100% for a vanished pool is the")
+    print("  conservative bound. The answer is between the two columns.")
+    print("-" * 104)
+    print(f"  {'hold':>7}{'survivors':>11}{'median %':>11}"
+          f"{'all, dead=-100%':>18}{'median %':>11}{'up %':>8}")
+    for t in targets:
+        if t == 0:
+            continue
+        surv, allv = [], []
+        for m, v in tok.items():
+            e = v["entry"]
+            if not e:
+                continue
+            p = price.get(m, {}).get(t)
+            if p:
+                r = p / e - 1.0
+                if not (-0.995 <= r <= 99.0):
+                    continue      # suspect data, excluded from both
+                surv.append(r)
+                allv.append(r)
+            else:
+                allv.append(-1.0)
+        if len(surv) < MIN_N:
+            continue
+        _, msurv = pct(surv)
+        _, mall = pct(allv)
+        upall = 100.0 * sum(1 for x in allv if x > 0) / len(allv)
+        print(f"  {t:>6}s{len(surv):>11}{msurv:>+11.2f}"
+              f"{len(allv):>18}{mall:>+11.2f}{upall:>8.1f}")
+
     print(f"\n  'missing' is tokens with no price at that horizon -- mostly")
     print("  pools that died. They drop out of the later columns, which")
     print("  biases those columns UPWARD by however many they are.")
