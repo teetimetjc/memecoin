@@ -1,0 +1,32 @@
+name: Score the post-graduation flip (read-only)
+
+# Buy at graduation, sell N minutes later: what would it have returned?
+# Reports the GROSS return beside the break-even round-trip execution cost,
+# rather than assuming a fee, so the question becomes "can a swap be done
+# for less than X" instead of "did my assumed fee make it work".
+#
+# Places no order, writes no row, uses no wallet.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flipcut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests
+      - name: Score
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python flipcut.py
