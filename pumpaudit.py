@@ -52,11 +52,21 @@ TOL = float(os.environ.get("AUDIT_TOL") or 0.001)      # 0.1%
 # cannot be told apart by eye, so an audit that pools them with new rows
 # can only ever report the old damage and will never show the fix working.
 #
-# 22:58 UTC on 2026-11-11 is the start of the first collector session that
-# actually ran with the fix -- not the commit time. The two runs between
-# the commit and that session do not count: one had checked out the old
-# code hours earlier, and the other died in its opening handshake.
-SINCE = os.environ.get("PUMPAUDIT_SINCE") or "2026-11-11 22:58:00"
+# THE CUTOFF MOVES EACH TIME THE GATE CHANGES, and leaving it behind would
+# have reported a working fix as a broken one.
+#
+# It was 22:58 UTC on 2026-11-11, the start of the first session carrying
+# the constant-product test. That test turned out to be only half the gate:
+# the product is a hyperbola, so it bounded how the reserves relate but not
+# where on the curve they sat, and 323 readings past exhaustion passed it.
+# Those 961 rows are no better than the ones before them for the readings
+# the product could not see.
+#
+# So the cutoff is now the start of the first session carrying BOTH bounds
+# -- 04:24:30 UTC on 2026-11-12. Had this been left at 22:58, the next
+# audit would have pooled the half-fixed rows into the 'after' half and
+# reported the complete fix as a failure.
+SINCE = os.environ.get("PUMPAUDIT_SINCE") or "2026-11-12 04:24:30"
 
 
 def client():
