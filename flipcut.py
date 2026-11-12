@@ -40,6 +40,20 @@ import statistics as st
 
 MIN_N = int(os.environ.get("FLIPCUT_MIN_N") or 20)
 
+# TOKENS BEFORE THIS ARE POISONED, and pooling them would hide whether the
+# fix worked -- the exact mistake already made twice with the curve
+# collector, where an audit that mixed pre-fix and post-fix rows could only
+# ever report the old damage.
+#
+# Until 14:12 UTC on 2026-11-12 the entry price could be taken from the
+# BONDING CURVE pair rather than the real pool, because seconds after a
+# migration the pool is often not indexed yet and the curve pair was
+# accepted despite carrying no liquidity. Every curve is exhausted at the
+# same reserves when it graduates, so that price is identical across
+# tokens, and the resulting "returns" ran to +343,863%. Those 193 token
+# rows cannot be repaired.
+SINCE = os.environ.get("FLIPCUT_SINCE") or "2026-11-12 14:12:00"
+
 
 def client():
     import gspread
@@ -93,9 +107,18 @@ def main():
 
     # ------------------------------------------------------------- tokens
     tok = {}
+    dropped_old = 0
     for r in trows:
         m = g(r, th, "Mint")
         if not m or m in tok:
+            continue
+        # Pre-fix tokens are excluded outright rather than pooled: their
+        # entry may be a bonding-curve price, which is not a number any
+        # average should contain. The count is printed so the exclusion is
+        # visible instead of silent.
+        stamp = str(g(r, th, "Graduated UTC")).strip()
+        if stamp and stamp < SINCE:
+            dropped_old += 1
             continue
         tok[m] = dict(
             entry=f(g(r, th, "Entry Price SOL")),
@@ -104,7 +127,18 @@ def main():
             creator_n=f(g(r, th, "Creator launch count")),
             socials=f(g(r, th, "Socials")),
             mins=f(g(r, th, "Mins to graduate")))
+    print(f"\n  cutoff {SINCE} UTC -- the entry-price fix")
+    print(f"  {dropped_old} token(s) graduated BEFORE it and are excluded;")
+    print(f"  their entry may be a bonding-curve price, which is not a")
+    print(f"  number any average should contain.")
     print(f"\n  {len(tok)} graduated token(s) with an entry")
+    if len(tok) < MIN_N:
+        print(f"\n  FEWER THAN {MIN_N} TOKENS SINCE THE FIX, so there is")
+        print("  nothing here to report yet. The collector needs more time;")
+        print("  this is not a result, and the pre-fix figures are not a")
+        print("  substitute for one.")
+        print("=" * 104)
+        return 0
     lates = [v["late"] for v in tok.values() if v["late"] is not None]
     if lates:
         lates.sort()
