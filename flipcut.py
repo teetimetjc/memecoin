@@ -193,16 +193,27 @@ def main():
     print("-" * 104)
     print(f"  {'hold':>7}{'tokens':>8}{'missing':>9}{'mean %':>10}"
           f"{'median %':>11}{'up %':>8}{'break-even cost':>18}"
-          f"{'worst %':>10}{'best %':>10}")
+          f"{'worst %':>10}{'best %':>10}{'suspect':>9}")
     for t in targets:
-        rets = []
+        # THE SUSPECT FILTER APPLIES AT EVERY HORIZON, not just the one the
+        # diagnostic happens to use. Without it this table reported a mean
+        # of +2,082,893% at ten minutes and a best of +337,428,237%, driven
+        # by a handful of absurd EXIT prices -- the entries are clean now,
+        # but a price read later can still be wrong, and an unfiltered mean
+        # made the whole column unquotable while the medians beside it were
+        # fine. Excluded rows are counted and shown.
+        rets, susp = [], 0
         for m, v in tok.items():
             e = v["entry"]
             p = price.get(m, {}).get(t)
             if not e or not p:
                 continue
-            rets.append(p / e - 1.0)
-        missing = len(tok) - len(rets)
+            r = p / e - 1.0
+            if not (-0.995 <= r <= 99.0):
+                susp += 1
+                continue
+            rets.append(r)
+        missing = len(tok) - len(rets) - susp
         if len(rets) < MIN_N:
             print(f"  {t:>6}s{len(rets):>8}{missing:>9}"
                   f"{'-- too few to report':>29}")
@@ -215,7 +226,7 @@ def main():
         print(f"  {t:>6}s{len(rets):>8}{missing:>9}{mean:>+10.2f}"
               f"{med:>+11.2f}{up:>8.1f}"
               f"{(f'{be:.2f}%' if be > 0 else 'none -- loses gross'):>18}"
-              f"{100*min(rets):>+10.1f}{100*max(rets):>+10.1f}")
+              f"{100*min(rets):>+10.1f}{100*max(rets):>+10.1f}{susp:>9}")
 
     # ---------------------------------------------------------------
     # WHO IS PRODUCING THE ABSURD RETURNS. The first run reported a mean
