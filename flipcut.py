@@ -385,6 +385,32 @@ def main():
                            and v["liq"] >= 50_000)),
     ])
 
+    # ENTRY LATENESS IS THE TEST THAT DECIDES THIS, and it is the one piece
+    # of execution reality already in the data. The entry here is a median
+    # 38 seconds after the migration event, and a real buy would be later
+    # still -- so if the return falls away as lateness grows, the edge is
+    # something only a faster participant can take, and this one belongs to
+    # the co-located bots rather than to us.
+    #
+    # If instead it holds flat across the buckets, the move being measured
+    # is slow enough to reach, which is the single most important thing this
+    # dataset could say. Either way it is checkable now rather than after
+    # buying anything.
+    report_split("BY HOW LATE THE ENTRY WAS", [
+        ("under 15s", rets_for(lambda v: v["late"] is not None
+                               and v["late"] < 15)),
+        ("15 - 30s", rets_for(lambda v: v["late"] is not None
+                              and 15 <= v["late"] < 30)),
+        ("30 - 60s", rets_for(lambda v: v["late"] is not None
+                              and 30 <= v["late"] < 60)),
+        ("60s or more", rets_for(lambda v: v["late"] is not None
+                                 and v["late"] >= 60)),
+    ])
+    print("\n  IF THE RETURN FADES AS LATENESS GROWS, the edge belongs to")
+    print("  whoever is faster and not to us, because a real buy is later")
+    print("  than every bucket here. If it holds flat, the move is slow")
+    print("  enough to reach.")
+
     # Creator history, the one real signal pump.fun has produced -- but it
     # is only known for tokens whose launch we also recorded, which is a
     # small share, so the bucket sizes matter more than the rates.
