@@ -35,6 +35,7 @@ Read-only. Places no order, writes no row, changes no setting.
 """
 import collections
 import json
+import math
 import os
 import statistics as st
 import time
@@ -253,6 +254,18 @@ def main():
         print("=" * 96)
         return 0
 
+    def pval(won, n, be):
+        # One-sided binomial: if this group had NO edge -- if its true hit
+        # rate were exactly the break-even its own prices demand -- how often
+        # would chance alone deliver a hit rate this good or better?
+        # A Wilson interval says how precise the estimate is; this says
+        # whether it is distinguishable from no edge at all, which is the
+        # question that decides whether to risk money.
+        if n <= 0 or not (0.0 < be < 1.0):
+            return None
+        return sum(math.comb(n, k) * be ** k * (1 - be) ** (n - k)
+                   for k in range(won, n + 1))
+
     def report(label, rs, indent="  "):
         if not rs:
             return
@@ -265,16 +278,20 @@ def main():
         # BREAK-EVEN IS THE GROUP'S OWN MEAN COST, never 50%.
         be = 100.0 * (mp + 0.07 * mp * (1 - mp))
         lo, hi = wilson(won, len(rs))
+        pv = pval(won, len(rs), be / 100.0)
+        ps = f"{pv:.3f}" if pv is not None else "-"
         print(f"{indent}{label:<14}{len(rs):>5}"
               f"{100.0*won/len(rs):>9.2f}%"
               f"{be:>10.2f}%"
               f"{100.0*won/len(rs) - be:>+9.2f}"
               f"{net:>+11.2f}"
               f"{100.0*net/staked:>+9.2f}%"
-              f"   [{lo:.1f}-{hi:.1f}]")
+              f"   [{lo:.1f}-{hi:.1f}]"
+              f"{ps:>9}")
 
     head = (f"  {'group':<14}{'n':>5}{'hit':>10}{'need':>10}"
-            f"{'edge pt':>9}{'net $':>11}{'ROI':>10}   [95% hit]")
+            f"{'edge pt':>9}{'net $':>11}{'ROI':>10}   [95% hit]"
+            f"{'p':>9}")
 
     print(f"\n{'-' * 112}")
     print("PAPER RESULT ON THE SETTLED ROWS")
@@ -305,6 +322,43 @@ def main():
     for k in sorted(by_d):
         report(k, by_d[k])
 
+    # --------------------------------------------------- by entry price
+    # THE AXIS NEVER TESTED. Every bet so far sits around 91c, where the
+    # fee is small in cents but large against the 9c of profit on offer:
+    # 0.07 x 0.91 x 0.09 is about 0.57c, which is a 6% tax on the win.
+    # If the selector has real skill it should show somewhere on the price
+    # curve. If the edge is negative in EVERY price bucket, the selector
+    # has no skill and no threshold tweak will rescue it.
+    #
+    # This is ONE axis with a directional hypothesis, not a hunt through
+    # a dozen features -- but it is still a split chosen after seeing the
+    # data, so the p-value column is what to read, not the ROI.
+    print(f"\n{'-' * 121}")
+    print("BY ENTRY PRICE -- is there skill anywhere on the curve, or only "
+          "at the price we happen to buy?")
+    print("-" * 121)
+    print(head)
+    BANDS = [(0, 80), (80, 86), (86, 90), (90, 93), (93, 96), (96, 101)]
+    for lo_c, hi_c in BANDS:
+        band = [x for x in recs if lo_c <= x["p"] * 100 < hi_c]
+        report(f"{lo_c}-{hi_c-1}c", band)
+
+    # -------------------------------------------- each series, both halves
+    # A series that is genuinely profitable should be profitable in the
+    # first half of its own history AND the second. One good half is how
+    # a losing strategy looks when you pick the best of six.
+    print(f"\n{'-' * 121}")
+    print("EACH SERIES, FIRST HALF vs SECOND HALF of its own history")
+    print("-" * 121)
+    print(head)
+    for k in sorted(by_s, key=lambda k: -len(by_s[k])):
+        rs = sorted(by_s[k], key=lambda x: x["day"])
+        if len(rs) < 40:
+            continue
+        h = len(rs) // 2
+        report(f"{k} 1st", rs[:h])
+        report(f"{k} 2nd", rs[h:])
+
     print(f"\n  A SINGLE DAY IS 13-67 BETS. The 95% interval on the right is")
     print("  the reason no day on its own means anything: at n=20 it spans")
     print("  tens of points, so a good day and a bad day are the same day.")
@@ -317,6 +371,12 @@ def main():
     print("  'edge pt' is hit rate MINUS the break-even that group's own mean")
     print("  cost demands. Negative means that group loses money at its own")
     print("  prices, however high the hit rate looks.")
+    print("\n  THE 'p' COLUMN is the one to read. It is the chance that a")
+    print("  group with no edge at all would look this good or better. And")
+    print("  it is NOT corrected for the number of groups: with 6 series and")
+    print("  6 price bands, the best of twelve showing p=0.05 is expected")
+    print("  about half the time. A group is interesting at p below roughly")
+    print("  0.004 (0.05 divided by twelve), not at 0.05.")
     print("=" * 112)
     return 0
 
