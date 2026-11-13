@@ -78,26 +78,46 @@ def sweep(levels, stake):
     return got, 100.0 * spent / got
 
 
-def sample(seen):
+def sample(seen, why):
+    """Sample the in-window markets. `why` counts every rejection.
+
+    THE COUNTERS ARE THE POINT. The first run of this file polled 94 times
+    and sampled nothing, and because each filter just skipped silently
+    there was no way to tell whether the exchange returned no markets, the
+    window missed, the band excluded them, or the book would not read.
+    "Success with no data" is the same failure this project has hit a dozen
+    times; a rejection has to say which filter dropped the row.
+    """
     out = []
-    markets = openmk.open_markets(WATCH)
+    markets = openmk.open_markets(WATCH, verbose=True)
+    why["markets_returned"] += len(markets)
     now = time.time()
     for m in markets:
         tk = str(m.get("ticker") or "")
         ser = tk.split("-")[0]
-        if ser not in WATCH or tk in seen:
+        if ser not in WATCH:
+            why["wrong_series"] += 1
+            continue
+        if tk in seen:
+            why["already_sampled"] += 1
             continue
         close = B.ts(m.get("close_time"))
         if close is None:
+            why["no_close_time"] += 1
             continue
         left = close - now
         if not (LO_SECS <= left <= HI_SECS):
+            why["outside_window"] += 1
+            why.setdefault("_lefts", []).append(int(left))
             continue
         q = C.quote_from_market(m)
         if not q or q.get("ask") is None:
+            why["no_ask"] += 1
             continue
         ask_c = 100.0 * q["ask"]
         if not (BAND[0] <= ask_c <= BAND[1]):
+            why["outside_band"] += 1
+            why.setdefault("_asks", []).append(round(ask_c, 1))
             continue
         ob = shadow.orderbook(tk)
         levels = shadow._levels(ob, "UP") if ob else []
@@ -105,6 +125,7 @@ def sample(seen):
             # NOT RECORDED AS ZERO DEPTH. An unreadable book is a failed
             # read, and counting it as an empty book would understate the
             # depth of every market whose read happened to fail.
+            why["book_unreadable"] += 1
             seen.add(tk)
             out.append(dict(ticker=tk, series=ser, ok=False))
             continue
@@ -130,11 +151,12 @@ def main():
     print("  PLACES NO ORDER.\n")
 
     rows, seen = [], set()
+    why = collections.Counter()
     t_end = time.time() + SECONDS
     polls = 0
     while time.time() < t_end:
         try:
-            got = sample(seen)
+            got = sample(seen, why)
         except Exception as e:
             print(f"  poll failed: {str(e)[:100]}")
             got = []
@@ -157,10 +179,31 @@ def main():
     ok = [r for r in rows if r["ok"]]
     print(f"\n  {polls} poll(s), {len(rows)} market(s) sampled, "
           f"{len(ok)} with a readable book")
+
+    lefts = why.pop("_lefts", []) if "_lefts" in why else []
+    asks = why.pop("_asks", []) if "_asks" in why else []
+    print("\n  WHERE EVERY MARKET WENT:")
+    for k in ("markets_returned", "wrong_series", "already_sampled",
+              "no_close_time", "outside_window", "no_ask", "outside_band",
+              "book_unreadable"):
+        print(f"    {k:<20}{why.get(k, 0):>8}")
+    if lefts:
+        lefts.sort()
+        print(f"\n    seconds-to-close seen, when outside the "
+              f"{LO_SECS}-{HI_SECS}s window:")
+        print(f"      min {lefts[0]}, median {lefts[len(lefts)//2]}, "
+              f"max {lefts[-1]}")
+    if asks:
+        asks.sort()
+        print(f"\n    asks seen, when outside the "
+              f"{BAND[0]:.0f}-{BAND[1]:.0f}c band:")
+        print(f"      min {asks[0]}c, median {asks[len(asks)//2]}c, "
+              f"max {asks[-1]}c")
+
     if not ok:
-        print("\n  NOTHING MEASURED. Either no market fell in the band and")
-        print("  window during the run, or every orderbook read failed.")
-        print("  This is not a finding of thin books -- it is no data.")
+        print("\n  NOTHING MEASURED. The counters above say which filter")
+        print("  dropped every market. This is not a finding of thin")
+        print("  books -- it is no data.")
         print("=" * 104)
         return 0
 
