@@ -1,0 +1,40 @@
+name: How big can a SOL bet get (read-only)
+
+# Samples the REAL orderbook at the entry offset and walks it for each
+# candidate stake, reporting the volume-weighted fill against the best ask.
+# That sweep cost in cents per contract is directly comparable to the 2.57c
+# the measured SOL edge is worth.
+#
+# Reads only the market and orderbook endpoints. PLACES NO ORDER.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'How long to sample, in seconds'
+        required: false
+        default: '3300'
+
+permissions:
+  contents: read
+
+jobs:
+  solsize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests cryptography
+      - name: Measure depth
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          SOLSIZE_SECONDS: ${{ inputs.seconds }}
+        run: python solsize.py
