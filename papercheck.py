@@ -310,6 +310,48 @@ def main():
     for k in sorted(by_s, key=lambda k: -len(by_s[k])):
         report(k, by_s[k])
 
+    # ------------------------------------------- flat $5 stake per series
+    # "What if I had only bet SOL, at $5 a go?" The paper rows carry their
+    # own varying contract counts, so the net $ above is NOT that. This
+    # re-runs each series at a flat stake: as many whole contracts as the
+    # stake buys at that row's quote, which is how an order actually
+    # fills -- at 91c a $5 stake buys 5 contracts and leaves 45c unspent.
+    STAKE = float(os.environ.get("PAPERCHECK_STAKE") or 5.0)
+    print(f"\n{'-' * 121}")
+    print(f"IF YOU HAD BET ONLY ONE SERIES, ${STAKE:.2f} FLAT PER BET")
+    print("-" * 121)
+    print(f"  {'series':<14}{'bets':>6}{'contracts':>11}{'staked $':>11}"
+          f"{'fees $':>9}{'returned $':>12}{'net $':>10}{'ROI':>9}"
+          f"{'worst run $':>13}")
+    flat = []
+    for k in sorted(by_s, key=lambda k: -len(by_s[k])):
+        rs = sorted(by_s[k], key=lambda x: x["day"])
+        cs = stk = fee_t = ret = 0.0
+        run = trough = 0.0
+        for x in rs:
+            c = int(STAKE / x["p"])        # whole contracts only
+            if c <= 0:
+                continue
+            raw = 0.07 * c * x["p"] * (1 - x["p"])
+            fe = (int(raw * 100) + (1 if raw * 100 % 1 else 0)) / 100.0
+            cs += c
+            stk += c * x["p"]
+            fee_t += fe
+            got = float(c) if x["won"] else 0.0
+            ret += got
+            run += got - c * x["p"] - fe
+            trough = min(trough, run)
+        if not cs:
+            continue
+        net = ret - stk - fee_t
+        flat.append((k, net))
+        print(f"  {k:<14}{len(rs):>6}{cs:>11.0f}{stk:>11.2f}{fee_t:>9.2f}"
+              f"{ret:>12.2f}{net:>+10.2f}{100.0*net/stk:>+8.2f}%"
+              f"{trough:>+13.2f}")
+    print("\n  'worst run $' is the deepest the running total ever went")
+    print("  below zero -- the losing stretch you would have had to sit")
+    print("  through to reach the net figure.")
+
     # ------------------------------------------------------------ by day
     print(f"\n{'-' * 112}")
     print("BY UTC DAY -- XRP was switched off on 2026-11-09, the drop guard")
