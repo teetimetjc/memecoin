@@ -364,12 +364,25 @@ def main():
                   f"{(f'{mean:.2f}%' if mean > 0 else 'loses gross'):>18}")
 
     def rets_for(pred):
+        """Returns for one bucket, with suspect rows excluded.
+
+        THE SPLITS WERE NOT FILTERED and the main table was, which is how
+        the $50k+ liquidity bucket came to report a mean of +3,294% beside a
+        median of +0.91%. One bad exit price did that -- the main table had
+        already flagged two suspect rows at the same horizon, including a
+        +102,105% on a token entering at 77.68 SOL, a price scale no
+        memecoin has. So a bucket could be poisoned by exactly the row the
+        table above it had just thrown out.
+        """
         out = []
         for m, v in tok.items():
             e, p = v["entry"], price.get(m, {}).get(split_t)
             if not e or not p or not pred(v):
                 continue
-            out.append(p / e - 1.0)
+            r = p / e - 1.0
+            if not (-0.995 <= r <= 99.0):
+                continue
+            out.append(r)
         return out
 
     # Liquidity at entry -- the most actionable filter, since it is knowable
