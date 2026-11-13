@@ -143,7 +143,20 @@ def sample(seen, why):
             out.append(dict(ticker=tk, series=ser, left=int(left), ok=False))
             continue
         best = levels[0][0]
+        # CHECK THE SIZE UNIT AGAINST SOMETHING INDEPENDENT. The size field
+        # in the book is not documented here and _price_size settles only
+        # the PRICE unit by value, not the size. A level holding more
+        # contracts than the market's entire open interest would mean the
+        # number is not a contract count, and a depth figure in the wrong
+        # unit is exactly the kind of mistake that looks like data. So the
+        # market's own volume and open interest are carried alongside and
+        # compared below.
+        row_oi = m.get("open_interest")
+        row_vol = m.get("volume")
         row = dict(ticker=tk, series=ser, left=int(left), ok=True, best=best,
+                   oi=float(row_oi) if row_oi is not None else None,
+                   vol=float(row_vol) if row_vol is not None else None,
+                   raw=[(round(p, 1), sz) for p, sz in levels[:3]],
                    top_size=levels[0][1],
                    total=sum(sz for _p, sz in levels), fills={})
         for s in STAKES:
@@ -223,6 +236,36 @@ def main():
     by = collections.defaultdict(list)
     for r in ok:
         by[r["series"]].append(r)
+
+    # ------------------------------------------- is the size unit credible?
+    print(f"\n{'-' * 104}")
+    print("SIZE UNIT CHECK -- is the book's size field a contract count?")
+    print("-" * 104)
+    print("  A single price level cannot hold more contracts than the whole")
+    print("  market has open interest. If it does, the field is not contracts")
+    print("  and every depth number below is in the wrong unit.")
+    print(f"\n  {'ticker':<26}{'T-s':>6}{'top size':>12}{'open int':>12}"
+          f"{'volume':>12}{'top/OI':>9}")
+    bad = 0
+    for r in sorted(ok, key=lambda r: -r["top_size"])[:8]:
+        oi = r.get("oi")
+        ratio = (r["top_size"] / oi) if oi else None
+        if ratio is not None and ratio > 1.0:
+            bad += 1
+        print(f"  {r['ticker']:<26}{r['left']:>6}{r['top_size']:>12,.0f}"
+              f"{(oi if oi is not None else -1):>12,.0f}"
+              f"{(r.get('vol') if r.get('vol') is not None else -1):>12,.0f}"
+              f"{(f'{ratio:.2f}' if ratio is not None else '-'):>9}")
+    print(f"\n  top three book levels of the deepest sample: "
+          f"{sorted(ok, key=lambda r: -r['top_size'])[0]['raw']}")
+    if bad:
+        print(f"\n  *** {bad} of the 8 deepest samples rest MORE at one price")
+        print("  than the market's entire open interest. The size field is")
+        print("  therefore NOT a contract count, and the sweep figures below")
+        print("  CANNOT BE TRUSTED. Do not size a bet on them.")
+    else:
+        print("\n  every sample rests less at the best ask than the market's")
+        print("  open interest, which is consistent with a contract count.")
 
     for ser in [CANDIDATE] + [s for s in BASELINE if s in by]:
         rs = by.get(ser)
