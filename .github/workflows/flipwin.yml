@@ -1,0 +1,47 @@
+name: What the winners have in common (read-only)
+
+# Splits graduated tokens chronologically into a DISCOVERY half and a
+# HOLDOUT half, buckets every entry-time feature on discovery only, and
+# scores the chosen rule once on the holdout.
+#
+# A holdout alone is NOT enough here. Running this exact procedure against
+# pure noise at this sample size produced a median holdout edge of +16
+# points, so the result is also compared against a null built by shuffling
+# these returns against these features -- which gives a real p-value.
+#
+# Places no order, writes no row, uses no wallet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      horizon:
+        description: 'Exit horizon in seconds (300 = 5 minutes)'
+        required: false
+        default: '300'
+      perms:
+        description: 'Permutation shuffles for the null'
+        required: false
+        default: '300'
+
+permissions:
+  contents: read
+
+jobs:
+  flipwin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests
+      - name: Analyse
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          FLIPWIN_HORIZON: ${{ inputs.horizon }}
+          FLIPWIN_PERMS: ${{ inputs.perms }}
+        run: python flipwin.py
