@@ -247,25 +247,49 @@ def main():
     print(f"\n  {'ticker':<26}{'T-s':>6}{'top size':>12}{'open int':>12}"
           f"{'volume':>12}{'top/OI':>9}")
     bad = 0
+    checked = 0
     for r in sorted(ok, key=lambda r: -r["top_size"])[:8]:
         oi = r.get("oi")
         ratio = (r["top_size"] / oi) if oi else None
-        if ratio is not None and ratio > 1.0:
-            bad += 1
+        if ratio is not None:
+            checked += 1
+            if ratio > 1.0:
+                bad += 1
         print(f"  {r['ticker']:<26}{r['left']:>6}{r['top_size']:>12,.0f}"
               f"{(oi if oi is not None else -1):>12,.0f}"
               f"{(r.get('vol') if r.get('vol') is not None else -1):>12,.0f}"
               f"{(f'{ratio:.2f}' if ratio is not None else '-'):>9}")
     print(f"\n  top three book levels of the deepest sample: "
           f"{sorted(ok, key=lambda r: -r['top_size'])[0]['raw']}")
-    if bad:
-        print(f"\n  *** {bad} of the 8 deepest samples rest MORE at one price")
-        print("  than the market's entire open interest. The size field is")
-        print("  therefore NOT a contract count, and the sweep figures below")
-        print("  CANNOT BE TRUSTED. Do not size a bet on them.")
+    # A FRACTIONAL SIZE SETTLES IT ON ITS OWN. Contracts are whole; a level
+    # holding 5821.3 of something is not holding 5821.3 contracts. This test
+    # needs no second field and cannot be skipped for missing data, which is
+    # why it comes first.
+    fracs = [sz for r in ok for _p, sz in r["raw"] if sz != int(sz)]
+    if fracs:
+        print(f"\n  *** {len(fracs)} book level(s) hold a FRACTIONAL size, "
+              f"e.g. {fracs[0]}.")
+        print("  Contracts are whole, so the size field is NOT a contract")
+        print("  count -- most likely dollars of notional. Every 'contracts'")
+        print("  and sweep figure below is therefore in the WRONG UNIT and")
+        print("  MUST NOT be used to size a bet until it is converted.")
+    elif bad:
+        print(f"\n  *** {bad} of {checked} checked samples rest MORE at one")
+        print("  price than the market's entire open interest. The size")
+        print("  field is NOT a contract count. Figures below are unusable.")
+    elif checked == 0:
+        # THE FALSE PASS THIS REPLACES. The first run printed "consistent
+        # with a contract count" when open_interest and volume were absent
+        # from every market object -- it compared against nothing and
+        # reported reassurance. An unverifiable check is not a passed check.
+        print("\n  *** THE UNIT IS UNVERIFIED. open_interest was absent from")
+        print("  every sampled market, so there was nothing to compare the")
+        print("  depth against. This is NOT a pass -- it is a check that")
+        print("  could not run. Treat the figures below as provisional.")
     else:
-        print("\n  every sample rests less at the best ask than the market's")
-        print("  open interest, which is consistent with a contract count.")
+        print(f"\n  all {checked} checked samples rest less at the best ask")
+        print("  than the market's open interest, and no size is")
+        print("  fractional, which is consistent with a contract count.")
 
     for ser in [CANDIDATE] + [s for s in BASELINE if s in by]:
         rs = by.get(ser)
