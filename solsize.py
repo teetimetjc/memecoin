@@ -41,10 +41,18 @@ CANDIDATE = "KXSOL15M"
 BASELINE = ("KXBTC15M", "KXETH15M", "KXXRP15M", "KXDOGE15M")
 WATCH = (CANDIDATE,) + BASELINE
 
-# The same band and the same entry offset the paper record was built on, so
-# the depth is measured where the bets actually happen, not at a quiet moment.
+# The same band the paper record was built on.
 BAND = (86.0, 96.0)
-LO_SECS, HI_SECS = 500, 580
+# A WIDE WINDOW, DELIBERATELY. The first two runs used 500-580s, the bot's
+# own entry offset, and sampled nothing: the exchange lists only ONE open
+# market per series at a time, so a run sees just the slice of the countdown
+# that elapses while it is running. Sampling the whole life of the market and
+# bucketing by time-to-close afterwards cannot miss, and it shows depth as a
+# function of how close to settlement we are -- which is more than the narrow
+# window would have told us anyway.
+LO_SECS, HI_SECS = 30, 900
+# The bucket that matters: the bot's actual entry offset.
+ENTRY_LO, ENTRY_HI = 480, 600
 POLL = 15
 SECONDS = int(sys.argv[1] if len(sys.argv) > 1
               else os.environ.get("SOLSIZE_SECONDS") or 3300)
@@ -98,9 +106,6 @@ def sample(seen, why):
         if ser not in WATCH:
             why["wrong_series"] += 1
             continue
-        if tk in seen:
-            why["already_sampled"] += 1
-            continue
         close = B.ts(m.get("close_time"))
         if close is None:
             why["no_close_time"] += 1
@@ -109,6 +114,14 @@ def sample(seen, why):
         if not (LO_SECS <= left <= HI_SECS):
             why["outside_window"] += 1
             why.setdefault("_lefts", []).append(int(left))
+            continue
+        # DEDUPE PER MINUTE OF REMAINING LIFE, not per ticker. The same
+        # market is wanted repeatedly as it approaches settlement -- that is
+        # the whole point of bucketing by time-to-close -- but not once per
+        # 15s poll, which would be four readings of an unchanged book.
+        slot = (tk, int(left // 60))
+        if slot in seen:
+            why["already_sampled"] += 1
             continue
         q = C.quote_from_market(m)
         if not q or q.get("ask") is None:
@@ -126,17 +139,17 @@ def sample(seen, why):
             # read, and counting it as an empty book would understate the
             # depth of every market whose read happened to fail.
             why["book_unreadable"] += 1
-            seen.add(tk)
-            out.append(dict(ticker=tk, series=ser, ok=False))
+            seen.add(slot)
+            out.append(dict(ticker=tk, series=ser, left=int(left), ok=False))
             continue
         best = levels[0][0]
-        row = dict(ticker=tk, series=ser, ok=True, best=best,
+        row = dict(ticker=tk, series=ser, left=int(left), ok=True, best=best,
                    top_size=levels[0][1],
                    total=sum(sz for _p, sz in levels), fills={})
         for s in STAKES:
             c, avg = sweep(levels, s)
             row["fills"][s] = (c, (avg - best) if avg is not None else None)
-        seen.add(tk)
+        seen.add(slot)
         out.append(row)
     return out
 
@@ -223,6 +236,19 @@ def main():
               f"{st.median([r['top_size'] for r in rs]):,.0f} contracts")
         print(f"  median total size in the visible book: "
               f"{st.median([r['total'] for r in rs]):,.0f} contracts")
+        # AT THE BOT'S OWN ENTRY OFFSET, separately. The whole book gets
+        # thicker or thinner as settlement approaches, and the only depth
+        # that matters is the depth at the moment an order would go in.
+        at_entry = [r for r in rs if ENTRY_LO <= r["left"] <= ENTRY_HI]
+        if at_entry:
+            print(f"  at the bot's entry offset (T-{ENTRY_HI}..T-{ENTRY_LO}s), "
+                  f"{len(at_entry)} sample(s): median "
+                  f"{st.median([r['top_size'] for r in at_entry]):,.0f} "
+                  f"at the ask")
+        else:
+            print(f"  NO sample landed at T-{ENTRY_HI}..T-{ENTRY_LO}s, so the "
+                  f"figures below are the market's whole life, not entry")
+
         print(f"\n  {'stake':>8}{'contracts':>12}{'sweep c/contract':>20}"
               f"{'vs edge':>26}")
         for s in STAKES:
