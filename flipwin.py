@@ -113,7 +113,16 @@ def main():
             socials=f(g(r, th, "Socials")),
             mins=f(g(r, th, "Mins to graduate")),
             buy_sol=f(g(r, th, "Creator Buy SOL")),
-            pair_age=f(g(r, th, "Pair age s")))
+            pair_age=f(g(r, th, "Pair age s")),
+            # The indicators added after the first eight came back weak.
+            # A row written before they existed has these blank, and f()
+            # returns None for a blank, so such rows are skipped per
+            # feature rather than counted as zero.
+            pairs=f(g(r, th, "Pairs")),
+            boosts=f(g(r, th, "Boosts")),
+            liqfdv=f(g(r, th, "Liq/FDV %")),
+            hour=f(g(r, th, "Hour UTC")),
+            txns=f(g(r, th, "Txns 5m")))
 
     # ------------------------------- entry-time flow, and the exit price
     first, exit_px = {}, {}
@@ -153,7 +162,10 @@ def main():
                          mins=v["mins"], late=v["late"],
                          buy_sol=v["buy_sol"], pair_age=v["pair_age"],
                          vol5=fl.get("vol5"), chg5=fl.get("chg5"),
-                         buysell=bs))
+                         buysell=bs,
+                         pairs=v["pairs"], boosts=v["boosts"],
+                         liqfdv=v["liqfdv"], hour=v["hour"],
+                         txns=v["txns"]))
 
     rows.sort(key=lambda x: x["when"])
     print(f"\n  {len(rows)} token(s) with a clean entry and a "
@@ -190,6 +202,11 @@ def main():
         ("volume 5m at entry", "vol5"),
         ("price change 5m at entry", "chg5"),
         ("buys/sells at entry", "buysell"),
+        ("number of pairs", "pairs"),
+        ("DexScreener boosts", "boosts"),
+        ("liquidity / FDV %", "liqfdv"),
+        ("hour of day UTC", "hour"),
+        ("trade count 5m", "txns"),
     ]
 
     print(f"\n{'-' * 100}")

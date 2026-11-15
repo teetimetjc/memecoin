@@ -97,6 +97,29 @@ TOKEN_HEADERS = [
     "Entry Price SOL", "Entry lateness s", "Entry Liquidity USD",
     "Entry FDV USD", "Entry Market Cap USD", "Socials", "Pair age s",
     "Session",
+    # ---- ADDED, end-appended so existing rows keep their columns ----
+    # The eight features already logged were all weak, and a verdict of "no
+    # edge" on them is a verdict on what happened to be collected, not on the
+    # question. These are the indicators actually worth testing:
+    #
+    #   Pairs            how many pools quote the token. One pool is a token
+    #                    nobody has bothered to arbitrage; several means real
+    #                    interest. Already computed and never written.
+    #   Boosts           DexScreener paid promotion. Somebody spending money
+    #                    to be seen is the clearest "this is being pushed"
+    #                    signal available without a paid data source.
+    #   Liq/FDV %        liquidity as a share of notional value. pump.fun
+    #                    graduates every token with a near-fixed liquidity
+    #                    seed, so this ratio moves almost entirely with how
+    #                    richly the market is valuing it -- a low ratio is a
+    #                    big claimed value resting on a thin pool, which is
+    #                    the shape of a token that cannot be sold.
+    #   Hour UTC
+    #   Weekday          free, and the one thing certain to differ between a
+    #                    quiet Tuesday night and a weekend mania.
+    #   Txns 5m          total trade count at entry: activity, as distinct
+    #                    from volume, which one whale can fake.
+    "Pairs", "Boosts", "Liq/FDV %", "Hour UTC", "Weekday", "Txns 5m",
 ]
 
 # PER-SAMPLE FIELDS, chosen for what could plausibly separate a winner from
@@ -310,7 +333,11 @@ def price_one(mint, session):
                 buys1h=f(h1.get("buys")), sells1h=f(h1.get("sells")),
                 fdv=f(p.get("fdv")), mcap=f(p.get("marketCap")),
                 socials=socials, created=f(p.get("pairCreatedAt")),
-                pool=p.get("dexId", ""), pairs=len(pairs))
+                pool=p.get("dexId", ""), pairs=len(pairs),
+                # PAID PROMOTION. DexScreener boosts cost money, so a boosted
+                # token is one somebody is spending to get looked at. That is
+                # a direct read on promotion, which no other field here gives.
+                boosts=f((p.get("boosts") or {}).get("active")) or 0)
 
 
 async def watch(found, seconds):
@@ -488,7 +515,22 @@ def main():
                     d["liq"] if d["liq"] is not None else "",
                     d["fdv"] if d["fdv"] is not None else "",
                     d["mcap"] if d["mcap"] is not None else "",
-                    d.get("socials", ""), pair_age, session_id])
+                    d.get("socials", ""), pair_age, session_id,
+                    # The new columns, in TOKEN_HEADERS order. A value that
+                    # could not be computed is left BLANK, never zeroed: a
+                    # zero boost count and an unknown boost count are
+                    # different facts, and only one of them is about the
+                    # token.
+                    d.get("pairs", ""),
+                    d.get("boosts", ""),
+                    (round(100.0 * d["liq"] / d["fdv"], 3)
+                     if d.get("liq") is not None and d.get("fdv") else ""),
+                    time.gmtime(v["at"]).tm_hour,
+                    time.strftime("%a", time.gmtime(v["at"])),
+                    ((d["buys"] or 0) + (d["sells"] or 0)
+                     if d.get("buys") is not None
+                     or d.get("sells") is not None else ""),
+                ])
             if written + len(rows) >= MAX_ROWS:
                 stats["row_cap"] += 1
                 continue
