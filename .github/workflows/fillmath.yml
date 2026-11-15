@@ -1,0 +1,39 @@
+name: Which fill-pricing rule reconciles with the cash (read-only)
+
+# reckon.fill_cost prices every fill as an opening BUY -- its own docstring
+# warns that a sell would be counted as a cost instead of a credit, and with
+# 111 sell fills in the account that warning has come true: the trading
+# reckoning reads -$540 against a cash reckoning of +$31.
+#
+# The field names do not settle how a DOWN bet's sell fill should be priced,
+# and a plain sign flip overshoots the cash. So every candidate rule is
+# applied to every fill and the cash figure -- arithmetic on money that
+# actually moved -- decides which one is correct.
+#
+# PLACES NO ORDER. Reads only portfolio endpoints.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fillmath:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests cryptography
+      - name: Reconcile
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+        run: python fillmath.py
