@@ -147,6 +147,45 @@ def main():
     print(f"  withdrawn    ${wd_sum:>10,.2f}")
     print(f"  CASH NET     ${cash_net:>+10,.2f}   <- the arbiter\n")
 
+    # ------------------------------- the other instances, printed RAW
+    # reckon collects balance_breakdown and never adds it in, and its own
+    # gap note names "money sitting in the Invest (margined) instance, which
+    # the trading balance above does not include" as a likely cause. If the
+    # headline balance is one instance only, the arbiter is short by the
+    # others, and no pricing rule could ever reconcile with it.
+    #
+    # THE UNIT OF THE SHARD FIELD IS NOT KNOWN. reckon reads row['balance']
+    # raw, while reading the TOP-LEVEL 'balance' as cents -- the same bare
+    # name treated two ways in one file. So the raw value is printed and both
+    # readings are shown, rather than one being chosen. Picking the reading
+    # that makes a rule fit would be fitting two unknowns with one equation,
+    # which is how this file's subject bug got written in the first place.
+    shards = []
+    for row in bal_d.get("balance_breakdown") or []:
+        i = f(row.get("exchange_index"))
+        v = f(row.get("balance"))
+        if v is not None:
+            shards.append((int(i) if i is not None else -1, v))
+    if shards:
+        print(f"  BALANCE BREAKDOWN -- {len(shards)} instance(s), raw:")
+        for i, v in shards:
+            print(f"    exchange_index {i}: balance={v!r}")
+        tot_raw = sum(v for _i, v in shards)
+        print(f"    sum raw {tot_raw:,.4f}  "
+              f"-> as dollars ${tot_raw:,.2f}, as cents "
+              f"${tot_raw/100.0:,.2f}")
+        print(f"    headline balance is ${bal:,.2f}")
+        for label, total in (("shards as dollars", tot_raw),
+                             ("shards as cents", tot_raw / 100.0)):
+            print(f"    cash net if {label:<18} = "
+                  f"${total + wd_sum - dep_sum:+,.2f}")
+        print("\n    If exactly one of these readings brings a rule within")
+        print("    the bookkeeping floor, that is CONSISTENT with it and not")
+        print("    proof of it: the unit and the rule would both have been")
+        print("    settled by one number. Treat it as a lead to confirm,")
+        print("    not as a reconciliation.")
+        print()
+
     fills, fp = pages("/portfolio/fills", "fills", limit=1000)
     setts, sp = pages("/portfolio/settlements", "settlements")
     returned, sett_bad = 0.0, 0
