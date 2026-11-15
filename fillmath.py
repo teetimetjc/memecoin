@@ -109,11 +109,22 @@ def main():
     wds, _ = pages("/portfolio/withdrawals", "withdrawals")
 
     def applied_total(rows):
+        """Applied rows summed, matching reckon's reading exactly.
+
+        TWO MISTAKES LIVED HERE, both of which reckon.money already
+        documents. The deposit amount field is `amount_cents`, not
+        `amount_dollars` -- reckon's docstring names that precise error as
+        the bug the whole file exists to prevent, and I reproduced it on the
+        first try, which is why the run refused itself. And a row with an
+        EMPTY status is treated as applied, as reckon does; excluding it
+        dropped real money from the arbiter.
+        """
         tot, bad = 0.0, 0
         for r in rows:
-            if str(r.get("status") or "").strip().lower() not in R.APPLIED:
+            st = str(r.get("status") or "").strip().lower()
+            if st and st not in R.APPLIED:
                 continue
-            v = money(r, "amount_dollars", "amount")
+            v = money(r, "amount_cents", "amount_dollars", "amount")
             if v is None:
                 bad += 1
                 continue
