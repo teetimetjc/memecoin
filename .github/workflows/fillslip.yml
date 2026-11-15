@@ -1,0 +1,39 @@
+name: Did we fill at the quote or the limit (read-only)
+
+# Joins the Live Bets tab to the exchange's own fill records on Order ID and
+# reports (fill price - decision quote) in cents per contract. The sheet's
+# 'Cost $' is computed as contracts x LIMIT before the order is sent, so it
+# is the worst-case assumption and not a measurement; the actual price paid
+# has to come from the exchange.
+#
+# Fills more than 5c BETTER than the quote are held out of the verdict: the
+# live record contains one at 36c below the touch whose validity has never
+# been established, and it is 19% of all profit to date.
+#
+# Reads the sheet and two read-only portfolio endpoints. PLACES NO ORDER.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fillslip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests cryptography
+      - name: Measure slippage
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+        run: python fillslip.py
