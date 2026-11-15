@@ -1,0 +1,41 @@
+name: Why some fills came in too good (read-only)
+
+# 43 of 823 live orders are recorded as filling more than 5c BELOW the quote
+# they were decided on. A buy cannot normally execute below the best offer,
+# so either that is free money the record does not capture, or some recorded
+# profit is not real. This tests four explanations: probe orders, side
+# confusion, multi-piece averaging, and a genuine sweep.
+#
+# Reads the sheet and the read-only fills endpoint. PLACES NO ORDER.
+
+on:
+  workflow_dispatch:
+    inputs:
+      show:
+        description: 'How many anomalies to dump field by field'
+        required: false
+        default: '8'
+
+permissions:
+  contents: read
+
+jobs:
+  fillodd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests cryptography
+      - name: Investigate
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          FILLODD_SHOW: ${{ inputs.show }}
+        run: python fillodd.py
