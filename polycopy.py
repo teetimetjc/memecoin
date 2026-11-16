@@ -150,6 +150,77 @@ def score_positions(rows):
     return out, open_n
 
 
+GAMMA = "https://gamma-api.polymarket.com"
+
+
+def gamma(path, **params):
+    import requests
+    for attempt in range(4):
+        try:
+            r = requests.get(f"{GAMMA}{path}", params=params, timeout=30,
+                             headers={"accept": "application/json"})
+            if r.ok:
+                return r.json()
+            time.sleep(1.0 * (attempt + 1))
+        except Exception:
+            time.sleep(1.5 * (attempt + 1))
+    return None
+
+
+def historical_wallets(want, lo_date, hi_date):
+    """Wallets that traded in markets which CLOSED in a past window.
+
+    WHY THIS EXISTS. The recent-trade feed can only return wallets that are
+    trading NOW, so every wallet it offers is a survivor. A wallet with a
+    brilliant first half that blew up and stopped can never appear, and that
+    absence alone could manufacture the persistence the elite tail shows.
+    Sampling from markets that resolved months ago includes the quitters,
+    because their trades are still in those markets' histories.
+    """
+    # FILTER AT THE SERVER. Paging the whole closed-market list with offset
+    # returns the oldest first (2020-21 at offset 0, 2024 by offset 2000) and
+    # 422s past about 6000, so the target window is never reached that way --
+    # the first attempt found 0 markets for exactly this reason.
+    # end_date_min / end_date_max are supported and do it directly.
+    mk, offset = [], 0
+    while len(mk) < 4000 and offset < 5500:
+        rows = gamma("/markets", closed="true", limit=500, offset=offset,
+                     end_date_min=lo_date, end_date_max=hi_date)
+        rows = rows if isinstance(rows, list) else ((rows or {}).get("data")
+                                                    or [])
+        if not rows:
+            break
+        for m in rows:
+            end = str(m.get("endDate") or "")[:10]
+            cid = str(m.get("conditionId") or m.get("condition_id") or "")
+            if cid and lo_date <= end <= hi_date:
+                mk.append(cid)
+        offset += 500
+        time.sleep(0.1)
+    import random as _r
+    _r.Random(1).shuffle(mk)
+    print(f"  {len(mk)} market(s) closing between {lo_date} and {hi_date}")
+    seen = collections.Counter()
+    used = 0
+    for cid in mk:
+        if len(seen) >= want:
+            break
+        try:
+            d = get("/v2/trades", condition_id=cid, limit=1000)
+        except Exception:
+            continue
+        used += 1
+        for r in rows_of(d):
+            w = str(r.get("proxy_wallet") or "")
+            if w:
+                seen[w] += 1
+        if used % 25 == 0:
+            print(f"    {used} market(s) read, {len(seen)} wallet(s)")
+        time.sleep(0.05)
+    print(f"  {used} market(s) read, {len(seen)} distinct wallet(s)")
+    return seen
+
+
 def score_union(acts, pos):
     """Every RESOLVED position, from both endpoints, each counted once.
 
@@ -367,10 +438,24 @@ def main():
     # candidates for nothing: appearing once in a 1,000-trade window says
     # nothing about how much history a wallet has, and MIN_CLOSED already
     # requires a real history before a wallet is scored.
+    source = (os.environ.get("POLYCOPY_SOURCE") or "recent").lower()
+    if source == "historical":
+        lo = os.environ.get("POLYCOPY_FROM") or "2026-01-01"
+        hi = os.environ.get("POLYCOPY_TO") or "2026-06-30"
+        print(f"  SOURCE: historical markets, survivorship-free "
+              f"({lo} to {hi})")
+        seen = historical_wallets(WALLETS * 3, lo, hi)
+        pool = sorted(seen)
+        import random as _r0
+        _r0.Random(0).shuffle(pool)
+        cands = pool[:WALLETS]
+        print(f"  sampling {len(cands)} of {len(pool)}\n")
+    else:
+        cands = None
     seen = collections.Counter()
     polls = int(os.environ.get("POLYCOPY_POLLS") or 6)
     gap = float(os.environ.get("POLYCOPY_POLL_GAP") or 20)
-    for i in range(polls):
+    for i in range(polls if cands is None else 0):
         d = get("/v2/trades", limit=1000)
         for r in rows_of(d):
             w = str(r.get("proxy_wallet") or "")
@@ -378,12 +463,13 @@ def main():
                 seen[w] += 1
         if i < polls - 1:
             time.sleep(gap)
-    pool = sorted(seen)
-    import random as _r
-    _r.Random(0).shuffle(pool)
-    cands = pool[:WALLETS]
-    print(f"  {polls} snapshot(s), {len(seen)} distinct wallet(s), "
-          f"sampling {len(cands)}\n")
+    if cands is None:
+        pool = sorted(seen)
+        import random as _r
+        _r.Random(0).shuffle(pool)
+        cands = pool[:WALLETS]
+        print(f"  {polls} snapshot(s), {len(seen)} distinct wallet(s), "
+              f"sampling {len(cands)}\n")
 
     good, refused = [], []
     tot_open = claimed = unclaimed = 0
