@@ -1,0 +1,44 @@
+name: Does copying a Polymarket trader work (read-only)
+
+# Part 1: persistence. Split each wallet's own history in half
+# chronologically, rank on the first half, score on the second, and
+# permutation-test the result. If a good past does not predict a good
+# future there is nothing to copy.
+#
+# P&L comes from the UNION of two endpoints, because each alone is selected
+# by outcome: /activity REDEEM events hold the CLAIMED positions (skewed to
+# winners, since claiming a winner pays) and /positions REDEEMABLE holds
+# the UNCLAIMED ones (skewed to losers, since claiming a loser costs gas to
+# collect nothing). A zero-sum sanity check fails the run if the sample
+# comes out implausibly profitable.
+#
+# No key, no order, no wallet. Public data only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      wallets:
+        description: 'How many wallets to sample'
+        required: false
+        default: '70'
+
+permissions:
+  contents: read
+
+jobs:
+  polycopy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Test persistence
+        env:
+          PYTHONUNBUFFERED: '1'
+          POLYCOPY_WALLETS: ${{ inputs.wallets }}
+        run: python polycopy.py
