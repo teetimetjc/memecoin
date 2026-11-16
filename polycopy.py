@@ -355,31 +355,35 @@ def main():
     #    selects for unscoreable wallets AND for a different business than
     #    the one being tested. A deterministic spread across everything
     #    seen is neutral.
+    # THE FEED IS NOT PAGINATED, AND limit CAPS AT 1000. Probed: offset is
+    # rejected with HTTP 400, no next_cursor is returned, limit=2000 is a
+    # 400, and limit=1000 succeeds with ~460 distinct wallets. So a single
+    # snapshot is all one call can give, and the way to widen the pool is to
+    # POLL OVER TIME: each snapshot holds the most recent trades, so fresh
+    # wallets appear as fresh trades arrive.
+    #
+    # AND NO "2+ TRADES" FILTER. The first version required a wallet to
+    # appear twice in one snapshot, which threw away three quarters of the
+    # candidates for nothing: appearing once in a 1,000-trade window says
+    # nothing about how much history a wallet has, and MIN_CLOSED already
+    # requires a real history before a wallet is scored.
     seen = collections.Counter()
-    cursor, pages = None, 0
-    while pages < 25:
-        p = dict(limit=500)
-        if cursor:
-            p["cursor"] = cursor
-        d = get("/v2/trades", **p)
-        rs = rows_of(d)
-        for r in rs:
+    polls = int(os.environ.get("POLYCOPY_POLLS") or 6)
+    gap = float(os.environ.get("POLYCOPY_POLL_GAP") or 20)
+    for i in range(polls):
+        d = get("/v2/trades", limit=1000)
+        for r in rows_of(d):
             w = str(r.get("proxy_wallet") or "")
             if w:
                 seen[w] += 1
-        pages += 1
-        cursor = d.get("next_cursor") if isinstance(d, dict) else None
-        if not cursor or not rs:
-            break
-        time.sleep(0.15)
-    # Keep wallets that traded more than once (a single trade cannot have a
-    # two-half history), then spread deterministically rather than by rank.
-    pool = sorted(w for w, n in seen.items() if n >= 2)
+        if i < polls - 1:
+            time.sleep(gap)
+    pool = sorted(seen)
     import random as _r
     _r.Random(0).shuffle(pool)
     cands = pool[:WALLETS]
-    print(f"  {pages} page(s), {len(seen)} wallet(s) seen, "
-          f"{len(pool)} with 2+ trades, sampling {len(cands)}\n")
+    print(f"  {polls} snapshot(s), {len(seen)} distinct wallet(s), "
+          f"sampling {len(cands)}\n")
 
     good, refused = [], []
     tot_open = claimed = unclaimed = 0
@@ -407,12 +411,18 @@ def main():
         if a is None or b is None:
             refused.append((w, "half with no cost"))
             continue
+        hit_a = (100.0 * sum(1 for x in ps[:cut] if x["profit"] > 0)
+                 / max(1, cut))
+        hit_b = (100.0 * sum(1 for x in ps[cut:] if x["profit"] > 0)
+                 / max(1, len(ps) - cut))
         good.append(dict(w=w, n=len(ps), first=a, second=b,
+                         hit_a=hit_a, hit_b=hit_b,
                          cost=sum(p["cost"] for p in ps),
                          profit=sum(p["profit"] for p in ps)))
         print(f"  {w[:14]}..  {len(ps):>4} resolved  "
-              f"1st half ROI {100*a:>+8.2f}%   2nd half {100*b:>+8.2f}%   "
-              f"total ${sum(p['profit'] for p in ps):>+10,.0f}")
+              f"1st ROI {100*a:>+8.2f}% (hit {hit_a:>5.1f}%)   "
+              f"2nd {100*b:>+8.2f}% (hit {hit_b:>5.1f}%)   "
+              f"${sum(p['profit'] for p in ps):>+9,.0f}")
 
     print(f"\n  {len(good)} wallet(s) scored, {len(refused)} refused")
     for w, why in refused[:10]:
@@ -501,6 +511,54 @@ def main():
     print(f"    the real edge is {edge:+.2f}, beaten by {worse} "
           f"of {len(null)}   p = {p:.3f}")
 
+    # ------------------------------------------------- THE ELITE TAIL
+    # THE MEDIAN SPLIT ANSWERS A DIFFERENT QUESTION. It asks whether
+    # better-than-average wallets persist, and they do not persist into
+    # profit. It is blind by construction to a small elite tail: the top few
+    # of fifty-odd is a bucket of five, which is the best-of-N trap that has
+    # produced every false positive in this project.
+    #
+    # With a large enough sample the top decile is itself a real sample, so
+    # it can be asked honestly -- with the same permutation null, built to
+    # mirror this exact procedure including the bucket size.
+    elite_hits = []
+    for frac, label in ((0.10, "top 10%"), (0.20, "top 20%")):
+        k = int(len(good) * frac)
+        if k < 8:
+            print(f"\n  {label}: only {k} wallet(s) -- too few to test "
+                  f"honestly, so it is not tested.")
+            continue
+        elite = good[:k]
+        e2 = st.median([g["second"] for g in elite])
+        e_edge = 100.0 * (e2 - base)
+        e_hit = st.median([g["hit_b"] for g in elite])
+        null_e = []
+        for _ in range(PERMS):
+            sh = seconds[:]
+            random.shuffle(sh)
+            null_e.append(100.0 * (st.median(sh[:k]) - st.median(sh)))
+        null_e.sort()
+        worse_e = sum(1 for e in null_e if e >= e_edge)
+        pe = worse_e / len(null_e)
+        print(f"\n{'-' * 100}")
+        print(f"ELITE TAIL: {label} by first-half ROI ({k} wallets), "
+              f"scored on the second half")
+        print("-" * 100)
+        print(f"  median 2nd-half ROI {100*e2:+.2f}%   "
+              f"median 2nd-half hit rate {e_hit:.1f}%")
+        print(f"  edge over baseline  {e_edge:+.2f} points")
+        print(f"  no-signal edge: median {null_e[len(null_e)//2]:+.2f}, "
+              f"90th {null_e[9*len(null_e)//10]:+.2f}, "
+              f"max {null_e[-1]:+.2f}")
+        print(f"  p = {pe:.3f}")
+        if pe <= 0.05 and e2 > 0:
+            elite_hits.append((label, 100.0 * e2, e_hit, pe, k))
+            print("  *** PROFITABLE AND BEATS THE NULL. This is the one")
+            print("  result that would justify measuring the follower lag.")
+        elif e2 <= 0:
+            print("  beats the null or not, this group still loses money,")
+            print("  so there is nothing for a copier to keep.")
+
     print(f"\n{'=' * 100}")
     if biased:
         print("  NO CONCLUSION. The sanity check above failed, so whatever")
@@ -515,6 +573,27 @@ def main():
     elif p > 0.05:
         print("  WEAK. Worth re-testing on more wallets before anything is")
         print("  built on it; not worth following money.")
+    elif elite_hits:
+        print("  THE MEDIAN SPLIT IS USELESS BUT THE TOP TAIL IS NOT.")
+        print(f"  Better-than-average wallets still lose "
+              f"{abs(100*t2):.2f}%, so ranking loosely is worthless. But:")
+        for label, roi_, hit_, pe_, k_ in elite_hits:
+            print(f"    {label} ({k_} wallets): {roi_:+.2f}% in the second "
+                  f"half, hit {hit_:.1f}%, p={pe_:.3f}")
+        print("  THREE THINGS THIS IS STILL NOT:")
+        print("  1. A COPIER'S RETURN. That is the trader's own ROI at the")
+        print("     trader's own entry price. A follower buys later and")
+        print("     worse, and that cost is UNMEASURED. It is now worth")
+        print("     measuring -- that is part 2.")
+        print("  2. FREE OF SURVIVORSHIP. Candidates come from the RECENT")
+        print("     trade feed, so every wallet here is still trading. A")
+        print("     wallet with a brilliant first half that blew up and")
+        print("     quit never enters the sample, and that absence alone")
+        print("     could manufacture persistence. This is the single")
+        print("     biggest threat to the result and it is not yet fixed.")
+        print("  3. ONE TEST. Three buckets were tried (median, top 20%,")
+        print("     top 10%); each null is mirrored to its own bucket but")
+        print("     the choice among them is not penalised.")
     elif t2 <= 0:
         # THE GATE THAT MATTERS. "Better than the other wallets" is not
         # "makes money". If the group you would copy is itself losing, then
