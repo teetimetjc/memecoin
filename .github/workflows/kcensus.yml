@@ -1,0 +1,43 @@
+name: Every Kalshi series, ranked for a small account (read-only)
+
+# Seven months of this account have traded one product: the 15-minute clock.
+# The fee (0.07 x p x (1-p) per contract) is charged ONCE PER MARKET, so a
+# 15-minute market pays it 96 times a day while a monthly market pays it
+# once. This censuses every series on the exchange and ranks by fee per day
+# of exposure, volume and spread.
+#
+# It rules series OUT on cost and liquidity. It rules nothing IN.
+#
+# PLACES NO ORDER. Read-only market endpoints only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: 'Seconds to spend screening'
+        required: false
+        default: '1500'
+
+permissions:
+  contents: read
+
+jobs:
+  kcensus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests cryptography
+      - name: Census
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KCENSUS_BUDGET_S: ${{ inputs.budget }}
+        run: python kcensus.py
