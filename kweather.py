@@ -235,12 +235,60 @@ def day_of(ticker):
     return f"20{yy}-{mons[mon]:02d}-{int(dd):02d}"
 
 
-def nws_max_f(station, day):
-    """Highest observed temperature in F at `station` on local `day`."""
+def cli_max_f(office, day):
+    """Daily max from the NWS CLI climate product, or (None, why).
+
+    WHY A SECOND SOURCE. The observations endpoint only retains about a
+    week, which is why 24 of 30 days came back "no readings" and every
+    failure was an OLDER date. The CLI product is the official daily
+    climate report for the site and is archived further back, so it is
+    tried when observations cannot reach.
+    """
+    d, err = nws(f"/products/types/CLI/locations/{office}")
+    if not d:
+        return None, f"CLI list: {err}"
+    want = day
+    for item in (d.get("@graph") or d.get("graph") or []):
+        txt = str(item.get("issuanceTime") or "")[:10]
+        pid = item.get("id") or item.get("@id")
+        if not pid:
+            continue
+        # The report issued the morning AFTER the day covers that day, and
+        # the one issued late on the day itself also carries it.
+        if txt < want:
+            continue
+        prod, perr = nws(f"/products/{pid}" if not str(pid).startswith("http")
+                         else str(pid))
+        body = str((prod or {}).get("productText") or "")
+        if not body:
+            continue
+        import re
+        # The CLI table line looks like: "MAXIMUM         58  1:51 PM"
+        for line in body.splitlines():
+            if line.strip().upper().startswith("MAXIMUM"):
+                m = re.search(r"(-?\d{1,3})", line[7:])
+                if m:
+                    return float(m.group(1)), None
+        break
+    return None, "no CLI MAXIMUM line found"
+
+
+def nws_max_f(station, day, office="OKX"):
+    """Highest observed temperature in F at `station` on local `day`.
+
+    Tries the hourly observations first, then the CLI climate product. The
+    first version used only observations and silently reported "no
+    readings" for every date outside that endpoint's roughly one-week
+    retention -- which was 24 of 30 days, and the verdict was drawn from
+    the 6 that happened to survive.
+    """
     d, err = nws(f"/stations/{station}/observations"
                  f"?start={day}T00:00:00-05:00&end={day}T23:59:59-05:00")
     if not d:
-        return None, err
+        v, cerr = cli_max_f(office, day)
+        if v is not None:
+            return v, None
+        return None, f"obs: {err}; cli: {cerr}"
     best = None
     for feat in (d.get("features") or []):
         t = ((feat.get("properties") or {}).get("temperature") or {})
@@ -252,7 +300,12 @@ def nws_max_f(station, day):
         fv = (v * 9.0 / 5.0 + 32.0) if "degC" in unit else float(v)
         if best is None or fv > best:
             best = fv
-    return best, (None if best is not None else "no readings")
+    if best is None:
+        v, cerr = cli_max_f(office, day)
+        if v is not None:
+            return v, None
+        return None, f"obs empty (retention?); cli: {cerr}"
+    return best, None
 
 
 def basis_check():
@@ -315,7 +368,8 @@ def basis_check():
         rng = (f"{'' if lo is None or lo < -900 else int(lo)}"
                f"..{'' if hi is None or hi > 900 else int(hi)}")
         if obs is None:
-            print(f"  {day:<12}{rng:>26}{'--':>11}{oerr or 'no obs':>9}")
+            print(f"  {day:<12}{rng:>26}{'--':>11}  "
+                  f"{str(oerr or 'no obs')[:52]}")
             unknown += 1
             continue
         ok = ((lo is None or lo < -900 or obs >= lo - 0.5)
@@ -341,9 +395,19 @@ def basis_check():
               f"min {diffs[0]:+.1f}, max {diffs[-1]:+.1f}")
 
     print(f"\n{'=' * 104}")
+    MIN_DAYS = int(os.environ.get("KWEATHER_MIN_DAYS") or 15)
     if not tot:
         print("  NOTHING COMPARABLE. No day had both a YES bucket and an NWS")
         print("  reading, so the basis is unmeasured -- not small.")
+    elif tot < MIN_DAYS:
+        # THE GUARD THE FIRST RUN LACKED. It compared 6 days, found 4
+        # disagreements, and printed "the plan as designed is dead". Six
+        # days with 24 failures is not a verdict, and the failures were a
+        # bug in my own query rather than anything about the market.
+        print(f"  ONLY {tot} COMPARABLE DAY(S) -- fewer than {MIN_DAYS}, so")
+        print("  NO VERDICT. The disagreements below are suggestive and")
+        print("  nothing more; the earlier run drew a conclusion from six")
+        print("  days and should not have.")
     elif 100.0 * agree / tot >= 90.0:
         print("  THE BASIS IS SMALL. NWS and the settlement source agree on")
         print("  the bucket almost always, so pricing against the free NWS")
