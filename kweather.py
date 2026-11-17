@@ -205,9 +205,153 @@ def probe():
     return 0
 
 
+
+# The NWS station that corresponds to Kalshi's settlement site. CLINYC is
+# the Central Park climate site; KNYC is its NWS station id.
+STATION = {"KXHIGHNY": "KNYC", "HIGHNY": "KNYC"}
+
+
+def day_of(ticker):
+    """2026-11-16 from KXHIGHNY-26NOV16-T52, or None."""
+    import re
+    m = re.search(r"-(\d{2})([A-Z]{3})(\d{2})-", ticker.upper())
+    if not m:
+        return None
+    mons = dict(JAN=1, FEB=2, MAR=3, APR=4, MAY=5, JUN=6, JUL=7, AUG=8,
+                SEP=9, OCT=10, NOV=11, DEC=12)
+    yy, mon, dd = m.group(1), m.group(2), m.group(3)
+    if mon not in mons:
+        return None
+    return f"20{yy}-{mons[mon]:02d}-{int(dd):02d}"
+
+
+def nws_max_f(station, day):
+    """Highest observed temperature in F at `station` on local `day`."""
+    d, err = nws(f"/stations/{station}/observations"
+                 f"?start={day}T00:00:00-05:00&end={day}T23:59:59-05:00")
+    if not d:
+        return None, err
+    best = None
+    for feat in (d.get("features") or []):
+        t = ((feat.get("properties") or {}).get("temperature") or {})
+        v, unit = t.get("value"), str(t.get("unitCode") or "")
+        if v is None:
+            continue
+        # unitCode is wmoUnit:degC on this endpoint; convert rather than
+        # assume, because assuming units is how a 5C reading becomes 5F.
+        fv = (v * 9.0 / 5.0 + 32.0) if "degC" in unit else float(v)
+        if best is None or fv > best:
+            best = fv
+    return best, (None if best is not None else "no readings")
+
+
+def basis_check():
+    """Does the free NWS observation agree with Kalshi's settlement?
+
+    THE PREMISE THIS TESTS. Kalshi settles these on the maximum recorded
+    "according to The Weather Company", NOT the NWS. The whole plan was to
+    price against the free NWS number, so if the two providers disagree by
+    a degree or more with any regularity the plan is dead -- the buckets are
+    one degree wide, so a one-degree basis is a whole bucket of error.
+    """
+    print("=" * 104)
+    print("BASIS CHECK -- does the free NWS number agree with Kalshi's")
+    print("settlement source (The Weather Company)?")
+    print("=" * 104)
+    series = os.environ.get("KWEATHER_SERIES") or "KXHIGHNY"
+    station = STATION.get(series, "KNYC")
+    want = int(os.environ.get("KWEATHER_DAYS") or 25)
+    print(f"  series {series}, NWS station {station}\n")
+
+    mk = B.settled_markets(series, 600)
+    print(f"  {len(mk)} settled market(s) pulled")
+    by_day = collections.defaultdict(list)
+    for m in mk:
+        day = day_of(str(m.get("ticker") or ""))
+        if day:
+            by_day[day].append(m)
+    days = sorted(by_day, reverse=True)[:want]
+    print(f"  {len(by_day)} distinct day(s); checking the latest "
+          f"{len(days)}\n")
+
+    print(f"  {'date':<12}{'kalshi settled range':>26}{'NWS max F':>11}"
+          f"{'agree?':>9}")
+    agree = disagree = unknown = 0
+    diffs = []
+    for day in days:
+        yes = []
+        for m in by_day[day]:
+            if str(m.get("result") or "").lower() != "yes":
+                continue
+            yes.append(m)
+        if not yes:
+            unknown += 1
+            continue
+        # The YES bucket pins the settled value to a range.
+        lo = hi = None
+        for m in yes:
+            fl, cp = f(m.get("floor_strike")), f(m.get("cap_strike"))
+            ty = str(m.get("strike_type") or "").lower()
+            if ty == "less" and cp is not None:
+                lo, hi = (lo if lo is not None else -999), cp - 1
+            elif ty == "greater" and fl is not None:
+                lo, hi = fl + 1, (hi if hi is not None else 999)
+            elif fl is not None and cp is not None:
+                lo, hi = fl, cp
+        obs, oerr = nws_max_f(station, day)
+        if lo is None and hi is None:
+            unknown += 1
+            continue
+        rng = (f"{'' if lo is None or lo < -900 else int(lo)}"
+               f"..{'' if hi is None or hi > 900 else int(hi)}")
+        if obs is None:
+            print(f"  {day:<12}{rng:>26}{'--':>11}{oerr or 'no obs':>9}")
+            unknown += 1
+            continue
+        ok = ((lo is None or lo < -900 or obs >= lo - 0.5)
+              and (hi is None or hi > 900 or obs <= hi + 0.5))
+        if ok:
+            agree += 1
+        else:
+            disagree += 1
+            mid = hi if (lo is None or lo < -900) else (
+                lo if (hi is None or hi > 900) else (lo + hi) / 2.0)
+            diffs.append(obs - mid)
+        print(f"  {day:<12}{rng:>26}{obs:>11.1f}"
+              f"{('yes' if ok else 'NO'):>9}")
+
+    tot = agree + disagree
+    print(f"\n  agree {agree}, disagree {disagree}, unusable {unknown}")
+    if tot:
+        print(f"  agreement rate {100.0*agree/tot:.1f}%")
+    if diffs:
+        diffs.sort()
+        print(f"  on disagreements, NWS minus the Kalshi range midpoint: "
+              f"median {diffs[len(diffs)//2]:+.1f}F, "
+              f"min {diffs[0]:+.1f}, max {diffs[-1]:+.1f}")
+
+    print(f"\n{'=' * 104}")
+    if not tot:
+        print("  NOTHING COMPARABLE. No day had both a YES bucket and an NWS")
+        print("  reading, so the basis is unmeasured -- not small.")
+    elif 100.0 * agree / tot >= 90.0:
+        print("  THE BASIS IS SMALL. NWS and the settlement source agree on")
+        print("  the bucket almost always, so pricing against the free NWS")
+        print("  forecast is defensible and the collector is worth writing.")
+    else:
+        print("  THE BASIS IS TOO BIG. The buckets are one degree wide and")
+        print("  the free number disagrees with the settlement source often")
+        print("  enough that any 'edge' measured against NWS would mostly")
+        print("  be provider disagreement. The plan as designed is dead.")
+    print("=" * 104)
+    return 0
+
+
 def main():
     if MODE == "probe":
         return probe()
+    if MODE == "basis":
+        return basis_check()
     print(f"  mode '{MODE}' is not built yet. Run the probe first; the")
     print("  collector is written against what it finds, not against")
     print("  guesses about field names.")
