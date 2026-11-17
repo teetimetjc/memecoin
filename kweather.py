@@ -98,10 +98,18 @@ def probe():
     if not ser:
         print(f"  NO SERIES RETURNED ({err}). Nothing can be probed.")
         return 1
-    hits = sorted(t for t in ser if any(k in t.upper() for k in
-                  ("HIGH", "TEMP", "LOW", "HOT", "COLD", "RAIN", "SNOW")))
+    # THE FIRST PASS MATCHED "LOW" AND LANDED ON KXADMITLOWGROUP -- college
+    # admissions rates, 70 unquoted markets closing in 2028. Temperature
+    # series are named plainly: HIGHNY, HIGHCHI, HIGHMIA, HIGHAUS, HIGHUS,
+    # KXDENHIGH, AVGTEMP. So match those, and exclude the words that pulled
+    # in contempt votes, blowouts and hot dogs.
+    BAD = ("ADMIT", "CONTEMPT", "BLOWOUT", "HOTDOG", "COLDPLAY", "BRAIN",
+           "SNOW", "HOT100", "CASELOW", "TARIFF", "GRAIN", "COLDBREW")
+    hits = sorted(t for t in ser
+                  if ("HIGH" in t.upper() or "TEMP" in t.upper())
+                  and not any(b in t.upper() for b in BAD))
     print(f"  {len(ser):,} series on the exchange, "
-          f"{len(hits)} with a weather-ish ticker")
+          f"{len(hits)} that look like temperature series")
     for t in hits[:40]:
         print(f"    {t}")
     if len(hits) > 40:
@@ -126,12 +134,27 @@ def probe():
             print(f"\n    ticker      {m.get('ticker')}")
             print(f"    title       {str(m.get('title'))[:80]}")
             print(f"    subtitle    {str(m.get('subtitle'))[:80]}")
+            # FIELD NAMES CONFIRMED FROM THE PROBE'S OWN KEY DUMP, not
+            # assumed: the quotes are *_dollars and the sizes are *_fp.
+            # Reading yes_bid / volume / open_interest returned None on
+            # every market, which is the same _fp / _dollars trap that has
+            # already cost this project days on volume_fp, orderbook_fp and
+            # amount_cents.
             print(f"    strike      floor={m.get('floor_strike')} "
                   f"cap={m.get('cap_strike')} "
-                  f"type={m.get('strike_type')}")
-            print(f"    quotes      bid={m.get('yes_bid')} "
-                  f"ask={m.get('yes_ask')} vol={m.get('volume')} "
-                  f"oi={m.get('open_interest')}")
+                  f"type={m.get('strike_type')} "
+                  f"custom={m.get('custom_strike')}")
+            print(f"    quotes      bid={m.get('yes_bid_dollars')} "
+                  f"ask={m.get('yes_ask_dollars')} "
+                  f"bidsz={m.get('yes_bid_size_fp')} "
+                  f"asksz={m.get('yes_ask_size_fp')}")
+            print(f"    activity    vol={m.get('volume_fp')} "
+                  f"vol24={m.get('volume_24h_fp')} "
+                  f"oi={m.get('open_interest_fp')}")
+            print(f"    subtitles   yes={m.get('yes_sub_title')!r} "
+                  f"no={m.get('no_sub_title')!r}")
+            print(f"    rules       "
+                  f"{str(m.get('rules_primary'))[:150]}")
             print(f"    closes      {m.get('close_time')}")
         break
     else:

@@ -101,10 +101,24 @@ def main():
         lives = []
         vols, spreads, prices = [], [], []
         for m in live:
-            v = f(m.get("volume"))
+            # THE SECOND HALF OF THE SAME BUG. The first run was blamed on
+            # reading liquidity off settled markets, which was true -- but
+            # these field names were ALSO wrong. The probe in kweather dumped
+            # the real keys: quotes are yes_bid_dollars / yes_ask_dollars and
+            # volume is volume_fp. Reading yes_bid / volume returns None on
+            # every market, open or settled, so fixing the market status
+            # alone would have produced the same empty screen a second time.
+            v = f(m.get("volume_fp"))
+            if v is None:
+                v = f(m.get("volume_24h_fp"))
             if v is not None:
                 vols.append(v)
-            bid, ask = f(m.get("yes_bid")), f(m.get("yes_ask"))
+            bid = f(m.get("yes_bid_dollars"))
+            ask = f(m.get("yes_ask_dollars"))
+            if bid is not None:
+                bid *= 100.0
+            if ask is not None:
+                ask *= 100.0
             if bid is not None and ask is not None and ask > bid:
                 spreads.append(ask - bid)
                 prices.append((ask + bid) / 2.0)
