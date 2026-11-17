@@ -1,0 +1,37 @@
+name: Where is the last $310 (read-only)
+
+# fillmath showed that pricing every fill as an opening buy is wrong, and
+# that crediting every sell lands $310 ABOVE the cash figure while charging
+# every sell lands $910 below it -- so the truth is a mix. This replays
+# every fill per market in time order, tracks the signed position, and
+# prices each fill as opening or closing: selling yes while FLAT opens a NO
+# position and costs (1-p), while selling yes while LONG closes and credits
+# p. It also checks for settlement revenue with no matching fill.
+#
+# PLACES NO ORDER. Reads only portfolio endpoints.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fillgap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests cryptography
+      - name: Reconcile
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+        run: python fillgap.py
