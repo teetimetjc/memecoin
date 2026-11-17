@@ -65,6 +65,16 @@ CITIES = {
 }
 
 
+def f(v):
+    """A number, or None. Defined here because basis_check used it before
+    this file had one -- NameError on the first real run."""
+    try:
+        x = float(v)
+        return x if x == x else None
+    except (TypeError, ValueError):
+        return None
+
+
 def nws(path_or_url, tries=3):
     import requests
     url = (path_or_url if path_or_url.startswith("http")
