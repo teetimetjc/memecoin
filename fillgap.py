@@ -138,6 +138,45 @@ def main():
     print("  Revenue whose purchase is not in the fills we read arrives")
     print("  with no cost beside it, which inflates the trading figure.")
 
+    # THE REVERSE CHECK, WHICH IS THE ONE THAT MATTERED. The test above asks
+    # for settlements with no fill and found none -- but the gap's sign says
+    # revenue is MISSING, so the question is the other way round: which
+    # markets did we BUY and never receive a settlement for? Their cost is
+    # counted with no revenue beside it.
+    #
+    # And the bound that proves something is wrong: total deposits are
+    # $40.00. A trading reckoning that shows a loss larger than every dollar
+    # ever deposited is impossible, whatever the fills say, because the
+    # balance cannot go below zero.
+    sett_tickers = {str(s_.get("ticker") or "") for s_ in setts}
+    no_sett = {tk: n for tk, n in fill_tickers.items()
+               if tk and tk not in sett_tickers}
+    cost_no_sett = 0.0
+    for x in fills:
+        tk = str(x.get("ticker") or "")
+        if tk not in no_sett:
+            continue
+        n = f(x.get("count_fp"))
+        if n is None:
+            n = f(x.get("count"))
+        yp = f(x.get("yes_price_dollars"))
+        if n is None or yp is None:
+            continue
+        side = str(x.get("outcome_side") or x.get("side") or "").lower()
+        act = str(x.get("action") or "").lower()
+        cost_no_sett += n * ((1.0 - yp) if (act == "sell" or side == "no")
+                             else yp)
+    print(f"\n  MARKETS BOUGHT WITH NO SETTLEMENT ROW: {len(no_sett)}")
+    print(f"  their cost  ${cost_no_sett:>10,.2f}")
+    print("  That cost is counted with no revenue against it, which is the")
+    print("  direction the gap points. If it is close to the gap, that is")
+    print("  the explanation: those markets have not settled, or their")
+    print("  settlements are outside what the endpoint returns.")
+    print(f"\n  SANITY BOUND: only ${dep_sum:,.2f} was ever deposited, so a")
+    print("  trading loss larger than that is impossible -- the balance")
+    print("  cannot go below zero. Any reckoning that shows one is wrong,")
+    print("  and the cash figure is the one to believe.")
+
     # --------------------------- candidate 2: opening vs closing, by replay
     # THE REPLAY. Fills are grouped per market and walked in time order with
     # a running signed position in YES terms. A fill that moves the position
