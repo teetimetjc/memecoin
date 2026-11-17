@@ -1,0 +1,49 @@
+name: Kalshi temperature markets vs the NWS forecast (read-only)
+
+# Temperature markets settle on a PUBLISHED number -- the official high at a
+# named station -- and the NWS publishes a free forecast of it. Unlike every
+# other strategy tested here, there is a knowable quantity to price against
+# rather than a price to out-guess.
+#
+# mode=probe prints what both APIs actually return and designs nothing,
+# because this project has lost days to code written against assumed field
+# names (amount_cents as amount_dollars, orderbook_fp as orderbook,
+# usdc_size as usdcSize).
+#
+# The rule it grades toward is pre-registered in the file: buy the bucket
+# containing the NWS forecast high, grade on hit rate minus mean price plus
+# fee.
+#
+# PLACES NO ORDER. Read-only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'probe (default) or collect'
+        required: false
+        default: 'probe'
+
+permissions:
+  contents: read
+
+jobs:
+  kweather:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/meme-coin-scanner-fixes-uai1dj
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth requests cryptography
+      - name: Run
+        env:
+          PYTHONUNBUFFERED: '1'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KWEATHER_MODE: ${{ inputs.mode }}
+        run: python kweather.py
