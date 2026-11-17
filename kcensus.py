@@ -40,6 +40,7 @@ import statistics as st
 import time
 
 import backfill as B
+import openmk
 
 BUDGET_S = int(os.environ.get("KCENSUS_BUDGET_S") or 1500)
 SAMPLE = int(os.environ.get("KCENSUS_SAMPLE") or 40)
@@ -83,14 +84,23 @@ def main():
         except Exception:
             skipped += 1
             continue
+        # LIQUIDITY MUST COME FROM OPEN MARKETS. The first run measured
+        # spread and volume on SETTLED markets, which by definition have no
+        # live bid or ask -- so every field was empty, every series failed
+        # the spread filter, and the output announced "NONE PASSED. That is
+        # a finding." It was not a finding, it was missing data, and the
+        # screen asserted the opposite. Duration and history still come from
+        # settled markets, where they are real.
+        try:
+            live = openmk.open_markets([tk])
+        except Exception:
+            live = []
         checked += 1
         if not mk:
             continue
-        lives, vols, spreads, prices = [], [], [], []
-        for m in mk:
-            o, c = B.ts(m.get("open_time")), B.ts(m.get("close_time"))
-            if o is not None and c is not None and c > o:
-                lives.append((c - o) / 3600.0)
+        lives = []
+        vols, spreads, prices = [], [], []
+        for m in live:
             v = f(m.get("volume"))
             if v is not None:
                 vols.append(v)
@@ -98,6 +108,10 @@ def main():
             if bid is not None and ask is not None and ask > bid:
                 spreads.append(ask - bid)
                 prices.append((ask + bid) / 2.0)
+        for m in mk:
+            o, c = B.ts(m.get("open_time")), B.ts(m.get("close_time"))
+            if o is not None and c is not None and c > o:
+                lives.append((c - o) / 3600.0)
         if not lives:
             continue
         life_h = st.median(lives)
@@ -109,7 +123,7 @@ def main():
         fee_c = 100.0 * 0.07 * p * (1.0 - p)
         days = max(life_h / 24.0, 1.0 / 96.0)
         rows.append(dict(
-            tk=tk, n=len(mk), life_h=life_h,
+            tk=tk, n=len(mk), life_h=life_h, n_live=len(live),
             fee_c=fee_c, fee_per_day=fee_c / days,
             vol=(st.median(vols) if vols else 0.0),
             spread=(st.median(spreads) if spreads else None),
@@ -150,10 +164,21 @@ def main():
     print("-" * 112)
     print(f"  {'series':<26}{'settled':>8}{'life h':>9}{'fee/day c':>11}"
           f"{'med vol':>10}{'spread c':>10}{'med px':>8}")
-    if not cands:
-        print("  NONE PASSED. That is a finding: on this sample no series")
-        print("  outside the short clock is both liquid and tight enough,")
-        print("  and no amount of strategy work fixes a spread.")
+    measured = [r for r in longr if r["spread"] is not None]
+    print(f"  liquidity was READABLE for {len(measured)} of {len(longr)} "
+          f"long-dated series")
+    if not measured:
+        print("  *** NO LIQUIDITY DATA AT ALL, so nothing can pass or fail.")
+        print("  This is missing data, NOT a finding about the exchange.")
+        print("  The first version of this file reported it as a finding;")
+        print("  it had measured spread on SETTLED markets, which have no")
+        print("  live bid or ask.")
+    elif not cands:
+        print(f"  none of the {len(measured)} series with readable liquidity")
+        print("  cleared the volume and spread bars. That IS a finding about")
+        print("  those series -- but it says nothing about the")
+        print(f"  {len(longr) - len(measured)} whose liquidity could not be")
+        print("  read, which are not evidence either way.")
     for r in sorted(cands, key=lambda r: r["fee_per_day"])[:30]:
         print(f"  {r['tk']:<26}{r['n']:>8}{r['life_h']:>9.1f}"
               f"{r['fee_per_day']:>11.3f}{r['vol']:>10,.0f}"
