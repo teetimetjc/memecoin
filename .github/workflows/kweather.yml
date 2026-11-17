@@ -20,9 +20,17 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'probe (default) or collect'
+        description: 'probe, basis, or collect'
         required: false
         default: 'probe'
+      series:
+        description: 'Series ticker for basis mode'
+        required: false
+        default: 'KXHIGHNY'
+      days:
+        description: 'How many settled days to check'
+        required: false
+        default: '25'
 
 permissions:
   contents: read
@@ -46,4 +54,6 @@ jobs:
           KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
           KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
           KWEATHER_MODE: ${{ inputs.mode }}
+          KWEATHER_SERIES: ${{ inputs.series }}
+          KWEATHER_DAYS: ${{ inputs.days }}
         run: python kweather.py
