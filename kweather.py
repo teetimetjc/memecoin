@@ -98,18 +98,21 @@ def probe():
     if not ser:
         print(f"  NO SERIES RETURNED ({err}). Nothing can be probed.")
         return 1
-    # THE FIRST PASS MATCHED "LOW" AND LANDED ON KXADMITLOWGROUP -- college
-    # admissions rates, 70 unquoted markets closing in 2028. Temperature
-    # series are named plainly: HIGHNY, HIGHCHI, HIGHMIA, HIGHAUS, HIGHUS,
-    # KXDENHIGH, AVGTEMP. So match those, and exclude the words that pulled
-    # in contempt votes, blowouts and hot dogs.
-    BAD = ("ADMIT", "CONTEMPT", "BLOWOUT", "HOTDOG", "COLDPLAY", "BRAIN",
-           "SNOW", "HOT100", "CASELOW", "TARIFF", "GRAIN", "COLDBREW")
-    hits = sorted(t for t in ser
-                  if ("HIGH" in t.upper() or "TEMP" in t.upper())
-                  and not any(b in t.upper() for b in BAD))
-    print(f"  {len(ser):,} series on the exchange, "
-          f"{len(hits)} that look like temperature series")
+    # NO MORE KEYWORD HEURISTICS. Round one matched "LOW" and found
+    # KXADMITLOWGROUP (college admissions). Round two matched "HIGH" and
+    # found KXBRINFHIGH (Brazil inflation, "Above 5.25%"). Both are
+    # perfectly good markets and neither is a temperature. The city series
+    # are named plainly, so they are NAMED here and anything not found is
+    # reported as not found rather than silently replaced by a near-miss.
+    WANT = ("HIGHNY", "HIGHCHI", "HIGHMIA", "HIGHAUS", "HIGHUS",
+            "KXHIGHNY", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHAUS",
+            "KXHIGHDEN", "KXDENHIGH", "KXHIGHPHIL", "KXHIGHLAX")
+    have = set(ser)
+    hits = [t for t in WANT if t in have]
+    missing = [t for t in WANT if t not in have]
+    print(f"  {len(ser):,} series on the exchange")
+    print(f"  named temperature series present: {hits}")
+    print(f"  named but NOT on the exchange:    {missing}")
     for t in hits[:40]:
         print(f"    {t}")
     if len(hits) > 40:
