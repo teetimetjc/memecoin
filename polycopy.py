@@ -263,7 +263,9 @@ def score_union(acts, pos):
         first = f(r.get("first_entry_at"))
         if cost is None or pnl is None or first is None or cost <= 0:
             continue
-        out.append(dict(first=first, cost=cost, profit=pnl, src="unclaimed"))
+        size = f(r.get("total_size"))
+        out.append(dict(first=first, cost=cost, profit=pnl, src="unclaimed",
+                        size=size, settled=True))
         seen_tok.add(tok)
 
     # 2. the claimed side, rebuilt from the activity cash flows
@@ -323,8 +325,14 @@ def score_union(acts, pos):
         # of a loser -- which is the case the first version kept dropping.
         if p["redeems"] == 0 and (p["bought"] - p["sold"]) > SHARE_TOL:
             continue
+        # SETTLED means held to resolution, not sold out of. The fade
+        # analysis prices the other side of a RESOLUTION bet, so a position
+        # the wallet sold before resolution has no clean counterparty payout
+        # and is marked unsettled.
         out.append(dict(first=p["first"], cost=p["cash_out"],
-                        profit=p["cash_in"] - p["cash_out"], src="claimed"))
+                        profit=p["cash_in"] - p["cash_out"], src="claimed",
+                        size=p["bought"],
+                        settled=p["redeems"] > 0 and p["sold"] <= SHARE_TOL))
     return out, open_n, f"{100*share:.2f}% unattributable"
 
 
@@ -401,6 +409,54 @@ def score_wallet(acts):
 def roi(ps):
     c = sum(p["cost"] for p in ps)
     return (sum(p["profit"] for p in ps) / c) if c > 0 else None
+
+
+
+def fade_return(positions):
+    """Pooled return from taking the OTHER side of these positions.
+
+    THE ARITHMETIC. If a wallet bought `n` shares of an outcome at an
+    average price p and held to resolution:
+
+      they LOST   -> the opposite outcome paid 1.00, so the other side
+                     staked n*(1-p) and collected n*1.00: profit n*p
+      they WON    -> the opposite outcome paid nothing: the other side
+                     lost its whole stake, -n*(1-p)
+
+    WHY THE LOSERS' LOSS IS NOT THE FADER'S GAIN. A cohort losing 32% of
+    its stake does not hand the other side +32%. If they lose by buying
+    longshots at 0.25, the other side is buying favourites at 0.75 -- a
+    bigger stake for a smaller percentage. The pooled ROI below accounts
+    for that by summing dollars, not averaging percentages.
+
+    NOT INCLUDED, and both work against the fader: the spread (YES and NO
+    sum to slightly more than 1.00, so the complement costs more than
+    1-p), and any fee. So this is an optimistic bound.
+    """
+    stake = profit = 0.0
+    used = skipped = 0
+    prices = []
+    for x in positions:
+        if not x.get("settled"):
+            skipped += 1
+            continue
+        n, cost = x.get("size"), x.get("cost")
+        if not n or not cost or n <= 0:
+            skipped += 1
+            continue
+        px = cost / n
+        if not (0.001 < px < 0.999):
+            skipped += 1
+            continue
+        prices.append(px)
+        opp_stake = n * (1.0 - px)
+        stake += opp_stake
+        profit += (n * px) if x["profit"] <= 0 else -opp_stake
+        used += 1
+    roi = (100.0 * profit / stake) if stake > 0 else None
+    return dict(n=used, skipped=skipped, stake=stake, profit=profit,
+                roi=roi,
+                med_price=(st.median(prices) if prices else None))
 
 
 def main():
@@ -502,6 +558,7 @@ def main():
         hit_b = (100.0 * sum(1 for x in ps[cut:] if x["profit"] > 0)
                  / max(1, len(ps) - cut))
         good.append(dict(w=w, n=len(ps), first=a, second=b,
+                         pos2=ps[cut:],
                          hit_a=hit_a, hit_b=hit_b,
                          cost=sum(p["cost"] for p in ps),
                          profit=sum(p["profit"] for p in ps)))
@@ -644,6 +701,64 @@ def main():
         elif e2 <= 0:
             print("  beats the null or not, this group still loses money,")
             print("  so there is nothing for a copier to keep.")
+
+    # ------------------------------------------- FADE THE PERSISTENT LOSERS
+    # THE ONE RESULT THAT SURVIVED THE SURVIVORSHIP FIX was that bad wallets
+    # stay bad -- the worse half by first-half ROI lost 32% in its second
+    # half, p=0.000 in both samples. You cannot short a wallet, but on a
+    # prediction market you can buy the other side of its trades. So: what
+    # would the other side of these positions have returned?
+    print(f"\n{'-' * 100}")
+    print("FADING THE LOSERS -- the other side of the worst wallets' bets")
+    print("-" * 100)
+    print(f"  {'cohort':<22}{'positions':>10}{'staked $':>13}"
+          f"{'profit $':>12}{'ROI':>9}{'their med px':>14}")
+    worst = good[::-1]              # good is sorted best-first
+    for frac, label in ((0.10, "worst 10%"), (0.20, "worst 20%"),
+                        (0.50, "worse half"), (1.0, "every wallet")):
+        k = max(1, int(len(good) * frac))
+        cohort = worst[:k]
+        ps2 = [x for g in cohort for x in g["pos2"]]
+        fr = fade_return(ps2)
+        if fr["roi"] is None:
+            print(f"  {label:<22}{'-- nothing settled':>10}")
+            continue
+        print(f"  {label + f' ({k}w)':<22}{fr['n']:>10,}"
+              f"{fr['stake']:>13,.0f}{fr['profit']:>+12,.0f}"
+              f"{fr['roi']:>+8.2f}%"
+              f"{(fr['med_price'] or 0):>14.3f}")
+    # THE POSITION-LEVEL ZERO-SUM GUARD, and it is what invalidated the
+    # first fade result. Taking the other side of EVERY position must return
+    # about zero minus fees, because the market is near zero-sum. It came
+    # back +12.64%, and fading every wallet beat fading the worst ones --
+    # impossible for a skill-based edge, and a clear sign the POSITIONS
+    # being scored are not a representative sample of positions taken.
+    #
+    # The likely mechanism is the disposition effect: a winner gets SOLD to
+    # lock the gain, while a loser is held to worthless expiry. Positions
+    # held to settlement are therefore disproportionately losers -- and
+    # "settled" is exactly the filter this fade analysis requires, since
+    # only a resolution bet has a clean counterparty payout. So the set the
+    # fade can price is the set skewed toward losses, and fading it looks
+    # profitable no matter whose positions they are.
+    allfr = fade_return([x for g in good for x in g["pos2"]])
+    if allfr["roi"] is not None and abs(allfr["roi"]) > 3.0:
+        print(f"\n  *** POSITION SAMPLE IS NOT REPRESENTATIVE. Fading EVERY")
+        print(f"  wallet returns {allfr['roi']:+.2f}%, and a near zero-sum")
+        print("  market cannot pay the other side of all positions. Only")
+        print("  positions held to RESOLUTION can be priced here, and a")
+        print("  winner tends to be SOLD while a loser is held to expiry,")
+        print("  so that set over-represents losses. EVERY FADE FIGURE")
+        print("  ABOVE IS INFLATED BY THAT, and the cohort differences are")
+        print("  not interpretable. The fade is NOT measurable this way.")
+
+    print("\n  'their med px' is the price the faded wallets paid. The")
+    print("  closer it is to zero, the more the fader is buying favourites")
+    print("  at 1-minus-that -- a big stake for a thin margin, which is")
+    print("  exactly the Kalshi favourites trade that measured break-even.")
+    print("  SPREAD AND FEES ARE NOT DEDUCTED, so these are optimistic:")
+    print("  YES and NO sum to a little over 1.00, so the complement costs")
+    print("  more than the arithmetic assumes.")
 
     print(f"\n{'=' * 100}")
     if biased:
